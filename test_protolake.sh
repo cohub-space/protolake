@@ -7,6 +7,8 @@ echo "=== Proto Lake Comprehensive Test Suite ==="
 echo "Testing Lake/Bundle services with protolake-gazelle extension"
 
 # Configuration
+# NOTE: After pushing protolake-gazelle to GitHub, update the PROTOLAKE_GAZELLE_GIT_COMMIT
+# in docker-compose.yml with the actual commit SHA for reproducible builds
 LAKE_ID="test_lake"
 LAKE_OUTPUT_DIR="./test-lake-output"
 DOCKER_IMAGE="protolake-proto-lake:latest"

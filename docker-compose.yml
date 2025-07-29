@@ -15,10 +15,14 @@ services:
       - ~/.cache/pip:/home/protolake/.cache/pip  # Pip cache
       - bazel-disk-cache:/home/protolake/.cache/bazel-disk-cache  # Bazel disk cache
       - bazel-output-base:/home/protolake/.cache/bazel  # Bazel output base
-      - ../protolake-gazelle:/protolake-gazelle
+      # Local protolake-gazelle volume removed - using GitHub repository instead
     environment:
       - PROTO_LAKE_BASE_PATH=/var/proto-lake
-      - PROTOLAKE_GAZELLE_SOURCE_PATH=../../../protolake-gazelle
+      # Using GitHub repository for protolake-gazelle
+      - PROTOLAKE_GAZELLE_GIT_URL=https://github.com/cohub-space/protolake-gazelle.git
+      - PROTOLAKE_GAZELLE_GIT_COMMIT=4ed511f98f8eb22bd457796a3c22903db9f04918  # Update with actual commit SHA after pushing
+      # Fallback to local path for development (comment out the above and uncomment below)
+      # - PROTOLAKE_GAZELLE_SOURCE_PATH=../../../protolake-gazelle
       - MAVEN_LOCAL_REPO=/home/protolake/.m2/repository
       - PROTO_LAKE_LOG_LEVEL=DEBUG
     networks:
