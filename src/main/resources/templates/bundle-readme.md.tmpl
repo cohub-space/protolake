@@ -1,0 +1,23 @@
+# {displayName}
+
+{description}
+
+## Proto Package
+
+All protos in this bundle has a base package: `{protoPackage}`
+
+## Building
+
+Assuming running from the bundle base, to build this bundle:
+```bash
+bazel build //{bundleName}:all
+```
+
+## Publishing
+
+To publish to local repositories:
+```bash
+bazel run //{bundleName}:publish_to_maven
+bazel run //{bundleName}:publish_to_pypi
+bazel run //{bundleName}:publish_to_npm
+```

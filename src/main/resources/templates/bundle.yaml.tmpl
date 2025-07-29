@@ -1,0 +1,68 @@
+# Bundle configuration for {bundleId}
+# This file defines the configuration for a proto bundle within the lake
+name: {bundleId}
+display_name: {displayName}
+description: {description}
+bundle_prefix: {bundlePrefix}
+version: "{version}"
+
+# Bundle-specific configuration (maps to BundleConfig proto)
+# These settings override the lake defaults for this specific bundle
+config:
+  # Language-specific configurations (maps to LanguageConfig proto)
+  languages:
+    # Java configuration (maps to JavaConfig proto)
+    # Uncomment and modify to override lake defaults
+    java:
+      enabled: {javaEnabled}
+      {#if javaArtifactId ne ""}artifact_id: "{javaArtifactId}"{#else}# artifact_id: <bundle-specific-artifact-id>{/if}
+      # group_id: <inherited-from-lake>
+      # source_version: "11"
+      # target_version: "8"
+      # protobuf_java_version: "4.27.0"
+      # grpc_java_version: "1.64.0"
+      # java_multiple_files: true
+      # java_outer_classname_suffix: "Proto"
+      # dependencies:
+      #   - group_id: "com.google.guava"
+      #     artifact_id: "guava"
+      #     version: "32.1.3-jre"
+      #     scope: "compile"
+    
+    # Python configuration (maps to PythonConfig proto)
+    # Uncomment and modify to override lake defaults
+    python:
+      enabled: {pythonEnabled}
+      {#if pythonPackageName ne ""}package_name: "{pythonPackageName}"{#else}# package_name: <bundle-specific-package-name>{/if}
+      # python_version: ">=3.8,<4.0"
+      # protobuf_version: "5.27.0"
+      # grpcio_version: "1.64.0"
+      # stub_type: "pyi"
+      # dependencies:
+      #   - "numpy>=1.24.0"
+      #   - "pandas>=2.0.0"
+    
+    # JavaScript configuration (maps to JavaScriptConfig proto)
+    # Uncomment and modify to override lake defaults
+    javascript:
+      enabled: {jsEnabled}
+      {#if jsPackageName ne ""}package_name: "{jsPackageName}"{#else}# package_name: <bundle-specific-package-name>{/if}
+      # node_version: ">=18"
+      # google_protobuf_version: "3.21.2"
+      # grpc_web_version: "1.5.0"
+      # use_typescript: true
+      # module_type: "commonjs"
+      # dependencies:
+      #   - name: "@types/node"
+      #     version: "^20.0.0"
+      #     dev_dependency: true
+    
+    # Go configuration (maps to GoConfig proto)
+    # Uncomment and modify to override lake defaults
+    go:
+      enabled: false
+      # module_path: "github.com/company/proto/<bundle-name>"
+      # go_version: "1.21"
+
+# Note: Most configuration is inherited from the lake defaults.
+# Only override what's specific to this bundle.

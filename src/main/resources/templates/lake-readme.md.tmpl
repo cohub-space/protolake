@@ -1,0 +1,21 @@
+# ProtoLake Repository
+
+This is a ProtoLake repository containing protocol buffer definitions.
+
+## Structure
+
+- `bundles/` - Contains proto bundles that get built into packages
+- `common/` - Shared proto definitions used across bundles
+- `tools/` - Build and publishing tools (auto-generated)
+
+## Building
+
+To build all bundles:
+```bash
+bazel build //...
+```
+
+To build a specific bundle:
+```bash
+bazel build //bundles/my-bundle:all
+```

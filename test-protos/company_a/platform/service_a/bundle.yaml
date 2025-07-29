@@ -1,0 +1,17 @@
+bundle:
+  name: service_a
+  owner: platform-team
+  proto_package: company_a.platform.service_a
+  version: 1.0.0
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: com.company.proto
+      artifact_id: service-a-proto
+    python:
+      enabled: true
+      package_name: company_service_a_proto
+    javascript:
+      enabled: true
+      package_name: "@company/service-a-proto"

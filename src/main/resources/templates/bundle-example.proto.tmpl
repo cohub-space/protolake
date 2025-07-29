@@ -1,0 +1,22 @@
+syntax = "proto3";
+
+package {protoPackage};
+
+option java_package = "{protoPackage}";
+option java_multiple_files = true;
+
+// Example message
+message {bundleNamePascalCase}Request {
+  string id = 1;
+  string name = 2;
+}
+
+message {bundleNamePascalCase}Response {
+  string id = 1;
+  string message = 2;
+}
+
+// Example service
+service {bundleNamePascalCase}Service {
+  rpc Get{bundleNamePascalCase}({bundleNamePascalCase}Request) returns ({bundleNamePascalCase}Response);
+}

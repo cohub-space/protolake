@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         http://maven.apache.org/xsd/maven-4.0.0.xsd">
+
+    <modelVersion>4.0.0</modelVersion>
+
+    <groupId>{groupId}</groupId>
+    <artifactId>{artifactId}</artifactId>
+    <version>{version}</version>
+    <packaging>jar</packaging>
+
+    <name>{artifactId}</name>
+    <description>Proto Lake generated protocol buffer library for {serviceName}</description>
+
+    <properties>
+        <protobuf.version>{protobuf_java_version}</protobuf.version>
+        <grpc.version>{grpc_java_version}</grpc.version>
+        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+        <maven.compiler.source>{java_target_version}</maven.compiler.source>
+        <maven.compiler.target>{java_target_version}</maven.compiler.target>
+    </properties>
+
+    <dependencies>
+        <!-- Protobuf runtime -->
+        <dependency>
+            <groupId>com.google.protobuf</groupId>
+            <artifactId>protobuf-java</artifactId>
+            <version>${protobuf.version}</version>
+        </dependency>
+
+        <!-- gRPC runtime (if service definitions present) -->
+        {#if hasServices}
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-protobuf</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.grpc</groupId>
+            <artifactId>grpc-stub</artifactId>
+            <version>${grpc.version}</version>
+        </dependency>
+        {/if}
+
+        <!-- Additional dependencies -->
+        {#for dep in additionalDependencies}
+        <dependency>
+            <groupId>{dep.groupId}</groupId>
+            <artifactId>{dep.artifactId}</artifactId>
+            <version>{dep.version}</version>
+        </dependency>
+        {/for}
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-compiler-plugin</artifactId>
+                <version>3.13.0</version>
+                <configuration>
+                    <source>${maven.compiler.source}</source>
+                    <target>${maven.compiler.target}</target>
+                </configuration>
+            </plugin>
+        </plugins>
+    </build>
+
+    <distributionManagement>
+        <repository>
+            <id>proto-lake-local</id>
+            <url>{maven_repo_url}</url>
+        </repository>
+    </distributionManagement>
+
+</project>

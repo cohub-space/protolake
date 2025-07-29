@@ -1,0 +1,381 @@
+// bundle.proto
+syntax = "proto3";
+
+package protolake.v1;
+
+import "google/longrunning/operations.proto";
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+import "protolake/v1/lake.proto";  // For shared types like Language, MavenDependency, etc.
+
+option java_multiple_files = true;
+option java_package = "protolake.v1";
+option java_outer_classname = "BundleProto";
+
+// Bundle management service
+// A Bundle represents a logical grouping of proto files built into language packages
+service BundleService {
+  // Create a new bundle within a lake
+  rpc CreateBundle(CreateBundleRequest) returns (Bundle);
+
+  // Get bundle details
+  rpc GetBundle(GetBundleRequest) returns (Bundle);
+
+  // List bundles in a lake
+  rpc ListBundles(ListBundlesRequest) returns (ListBundlesResponse);
+
+  // Update bundle configuration
+  rpc UpdateBundle(UpdateBundleRequest) returns (Bundle);
+
+  // Delete a bundle
+  rpc DeleteBundle(DeleteBundleRequest) returns (google.protobuf.Empty);
+
+  // Build a specific bundle
+  // Returns a long-running operation that tracks build progress
+  rpc BuildBundle(BuildBundleRequest) returns (google.longrunning.Operation);
+
+  // List build history for a bundle
+  rpc ListBuilds(ListBuildsRequest) returns (ListBuildsResponse);
+
+  // Get details of a specific build
+  rpc GetBuild(GetBuildRequest) returns (Build);
+
+  // Get latest build for current branch (for package manager integration)
+  rpc GetLatestBuild(GetLatestBuildRequest) returns (Build);
+
+  // Refresh bundles from filesystem
+  // Discovers bundles by scanning for bundle.yaml files in the specified lake
+  rpc RefreshBundles(RefreshBundlesRequest) returns (RefreshBundlesResponse);
+}
+
+// A Bundle is a logical grouping of proto files that get built into packages
+// Corresponds to a bundle.yaml file in the proto directory structure
+message Bundle {
+  // Unique name within the lake (e.g., "user-service", "common-protos")
+  // Full resource name: lakes/{lake}/bundles/{bundle}
+  string name = 1;
+
+  // Human-readable display name
+  string display_name = 2;
+
+  // Optional description
+  string description = 3;
+
+  // Path prefix from lake root to the bundle directory
+  // this is also a proto directory prefix
+  // For example: "a/b" means the bundle is at {lake_root}/a/b/{bundle_name}/
+  // If empty, bundle is directly under lake root
+  string bundle_prefix = 4;
+
+  // Bundle-specific configuration
+  // Overrides lake defaults where specified
+  BundleConfig config = 5;
+
+  // Current version of the bundle
+  // This is the base version without branch suffix
+  string version = 6;
+
+  // Automatically set by the system
+  google.protobuf.Timestamp create_time = 7;
+  google.protobuf.Timestamp update_time = 8;
+}
+
+// Bundle-specific configuration
+// These settings override the lake defaults for this specific bundle
+message BundleConfig {
+  // Language-specific configurations
+  // If set, completely replaces lake defaults (not additive)
+  LanguageConfig languages = 1;
+}
+
+// Language-specific configuration for the bundle
+// Each field, if set, completely overrides the lake defaults
+message LanguageConfig {
+  // Java/Maven configuration
+  JavaConfig java = 1;
+
+  // Python/PyPI configuration
+  PythonConfig python = 2;
+
+  // JavaScript/npm configuration
+  JavaScriptConfig javascript = 3;
+
+  // Go module configuration (future)
+  GoConfig go = 4;
+}
+
+// Java-specific configuration for this bundle
+// If specified, completely replaces lake defaults
+message JavaConfig {
+  // Whether to build Java artifacts
+  bool enabled = 1;
+
+  // Full Maven coordinates
+  string group_id = 2;        // e.g., "com.company.proto"
+  string artifact_id = 3;     // e.g., "user-service-proto"
+
+  // Java source/target compatibility
+  // These control javac flags, NOT runtime library versions
+  string source_version = 4;  // e.g., "11"
+  string target_version = 5;  // e.g., "8"
+
+  // Runtime library versions (must be compatible with MODULE.bazel)
+  string protobuf_java_version = 6;  // e.g., "4.27.0"
+  string grpc_java_version = 7;      // e.g., "1.64.0"
+
+  // Complete list of Maven dependencies (replaces lake defaults)
+  repeated MavenDependency dependencies = 8;
+
+  // Proto compilation options
+  bool java_multiple_files = 9;
+  string java_outer_classname_suffix = 10;
+}
+
+// Python-specific configuration for this bundle
+// If specified, completely replaces lake defaults
+message PythonConfig {
+  // Whether to build Python packages
+  bool enabled = 1;
+
+  // Full package name
+  string package_name = 2;    // e.g., "company_proto_user_service"
+
+  // Python version requirement
+  string python_version = 3;  // e.g., ">=3.8,<4.0"
+
+  // Runtime library versions (must be compatible with MODULE.bazel)
+  string protobuf_version = 4;  // e.g., "5.27.0"
+  string grpcio_version = 5;    // e.g., "1.64.0"
+
+  // Complete list of dependencies (replaces lake defaults)
+  repeated string dependencies = 6;
+
+  // Python-specific options
+  string stub_type = 7;  // "pyi" or "inline"
+}
+
+// JavaScript-specific configuration for this bundle
+// If specified, completely replaces lake defaults
+message JavaScriptConfig {
+  // Whether to build JavaScript packages
+  bool enabled = 1;
+
+  // Full package name with scope
+  string package_name = 2;    // e.g., "@company/user-service-proto"
+
+  // Node version requirement
+  string node_version = 3;    // e.g., ">=18"
+
+  // Runtime library versions
+  string google_protobuf_version = 4;  // e.g., "3.21.2"
+  string grpc_web_version = 5;         // e.g., "1.5.0"
+
+  // Complete list of dependencies (replaces lake defaults)
+  repeated NpmDependency dependencies = 6;
+
+  // Package type
+  bool use_typescript = 7;
+  string module_type = 8;     // "commonjs" or "esm"
+}
+
+// Go-specific configuration for this bundle (future)
+message GoConfig {
+  // Whether to build Go packages
+  bool enabled = 1;
+
+  // Full module path
+  string module_path = 2;     // e.g., "github.com/company/proto/user-service"
+
+  // Go version requirement
+  string go_version = 3;      // e.g., "1.21"
+}
+
+// DEPRECATED: Build message is being replaced by TargetBuildInfo from lake.proto
+// Only kept for backward compatibility during migration
+message Build {
+  // Unique build ID
+  string id = 1;
+
+  // Bundle that was built (resource name)
+  string bundle = 2;
+
+  // Version of this build (e.g., "1.0.0-feature-x" for local, "1.0.0" for remote)
+  string version = 3;
+
+  // Git branch at build time
+  string branch = 4;
+
+  // Git commit SHA
+  string commit_sha = 5;
+
+  // Build status enum
+  enum BuildStatus {
+    BUILD_STATUS_UNSPECIFIED = 0;
+    BUILDING = 1;
+    SUCCEEDED = 2;
+    FAILED = 3;
+    CANCELLED = 4;
+  }
+
+  // Build status
+  BuildStatus status = 6;
+
+  // Built artifacts by language
+  map<string, Artifact> artifacts = 7;  // key is Language enum name
+
+  // Build timestamps
+  google.protobuf.Timestamp start_time = 8;
+  google.protobuf.Timestamp end_time = 9;
+
+  // Build logs (truncated for storage)
+  string logs = 10;
+
+  // Error details if status = FAILED
+  // This could be set by the build system - not necessarily just logs
+  string error_message = 11;
+}
+
+// Request/Response messages
+message CreateBundleRequest {
+  // Parent lake resource name (e.g., "lakes/main")
+  string parent = 1;
+
+  // Bundle to create
+  Bundle bundle = 2;
+
+  // If true, validate that the bundle_prefix directory exists
+  // and contains .proto files
+  bool validate_bundle_prefix = 3;
+}
+
+message GetBundleRequest {
+  // Resource name (e.g., "lakes/main/bundles/user-service")
+  string name = 1;
+}
+
+message ListBundlesRequest {
+  // Parent lake resource name
+  string parent = 1;
+
+  // Maximum results per page
+  int32 page_size = 2;
+
+  // Page token from previous response
+  string page_token = 3;
+
+  // Filter expression (e.g., "version='1.0.0'")
+  string filter = 4;
+
+  // Order by expression (e.g., "create_time desc")
+  string order_by = 5;
+}
+
+message ListBundlesResponse {
+  // List of bundles
+  repeated Bundle bundles = 1;
+
+  // Token for next page
+  string next_page_token = 2;
+}
+
+message UpdateBundleRequest {
+  // Updated bundle
+  Bundle bundle = 1;
+
+  // Field paths to update
+  repeated string update_paths = 2;
+
+  // If true, auto-increment version
+  bool increment_version = 3;
+}
+
+message DeleteBundleRequest {
+  // Resource name to delete
+  string name = 1;
+
+  // If true, also delete all build history
+  bool delete_builds = 2;
+  
+  // Delete options
+  // If true: delete entire bundle directory including proto files
+  // If false: delete only bundle.yaml - default
+  bool delete_filesystem = 3;
+}
+
+message BuildBundleRequest {
+  // Bundle to build (e.g., "lakes/main/bundles/user-service")
+  string name = 1;
+
+  // Languages to build (empty = all enabled languages)
+  repeated Language languages = 2;
+
+  // Override version for this build (optional)
+  // If not specified, uses bundle version + branch suffix for local builds
+  string version_override = 3;
+
+  // Optional: Configure which pipeline steps to run
+  // If not specified, runs all steps
+  BuildPipelineConfig pipeline_config = 4;
+}
+
+// Response returned in Operation.response when build completes
+message BuildBundleResponse {
+  // Just return the BuildResponse which has all the info
+  BuildResponse response = 1;
+}
+
+message ListBuildsRequest {
+  // Parent bundle (e.g., "lakes/main/bundles/user-service")
+  string parent = 1;
+
+  // Filter expression
+  // Examples:
+  //   "branch='main' AND status=SUCCEEDED"
+  //   "language='JAVA' AND start_time>'2024-01-01'"
+  string filter = 2;
+
+  // Pagination
+  int32 page_size = 3;
+  string page_token = 4;
+
+  // Order (e.g., "start_time desc")
+  string order_by = 5;
+}
+
+message ListBuildsResponse {
+  // List of builds
+  repeated Build builds = 1;
+
+  // Next page token
+  string next_page_token = 2;
+}
+
+message GetBuildRequest {
+  // Build resource name (e.g., "lakes/main/bundles/user-service/builds/12345")
+  string name = 1;
+}
+
+message GetLatestBuildRequest {
+  // Parent bundle
+  string parent = 1;
+
+  // Branch to get latest build for (defaults to current git branch)
+  string branch = 2;
+
+  // Language to filter by (optional)
+  Language language = 3;
+}
+
+// Request/Response for RefreshBundles RPC
+message RefreshBundlesRequest {
+  // Parent lake to refresh bundles for (e.g., "lakes/main")
+  string parent = 1;
+}
+
+message RefreshBundlesResponse {
+  // Number of bundles discovered
+  int32 bundles_discovered = 1;
+  
+  // List of discovered bundle names
+  repeated string bundle_names = 2;
+}

@@ -1,0 +1,40 @@
+services:
+  proto-lake:
+    image: protolake-proto-lake:latest
+    container_name: proto-lake-service
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "8080:8080"  # HTTP port for health checks
+      - "9090:9090"  # gRPC port
+    volumes:
+      - ./test-lake-output:/var/proto-lake  # Proto storage
+      - ~/.m2:/home/protolake/.m2           # Maven local repo
+      - ~/.npm:/home/protolake/.npm         # NPM cache
+      - ~/.cache/pip:/home/protolake/.cache/pip  # Pip cache
+      - bazel-disk-cache:/home/protolake/.cache/bazel-disk-cache  # Bazel disk cache
+      - bazel-output-base:/home/protolake/.cache/bazel  # Bazel output base
+      - ../protolake-gazelle:/protolake-gazelle
+    environment:
+      - PROTO_LAKE_BASE_PATH=/var/proto-lake
+      - PROTOLAKE_GAZELLE_SOURCE_PATH=../../../protolake-gazelle
+      - MAVEN_LOCAL_REPO=/home/protolake/.m2/repository
+      - PROTO_LAKE_LOG_LEVEL=DEBUG
+    networks:
+      - proto-lake-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/q/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+networks:
+  proto-lake-network:
+    name: proto-lake-network
+
+volumes:
+  bazel-disk-cache:
+    name: bazel-disk-cache
+  bazel-output-base:
+    name: bazel-output-base

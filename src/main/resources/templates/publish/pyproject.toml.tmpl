@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "{python_package_name}"
+version = "{version}"
+description = "Proto Lake generated protocol buffer library for {serviceName}"
+requires-python = ">={python_target_version}"
+dependencies = [
+    "protobuf>={protobuf_python_version}",
+    "grpcio>={grpc_python_version}",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "black>=23.0",
+]
+
+[tool.setuptools]
+packages = ["find:"]
+package-data = {"*" = ["*.proto"]}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["*_pb2*"]

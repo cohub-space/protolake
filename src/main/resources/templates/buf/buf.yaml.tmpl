@@ -1,0 +1,20 @@
+version: v1
+breaking:
+  use:
+{#for rule in buf_breaking_use}
+    - {rule}
+{/for}
+lint:
+  use:
+{#for rule in buf_lint_use}
+    - {rule}
+{/for}
+  except:
+{#for rule in buf_lint_except}
+    - {rule}
+{/for}
+  ignore:
+    - google/
+build:
+  excludes:
+    - google/

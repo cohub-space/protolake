@@ -1,0 +1,70 @@
+load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+
+package(default_visibility = ["//visibility:public"])
+
+# Export bundle rules for use in service BUILD files
+exports_files([
+    "proto_bundle.bzl",
+])
+
+# Python script for fixing proto imports after Gazelle runs
+# This is a temporary fix for Bazel 8 compatibility until Gazelle is updated
+py_binary(
+    name = "fix_proto_imports",
+    srcs = ["fix_proto_imports.py"],
+)
+
+# Python script wrapper that runs both gazelle and fix_proto_imports
+py_binary(
+    name = "gazelle_wrapper",
+    srcs = ["gazelle_wrapper.py"],
+)
+
+# Publisher utilities
+py_library(
+    name = "publisher_utils",
+    srcs = ["publish/publisher_utils.py"],
+)
+
+# Maven publisher
+py_binary(
+    name = "publish_to_maven",
+    srcs = ["publish/maven_publisher.py"],
+    main = "publish/maven_publisher.py",
+    deps = [":publisher_utils"],
+)
+
+# PyPI publisher
+py_binary(
+    name = "publish_to_pypi",
+    srcs = ["publish/pypi_publisher.py"],
+    main = "publish/pypi_publisher.py",
+    deps = [":publisher_utils"],
+)
+
+# NPM publisher
+py_binary(
+    name = "publish_to_npm",
+    srcs = ["publish/npm_publisher.py"],
+    main = "publish/npm_publisher.py",
+    deps = [":publisher_utils"],
+)
+
+# Bundler tools
+py_binary(
+    name = "jar_bundler",
+    srcs = ["bundler/jar_bundler.py"],
+    main = "bundler/jar_bundler.py",
+)
+
+py_binary(
+    name = "wheel_builder",
+    srcs = ["bundler/wheel_builder.py"],
+    main = "bundler/wheel_builder.py",
+)
+
+py_binary(
+    name = "npm_bundler",
+    srcs = ["bundler/npm_bundler.py"],
+    main = "bundler/npm_bundler.py",
+)

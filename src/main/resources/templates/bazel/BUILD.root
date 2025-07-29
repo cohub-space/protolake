@@ -1,0 +1,102 @@
+load("@bazel_gazelle//:def.bzl", "gazelle", "gazelle_binary")
+load("@rules_proto_grpc_js_npm//:defs.bzl", "npm_link_all_packages")
+
+# Link npm packages for JavaScript proto support
+npm_link_all_packages(name = "node_modules")
+
+# Standard gazelle binary for proto generation
+gazelle_binary(
+    name = "gazelle_proto",
+    languages = [
+        # Note: In the order of languages, go must come before proto
+        "@bazel_gazelle//language/go",
+        "@bazel_gazelle//language/proto",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+# Protolake gazelle binary for service bundle generation
+gazelle_binary(
+    name = "gazelle_protolake",
+    languages = [
+        # Go language support (required)
+        "@bazel_gazelle//language/go",
+        # Proto Lake bundle generation from external module
+        # Note: NO proto language here - we only want protolake to run
+        "@protolake_gazelle//language:go_default_library",
+    ],
+    visibility = ["//visibility:private"],
+)
+
+# Gazelle configuration for proto files
+# gazelle:prefix {{lakePrefix}}
+# gazelle:build_file_name BUILD.bazel
+# gazelle:proto default
+# gazelle:proto_language go disable
+# gazelle:proto_language java disable
+# gazelle:proto_language python disable
+
+# Main Gazelle target for proto generation
+gazelle(
+    name = "gazelle",
+    gazelle = ":gazelle_proto",
+    args = [
+        "-mode",
+        "fix",
+        "-build_file_name",
+        "BUILD.bazel",
+    ],
+)
+
+# Protolake Gazelle target for service bundle generation
+gazelle(
+    name = "gazelle-protolake",
+    gazelle = ":gazelle_protolake",
+    args = [
+        "-mode",
+        "fix",
+        "-build_file_name",
+        "BUILD.bazel",
+        "-lang",
+        "protolake",
+    ],
+)
+
+# Update all BUILD files
+gazelle(
+    name = "gazelle-update-repos",
+    gazelle = ":gazelle_proto",
+    args = [
+        "-from_file=go.mod",
+        "-to_macro=deps.bzl%proto_lake_dependencies",
+        "-prune",
+    ],
+    command = "update-repos",
+)
+
+# Alias for the proto import fixer in tools
+alias(
+    name = "fix-imports",
+    actual = "//tools:fix_proto_imports",
+)
+
+# Common proto library for well-known types
+# Note: proto_library is built-in in Bazel 8, no load needed
+proto_library(
+    name = "well_known_protos",
+    srcs = [],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_protobuf//:any_proto",
+        "@com_google_protobuf//:api_proto",
+        "@com_google_protobuf//:descriptor_proto",
+        "@com_google_protobuf//:duration_proto",
+        "@com_google_protobuf//:empty_proto",
+        "@com_google_protobuf//:field_mask_proto",
+        "@com_google_protobuf//:source_context_proto",
+        "@com_google_protobuf//:struct_proto",
+        "@com_google_protobuf//:timestamp_proto",
+        "@com_google_protobuf//:type_proto",
+        "@com_google_protobuf//:wrappers_proto",
+    ],
+)

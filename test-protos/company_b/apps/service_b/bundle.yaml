@@ -1,0 +1,17 @@
+bundle:
+  name: service_b
+  owner: apps-team
+  proto_package: company_b.apps.service_b
+  version: 1.0.0
+config:
+  languages:
+    java:
+      enabled: true
+      group_id: com.company.proto
+      artifact_id: service-b-proto
+    python:
+      enabled: true
+      package_name: company_service_b_proto
+    javascript:
+      enabled: true
+      package_name: "@company/service-b-proto"

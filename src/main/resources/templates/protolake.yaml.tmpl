@@ -1,0 +1,22 @@
+# ProtoLake Workspace Configuration
+# This file marks the root of a ProtoLake workspace containing multiple lakes
+
+version: "1.0"
+
+# Lakes managed by this workspace
+lakes:
+{#if lakes}
+{#for lake in lakes}
+  - name: "{lake.name}"
+    path: "{lake.path}"
+    {#if lake.gitUrl}git_url: "{lake.gitUrl}"{/if}
+{/for}
+{#else}
+  # No lakes configured yet
+  # Lakes will be added here as you create or discover them
+{/if}
+
+# Future workspace settings can be added here
+# settings:
+#   default_build_options:
+#     ...

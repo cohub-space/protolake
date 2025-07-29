@@ -1,0 +1,89 @@
+# Proto Lake Service Configuration
+quarkus:
+  application:
+    name: proto-lake-service
+
+  # gRPC configuration
+  grpc:
+    server:
+      port: 9090
+      host: 0.0.0.0
+      enable-reflection-service: true
+
+  # HTTP endpoint (for health checks)
+  http:
+    port: 8080
+
+  # Logging
+  log:
+    level: INFO
+    category:
+      "io.vdp.protolake":
+        level: DEBUG
+
+  # Native compilation hints
+  native:
+    additional-build-args:
+      - --initialize-at-run-time=org.eclipse.jgit.internal.JGitText
+
+# Proto Lake specific configuration
+protolake:
+  storage:
+    base-path: ${PROTO_LAKE_BASE_PATH:/var/proto-lake}
+    db-path: ${PROTO_LAKE_DB_PATH:${protolake.storage.base-path}/protolake.db}
+    max-builds-per-bundle: ${PROTO_LAKE_MAX_BUILDS:50}
+    git-user-name: ${PROTO_LAKE_GIT_USER:Proto Lake Service}
+    git-user-email: ${PROTO_LAKE_GIT_EMAIL:protolake@vdp.io}
+
+  # Workspace configuration
+  workspace:
+    config-file: ${PROTOLAKE_WORKSPACE_CONFIG:protolake.yaml}
+    auto-discover: ${PROTOLAKE_AUTO_DISCOVER:true}
+
+  # Bazel configuration
+  bazel:
+    command: ${PROTO_LAKE_BAZEL_CMD:bazel}
+    timeout-seconds: ${PROTO_LAKE_BAZEL_TIMEOUT:300}
+    startup-options: ${PROTO_LAKE_BAZEL_STARTUP:--output_base=/home/protolake/.cache/bazel}
+
+  build:
+    bazel-build-options: ${PROTO_LAKE_BAZEL_OPTIONS:--jobs=4 --keep_going}
+    command-timeout-seconds: ${PROTO_LAKE_TIMEOUT:300}
+    enable-remote-cache: ${PROTO_LAKE_REMOTE_CACHE_ENABLED:false}
+    remote-cache-url: ${PROTO_LAKE_REMOTE_CACHE_URL:grpc://localhost:9090}
+
+  publish:
+    maven-repo: ${MAVEN_LOCAL_REPO:${user.home}/.m2/repository}
+    pypi-repo: ${PYPI_LOCAL_REPO:${user.home}/.cache/pip/simple}
+    npm-repo: ${NPM_LOCAL_REPO:${user.home}/.npm}
+
+  # Gazelle extension configuration
+  gazelle:
+    source-path: ${PROTOLAKE_GAZELLE_SOURCE_PATH:/protolake-gazelle}
+
+  # Validation configuration
+  validation:
+    timeout-seconds: ${PROTO_LAKE_VALIDATION_TIMEOUT:60}
+
+  # Operation management configuration
+  operation:
+    ttl-minutes: ${PROTO_LAKE_OPERATION_TTL:10}
+
+# Dev mode configuration
+"%dev":
+  protolake:
+    storage:
+      base-path: ${java.io.tmpdir}/proto-lake-dev
+  quarkus:
+    log:
+      level: DEBUG
+
+# Test configuration
+"%test":
+  protolake:
+    storage:
+      base-path: ${java.io.tmpdir}/proto-lake-test
+  quarkus:
+    grpc:
+      server:
+        port: 0  # Random port for tests

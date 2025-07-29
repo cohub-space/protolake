@@ -1,0 +1,47 @@
+# Enable bzlmod
+common --enable_bzlmod
+common --registry=https://bcr.bazel.build
+
+# Output base configuration - ensures consistent location
+startup --output_base=/home/protolake/.cache/bazel
+
+# Output directory configuration
+build --symlink_prefix=.bazel/
+test --symlink_prefix=.bazel/
+
+# Build options
+build --jobs=4
+build --keep_going
+build --verbose_failures
+
+# Java options - use default Java toolchain from rules_java
+build --java_language_version=21
+build --tool_java_language_version=21
+build --java_runtime_version=local_jdk
+build --tool_java_runtime_version=local_jdk
+
+# Proto options
+build --protocopt=--experimental_allow_proto3_optional
+
+# Performance options
+build --experimental_remote_merkle_tree_cache
+build --experimental_remote_merkle_tree_cache_size=1000
+
+# Output options
+build --show_timestamps
+build --show_progress_rate_limit=5
+
+# Platform configuration
+build --incompatible_enable_cc_toolchain_resolution
+build --incompatible_strict_action_env
+
+# Disk cache for build artifacts
+build --disk_cache=/home/protolake/.cache/bazel-disk-cache
+
+# Optional: convenience symlinks
+build --experimental_convenience_symlinks=normal
+
+# Remote cache configuration (optional)
+# build --remote_cache=grpc://localhost:9090
+# build --remote_cache_compression
+# build --remote_download_minimal
