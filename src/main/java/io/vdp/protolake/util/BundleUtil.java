@@ -35,25 +35,7 @@ public class BundleUtil {
             return lakePath.resolve(bundleId);
         }
     }
-    
-    /**
-     * Calculates the local path for a bundle based on components.
-     * 
-     * @param lakePath The lake's local path
-     * @param bundlePrefix The bundle prefix using dots (e.g., "com.company.protos")
-     * @param bundleName The bundle name
-     * @return The calculated bundle path
-     */
-    public static Path calculateBundlePath(Path lakePath, String bundlePrefix, String bundleName) {
-        if (bundlePrefix != null && !bundlePrefix.isEmpty()) {
-            // Convert dots to path separators
-            String prefixPath = bundlePrefix.replace('.', '/');
-            return lakePath.resolve(prefixPath).resolve(bundleName);
-        } else {
-            return lakePath.resolve(bundleName);
-        }
-    }
-    
+
     /**
      * Gets the path to the bundle.yaml file for a bundle.
      */
@@ -127,17 +109,25 @@ public class BundleUtil {
         // Convert to string with forward slashes for Bazel
         return path.toString().replace('\\', '/');
     }
-    
+
     /**
-     * Gets the Bazel target for a bundle.
-     * This returns the full target path from workspace root.
-     * 
-     * @param lake The lake containing the bundle
+     * Gets the relative path of the bundle from the lake root.
+     * This is used for constructing Bazel targets when running from the lake directory.
+     *
      * @param bundle The bundle proto
-     * @return The Bazel target (e.g., "//z/y/my-lake/com/company/protos/user/...")
+     * @return The lake-relative path (e.g., "com/company/protos/user")
      */
-    public static String getWorkspaceRelativeTarget(Lake lake, Bundle bundle) {
-        return "//" + getWorkspaceRelativePath(lake, bundle) + "/...";
+    public static String getLakeRootRelativePath(Bundle bundle) {
+        String bundleId = extractBundleId(bundle.getName());
+        
+        if (!bundle.getBundlePrefix().isEmpty()) {
+            // Convert bundle prefix dots to path: com.company.protos -> com/company/protos
+            String prefixPath = bundle.getBundlePrefix().replace('.', '/');
+            return prefixPath + "/" + bundleId;
+        } else {
+            // No prefix, bundle is directly under lake
+            return bundleId;
+        }
     }
     
     /**

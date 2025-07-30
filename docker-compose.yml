@@ -13,9 +13,8 @@ services:
       - ~/.m2:/home/protolake/.m2           # Maven local repo
       - ~/.npm:/home/protolake/.npm         # NPM cache
       - ~/.cache/pip:/home/protolake/.cache/pip  # Pip cache
-      - bazel-disk-cache:/home/protolake/.cache/bazel-disk-cache  # Bazel disk cache
-      - bazel-output-base:/home/protolake/.cache/bazel  # Bazel output base
-      # Local protolake-gazelle volume removed - using GitHub repository instead
+      # Note: While each lake has its own workspace cache, these volumes help persist
+      # shared dependencies and Bazel's repository cache across container restarts
     environment:
       - PROTO_LAKE_BASE_PATH=/var/proto-lake
       # Using GitHub repository for protolake-gazelle
@@ -36,9 +35,3 @@ services:
 networks:
   proto-lake-network:
     name: proto-lake-network
-
-volumes:
-  bazel-disk-cache:
-    name: bazel-disk-cache
-  bazel-output-base:
-    name: bazel-output-base

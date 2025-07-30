@@ -324,7 +324,8 @@ public class BundleServiceImpl extends BundleServiceGrpc.BundleServiceImplBase {
                 lakeId, bundleId, operationId);
             String resourceName = String.format("lakes/%s/bundles/%s", lakeId, bundleId);
             
-            // Get the workspace-relative path for the bundle
+            // Get the workspace-relative path for the bundle (base-relative)
+            // BuildOrchestrator will convert this to lake-relative when needed
             String targetPath = BundleUtil.getWorkspaceRelativePath(lake, bundle.get());
             
             // Create initial metadata for bundle build

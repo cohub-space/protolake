@@ -169,7 +169,7 @@ public class WorkspaceInitializer {
 
         // Add Buf-specific configuration with defaults
         List<String> bufBreakingUse = Arrays.asList("FILE");
-        List<String> bufLintUse = Arrays.asList("DEFAULT");
+        List<String> bufLintUse = Arrays.asList("STANDARD");
         List<String> bufLintExcept = Arrays.asList("PACKAGE_VERSION_SUFFIX");
 
         // Override with lake config if specified

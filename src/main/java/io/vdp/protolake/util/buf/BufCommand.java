@@ -39,8 +39,8 @@ public class BufCommand {
         LOG.debugf("Running buf build in: %s", directory);
         
         List<String> errors = new ArrayList<>();
-        
-        ProcessBuilder pb = new ProcessBuilder(bufCommand, "build", directory.toString());
+
+        ProcessBuilder pb = new ProcessBuilder(bufCommand, "build");
         pb.directory(directory.toFile());
         
         Process process = pb.start();
@@ -119,35 +119,12 @@ public class BufCommand {
     }
 
     /**
-     * Checks if buf is available and working.
-     * 
-     * @return true if buf command is available, false otherwise
-     */
-    public boolean isAvailable() {
-        try {
-            ProcessBuilder pb = new ProcessBuilder(bufCommand, "version");
-            Process process = pb.start();
-            
-            boolean finished = process.waitFor(5, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return false;
-            }
-            
-            return process.exitValue() == 0;
-        } catch (Exception e) {
-            LOG.warnf("Buf not available: %s", e.getMessage());
-            return false;
-        }
-    }
-
-    /**
      * Gets the buf version.
      * 
      * @return version string
      */
     public String getVersion() throws IOException {
-        List<String> output = runWithOutput(Path.of("."), "version");
+        List<String> output = runWithOutput(Path.of("."), "--version");
         return output.isEmpty() ? "unknown" : output.get(0);
     }
 

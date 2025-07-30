@@ -152,14 +152,14 @@ public class GazelleRunner {
     /**
      * Runs the import fixer to update proto imports for Bazel 8.
      */
-    private void runImportFixer(Path workspaceRoot) {
+    private void runImportFixer(Path lakeRoot) {
         try {
-            Path fixerScript = workspaceRoot.resolve("tools/fix_proto_imports.py");
+            Path fixerScript = lakeRoot.resolve("tools/fix_proto_imports.py");
             if (Files.exists(fixerScript)) {
-                LOG.debugf("Running import fixer at: %s", workspaceRoot);
+                LOG.debugf("Running import fixer at: %s", lakeRoot);
                 
                 ProcessBuilder pb = new ProcessBuilder("python3", fixerScript.toString());
-                pb.directory(workspaceRoot.toFile());
+                pb.directory(lakeRoot.toFile());
                 pb.inheritIO();
                 
                 Process process = pb.start();
@@ -179,10 +179,10 @@ public class GazelleRunner {
     /**
      * Runs protolake-specific gazelle for bundle detection.
      */
-    private void runProtolakeGazelle(Path workspaceRoot) {
+    private void runProtolakeGazelle(Path lakeRoot) {
         try {
             LOG.debugf("Running protolake gazelle for bundle detection");
-            bazelCommand.run(workspaceRoot, "run", "//:gazelle-protolake");
+            bazelCommand.run(lakeRoot, "run", "//:gazelle-protolake");
         } catch (Exception e) {
             LOG.warnf("Failed to run protolake gazelle: %s", e.getMessage());
         }

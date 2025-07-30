@@ -19,6 +19,7 @@ import java.io.IOException;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * Executes Bazel build commands.
@@ -26,8 +27,23 @@ import java.util.List;
  * Handles incremental builds and caching through Bazel's build system.
  * Supports both targeted and isolated bundle builds based on configuration.
  * 
- * Bazel is always run from the workspace root (base path), and targets
- * are computed relative to that root.
+ * IMPORTANT: Architecture Notes
+ * - Bazel is always run from the lake root directory (where MODULE.bazel exists)
+ * - Each lake has its own Bazel workspace with isolated cache (in bazel-* directories)
+ * - All target paths passed to this class should be relative to the lake root
+ * - Example: "." means build everything in the lake
+ * - Example: "company_a/platform" means build only that subdirectory
+ * 
+ * The isolation ensures that:
+ * - Each lake maintains its own build cache
+ * - No conflicts between different lakes
+ * - Bazel runs in the correct workspace context (no batch mode)
+ * 
+ * Path Coordinate Systems:
+ * - Service layer uses base-relative paths (e.g., "z/y/lake/bundle")
+ * - Build layer uses lake-relative paths (e.g., "bundle" or "company/bundle")
+ * - BuildOrchestrator handles the conversion between these coordinate systems
+ * - This class expects all paths to already be lake-relative
  */
 @ApplicationScoped
 public class BazelBuildRunner {
@@ -43,20 +59,20 @@ public class BazelBuildRunner {
     boolean enableRemoteCache;
 
     @ConfigProperty(name = "protolake.build.remote-cache-url")
-    String remoteCacheUrl;
+    Optional<String> remoteCacheUrl;
     
 
     @Inject
     BundleDiscoveryService bundleDiscoveryService;
 
     /**
-     * Cleans bazel cache for a workspace.
+     * Cleans bazel cache for a lake.
      */
-    public void clean(Path workspaceRoot) throws IOException {
-        LOG.infof("Cleaning bazel cache at: %s", workspaceRoot);
+    public void clean(Path lakeRoot) throws IOException {
+        LOG.infof("Cleaning bazel cache at: %s", lakeRoot);
         
         try {
-            bazelCommand.run(workspaceRoot, "clean", "--expunge");
+            bazelCommand.run(lakeRoot, "clean", "--expunge");
             LOG.infof("Bazel cache cleaned");
         } catch (Exception e) {
             throw new IOException("Failed to clean bazel cache: " + e.getMessage(), e);
@@ -66,11 +82,11 @@ public class BazelBuildRunner {
     /**
      * Queries bazel for information about targets.
      */
-    public List<String> query(Path workspaceRoot, String query) throws IOException {
+    public List<String> query(Path lakeRoot, String query) throws IOException {
         LOG.debugf("Running bazel query: %s", query);
         
         try {
-            String output = bazelCommand.runWithOutput(workspaceRoot, "query", query);
+            String output = bazelCommand.runWithOutput(lakeRoot, "query", query);
             List<String> results = new ArrayList<>();
             
             for (String line : output.split("\n")) {
@@ -89,13 +105,19 @@ public class BazelBuildRunner {
      * Builds a target with support for isolated bundle builds.
      * This is the main entry point for the unified build approach.
      * 
-     * @param workspaceRoot The Bazel workspace root (should be base path)
-     * @param target The target path relative to workspace root (e.g., "z/y" for a lake)
+     * @param lakeRoot The lake root directory (where MODULE.bazel exists)
+     * @param target The target path relative to lake root (e.g., "." for entire lake, "company_a/platform" for subdirectory)
      * @param config Build configuration including isolate_bundle_builds flag
      * @param metadata The operation metadata to update
      * @return Updated metadata with build results
+     * 
+     * Example flow:
+     * 1. LakeServiceImpl calls with target="z/y/test_lake"
+     * 2. BuildOrchestrator converts to lakeRelativeTarget="."
+     * 3. This method receives lakeRoot="/var/proto-lake/z/y/test_lake" and target="."
+     * 4. Bazel runs: cd /var/proto-lake/z/y/test_lake && bazel build //...
      */
-    public BuildOperationMetadata buildTarget(Path workspaceRoot, String target, RunBuildConfig config, BuildOperationMetadata metadata) throws IOException {
+    public BuildOperationMetadata buildTarget(Path lakeRoot, String target, RunBuildConfig config, BuildOperationMetadata metadata) throws IOException {
         if (!config.getEnabled()) {
             LOG.debugf("Build disabled");
             return metadata;
@@ -115,18 +137,18 @@ public class BazelBuildRunner {
             if (config.getClean()) {
                 LOG.infof("Cleaning bazel cache before build");
                 buildStatus.setSubPhase("Cleaning bazel cache");
-                clean(workspaceRoot);
+                clean(lakeRoot);
                 logs.add("Cleaned bazel cache");
             }
             
             // Check if we should isolate bundle builds
             if (config.getIsolateBundleBuilds()) {
                 LOG.infof("Building bundles individually for target: %s", target);
-                metadata = buildBundlesIndividually(workspaceRoot, target, config, metadata, buildStatus, logs);
+                metadata = buildBundlesIndividually(lakeRoot, target, config, metadata, buildStatus, logs);
             } else {
                 // Direct build of the specified target
                 LOG.infof("Building target directly: %s", target);
-                metadata = buildTargetDirectly(workspaceRoot, target, config, metadata, buildStatus, logs);
+                metadata = buildTargetDirectly(lakeRoot, target, config, metadata, buildStatus, logs);
             }
             
             // Mark build phase as successful
@@ -166,22 +188,22 @@ public class BazelBuildRunner {
     /**
      * Builds bundles individually by discovering bundles under the target path.
      * 
-     * @param workspaceRoot The workspace root (base path)
-     * @param targetPath The relative path from workspace root (e.g., "z/y" for a lake)
+     * @param lakeRoot The lake root directory (where MODULE.bazel exists)
+     * @param targetPath The relative path from lake root
      * @param config Build configuration
      * @param metadata Operation metadata
      * @param buildStatus Build status builder
      * @param logs Log accumulator
      * @return Updated metadata
      */
-    private BuildOperationMetadata buildBundlesIndividually(Path workspaceRoot, String targetPath, 
+    private BuildOperationMetadata buildBundlesIndividually(Path lakeRoot, String targetPath, 
                                                            RunBuildConfig config, BuildOperationMetadata metadata, 
                                                            PhaseStatus.Builder buildStatus, List<String> logs) throws IOException {
         LOG.infof("Discovering bundles under path: %s", targetPath);
         buildStatus.setSubPhase("Discovering bundle targets");
         logs.add("Discovering bundle targets...");
 
-        List<String> bundleTargets = getBundleTargetPathsForTargetPath(workspaceRoot, targetPath, metadata);
+        List<String> bundleTargets = getBundleTargetPathsForTargetPath(lakeRoot, targetPath, metadata);
 
         // Sort by depth (deeper first) to ensure proper build order
         bundleTargets.sort((a, b) -> {
@@ -221,7 +243,7 @@ public class BazelBuildRunner {
                 .build();
 
             try {
-                String targetLog = buildTargetDirectlyImpl(workspaceRoot, bazelTarget, config);
+                String targetLog = buildTargetDirectlyImpl(lakeRoot, bazelTarget, config);
                 
                 // Mark target as PUBLISHED (build + publish complete)
                 targetInfo = updateTargetBuildInfo(targetInfo, TargetBuildInfo.Status.PUBLISHED)
@@ -262,28 +284,33 @@ public class BazelBuildRunner {
     }
 
     private static String getBazelTargetFromBundlePath(String bundlePath) {
-        String targetKey = "//" + bundlePath + "/...";
-        return targetKey;
+        // Special case: "." means build everything in the current directory
+        if (".".equals(bundlePath)) {
+            return "//...";
+        }
+        // Normal case: convert path to Bazel target
+        return "//" + bundlePath + "/...";
     }
 
-    private List<String> getBundleTargetPathsForTargetPath(Path workspaceRoot, String targetPath, BuildOperationMetadata metadata) throws IOException {
+    private List<String> getBundleTargetPathsForTargetPath(Path lakeRoot, String targetPath, BuildOperationMetadata metadata) throws IOException {
         // Convert target path to absolute path for discovery
-        Path searchPath = workspaceRoot.resolve(targetPath);
+        Path searchPath = lakeRoot.resolve(targetPath);
 
         // Discover bundles under the target path
         List<Bundle> bundles = bundleDiscoveryService.discoverBundles(searchPath);
 
-        // Get the lake from metadata to compute full paths
+        // Get the lake from metadata
         if (!metadata.hasLake()) {
             throw new IOException("Lake not set in build metadata");
         }
         Lake lake = metadata.getLake();
 
-        // Compute workspace-relative paths for each bundle
+        // Get bundle paths relative to the lake root
+        // Since we're running Bazel from the lake directory, we use lake-relative paths
         List<String> bundleTargets = new ArrayList<>();
         for (Bundle bundle : bundles) {
-            String bundlePath = BundleUtil.getWorkspaceRelativePath(lake, bundle);
-            bundleTargets.add(bundlePath);
+            String lakeRelativePath = BundleUtil.getLakeRootRelativePath(bundle);
+            bundleTargets.add(lakeRelativePath);
         }
         return bundleTargets;
     }
@@ -291,15 +318,15 @@ public class BazelBuildRunner {
     /**
      * Builds a specific target directly.
      * 
-     * @param workspaceRoot The workspace root (base path)
-     * @param targetPath The relative path from workspace root
+     * @param lakeRoot The lake root directory (where MODULE.bazel exists)
+     * @param targetPath The relative path from lake root
      * @param config Build configuration
      * @param metadata Operation metadata
      * @param buildStatus Build status builder
      * @param logs Log accumulator
      * @return Updated metadata
      */
-    private BuildOperationMetadata buildTargetDirectly(Path workspaceRoot, String targetPath, RunBuildConfig config,
+    private BuildOperationMetadata buildTargetDirectly(Path lakeRoot, String targetPath, RunBuildConfig config,
                                                       BuildOperationMetadata metadata, PhaseStatus.Builder buildStatus, 
                                                       List<String> logs) throws IOException {
         // Convert path to Bazel target
@@ -316,7 +343,7 @@ public class BazelBuildRunner {
             .build();
         
         try {
-            String targetLog = buildTargetDirectlyImpl(workspaceRoot, bazelTarget, config);
+            String targetLog = buildTargetDirectlyImpl(lakeRoot, bazelTarget, config);
             
             // Mark as published (build + publish complete)
             targetInfo = updateTargetBuildInfo(targetInfo, TargetBuildInfo.Status.PUBLISHED)
@@ -345,17 +372,17 @@ public class BazelBuildRunner {
     /**
      * Implementation of building a specific target directly.
      * 
-     * @param workspaceRoot The workspace root to run bazel from
-     * @param bazelTarget The full Bazel target (e.g., "//z/y/...")
+     * @param lakeRoot The lake root directory to run bazel from
+     * @param bazelTarget The full Bazel target (e.g., "//...")
      * @param config Build configuration
-     * @return List of log lines from the build
+     * @return Build output logs
      */
-    private String buildTargetDirectlyImpl(Path workspaceRoot, String bazelTarget, RunBuildConfig config) throws IOException {
+    private String buildTargetDirectlyImpl(Path lakeRoot, String bazelTarget, RunBuildConfig config) throws IOException {
         List<String> args = buildBazelArgs("build", bazelTarget, config);
         
         try {
             // Run bazel build and capture output
-            String logOutput = bazelCommand.runWithOutput(workspaceRoot, args.toArray(new String[0]));
+            String logOutput = bazelCommand.runWithOutput(lakeRoot, args.toArray(new String[0]));
             
             LOG.infof("Successfully built target: %s", bazelTarget);
 
@@ -365,23 +392,6 @@ public class BazelBuildRunner {
         }
     }
 
-    /**
-     * Gets default build configuration with build enabled.
-     */
-    private RunBuildConfig getDefaultBuildConfig() {
-        return RunBuildConfig.newBuilder()
-            .setEnabled(true)
-            .setClean(false)
-            .build();
-    }
-
-    /**
-     * Builds bazel command arguments with common options.
-     */
-    private List<String> buildBazelArgs(String command, String target) {
-        return buildBazelArgs(command, target, getDefaultBuildConfig());
-    }
-    
     /**
      * Builds bazel command arguments with configuration-specific options.
      */
@@ -405,8 +415,8 @@ public class BazelBuildRunner {
         }
         
         // Add remote cache if enabled
-        if (enableRemoteCache && remoteCacheUrl != null && !remoteCacheUrl.isEmpty()) {
-            args.add("--remote_cache=" + remoteCacheUrl);
+        if (enableRemoteCache && remoteCacheUrl.isPresent() && !remoteCacheUrl.get().isEmpty()) {
+            args.add("--remote_cache=" + remoteCacheUrl.get());
             args.add("--remote_upload_local_results=true");
         }
         

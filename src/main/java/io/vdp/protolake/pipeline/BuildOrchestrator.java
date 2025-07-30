@@ -31,8 +31,8 @@ import java.util.concurrent.Executors;
  * based on the pipeline configuration. Each runner is responsible for checking
  * its own enabled state from the configuration.
  * 
- * All builds are executed from the base workspace path, with targets computed
- * relative to that workspace root.
+ * All builds are executed from the lake root directory (where MODULE.bazel exists),
+ * with targets computed relative to that lake root.
  */
 @ApplicationScoped
 public class BuildOrchestrator {
@@ -96,8 +96,16 @@ public class BuildOrchestrator {
     /**
      * Unified method to build any Bazel target.
      * 
+     * This method handles the coordinate system conversion from base-relative paths
+     * (used by the service layer) to lake-relative paths (used by Bazel).
+     * 
+     * Examples of target conversions:
+     * - Lake build: "z/y/test_lake" → "."
+     * - Bundle build: "z/y/test_lake/company_a/platform/service_a" → "company_a/platform/service_a"
+     * - Subdirectory: "z/y/test_lake/company_a" → "company_a"
+     * 
      * @param lake The lake containing the target
-     * @param target The Bazel target to build (e.g., path relative to workspace root)
+     * @param target The target path relative to base directory (will be converted to lake-relative)
      * @param pipelineConfig The pipeline configuration
      * @param operationId The operation ID for tracking
      * @param cancellationToken Token for cancellation
@@ -150,11 +158,18 @@ public class BuildOrchestrator {
 
         LOG.infof("Building target: %s", target);
 
-        // Get the workspace root - this is always the base path
-        Path workspaceRoot = Paths.get(basePath);
+        // Get the lake root - this is the lake directory where MODULE.bazel exists
+        Path lakeRoot = LakeUtil.getLocalPath(lake, basePath);
         
-        // Run the build with the target path (not a full Bazel target)
-        metadata = bazelBuildRunner.buildTarget(workspaceRoot, target, pipelineConfig.getBuild(), metadata);
+        // Convert the target from base-relative to lake-relative coordinate system
+        // The target parameter comes from service layer as base-relative path
+        // (e.g., "z/y/test_lake" for full lake, "z/y/test_lake/company_a/platform" for bundle)
+        String lakeRelativeTarget = LakeUtil.convertToLakeRelativePath(target, lake);
+        
+        LOG.debugf("Converting target from base-relative '%s' to lake-relative '%s'", target, lakeRelativeTarget);
+        
+        // Run the build with the lake-relative target path
+        metadata = bazelBuildRunner.buildTarget(lakeRoot, lakeRelativeTarget, pipelineConfig.getBuild(), metadata);
         operationManager.updateMetadata(operationId, metadata);
 
         // Mark as complete

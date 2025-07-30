@@ -55,17 +55,7 @@ public class LakeUtil {
             return lakeId;
         }
     }
-    
-    /**
-     * Creates a Lake builder with lake_prefix set.
-     */
-    public static Lake.Builder withLakePrefix(Lake.Builder builder, String lakePrefix) {
-        if (lakePrefix != null && !lakePrefix.isEmpty()) {
-            builder.setLakePrefix(lakePrefix);
-        }
-        return builder;
-    }
-    
+
     /**
      * Extracts lake id from resource name format "lakes/{lake}".
      */
@@ -100,25 +90,37 @@ public class LakeUtil {
         return Instant.ofEpochSecond(timestamp.getSeconds(), timestamp.getNanos());
     }
     
+
     /**
-     * Creates a default LakeConfig if none exists.
-     */
-    public static LakeConfig getDefaultConfig() {
-        return LakeConfig.newBuilder()
-            .setOrganization("default")
-            .build();
-    }
-    
-    /**
-     * Gets the Bazel workspace root for a lake.
-     * For ProtoLake, the workspace root is always the base path.
+     * Converts a base-relative path to a lake-relative path.
+     * This is used when converting targets from the service layer (base-relative)
+     * to the build layer (lake-relative).
      * 
-     * @param lake The lake (unused but kept for API compatibility)
-     * @param basePath The base workspace path
-     * @return The workspace root path
+     * Examples:
+     * - "z/y/test_lake" → "." (building entire lake)
+     * - "z/y/test_lake/company_a/platform" → "company_a/platform"
+     * - "z/y/test_lake/bundle1" → "bundle1"
+     * 
+     * @param baseRelativePath The path relative to the base directory
+     * @param lake The lake to convert relative to
+     * @return The path relative to the lake root, or "." if it's the lake itself
      */
-    public static Path getWorkspaceRoot(Lake lake, String basePath) {
-        // The workspace root is always the base path, not the lake path
-        return Paths.get(basePath);
+    public static String convertToLakeRelativePath(String baseRelativePath, Lake lake) {
+        String lakePath = getRelativePath(lake);
+        
+        // If the target is exactly the lake path, we're building everything
+        if (baseRelativePath.equals(lakePath)) {
+            return ".";
+        }
+        
+        // If the target starts with the lake path, strip it off
+        if (baseRelativePath.startsWith(lakePath + "/")) {
+            return baseRelativePath.substring(lakePath.length() + 1);
+        }
+        
+        // If the target doesn't start with the lake path, it's an error
+        throw new IllegalArgumentException(
+            String.format("Target path '%s' is not within lake '%s' (path: %s)",
+                baseRelativePath, lake.getName(), lakePath));
     }
 }

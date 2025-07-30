@@ -61,11 +61,6 @@ RUN groupadd -g 1001 protolake && \
     mkdir -p /var/proto-lake /home/protolake && \
     chown -R protolake:protolake /var/proto-lake /home/protolake
 
-# Create cache directories with correct ownership
-RUN mkdir -p /home/protolake/.cache/bazel-disk-cache/tmp \
-             /home/protolake/.cache/bazel \
-    && chown -R protolake:protolake /home/protolake/.cache
-
 # Set up local package repositories
 RUN mkdir -p /home/protolake/.m2/repository \
              /home/protolake/.cache/pip/simple \

@@ -13,6 +13,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
 import java.util.function.Consumer;
+import java.util.Optional;
 
 /**
  * Wrapper for executing Bazel commands.
@@ -31,7 +32,7 @@ public class BazelCommand {
     int timeoutSeconds;
 
     @ConfigProperty(name = "protolake.bazel.startup-options")
-    String startupOptions;
+    Optional<String> startupOptions;
 
     /**
      * Runs a bazel command with the given arguments.
@@ -39,22 +40,6 @@ public class BazelCommand {
     public void run(Path workingDir, String... args) throws IOException {
         List<String> command = buildCommand(args);
         executeCommand(workingDir, command, null, null);
-    }
-    
-    /**
-     * Runs a bazel command with the given arguments and captures output.
-     */
-    public void run(Path workingDir, String command, String subcommand, Consumer<String> outputConsumer) throws IOException {
-        List<String> fullCommand = buildCommand(command, subcommand);
-        executeCommand(workingDir, fullCommand, null, outputConsumer);
-    }
-
-    /**
-     * Runs a bazel command with environment variables.
-     */
-    public void runWithEnv(Path workingDir, Map<String, String> env, String... args) throws IOException {
-        List<String> command = buildCommand(args);
-        executeCommand(workingDir, command, env, null);
     }
 
     /**
@@ -73,8 +58,8 @@ public class BazelCommand {
         command.add(bazelCommand);
         
         // Add startup options if configured
-        if (startupOptions != null && !startupOptions.isEmpty()) {
-            for (String option : startupOptions.split(" ")) {
+        if (startupOptions.isPresent() && !startupOptions.get().isEmpty()) {
+            for (String option : startupOptions.get().split(" ")) {
                 if (!option.trim().isEmpty()) {
                     command.add(option.trim());
                 }
@@ -196,43 +181,5 @@ public class BazelCommand {
             process.destroyForcibly();
             throw new IOException("Bazel command interrupted", e);
         }
-    }
-
-    /**
-     * Checks if bazel is available and working.
-     */
-    public boolean isAvailable() {
-        try {
-            List<String> command = buildCommand("version");
-            ProcessBuilder pb = new ProcessBuilder(command);
-            Process process = pb.start();
-            
-            boolean finished = process.waitFor(10, TimeUnit.SECONDS);
-            if (!finished) {
-                process.destroyForcibly();
-                return false;
-            }
-            
-            return process.exitValue() == 0;
-        } catch (Exception e) {
-            LOG.warnf("Bazel not available: %s", e.getMessage());
-            return false;
-        }
-    }
-
-    /**
-     * Gets the Bazel version.
-     */
-    public String getVersion() throws IOException {
-        String output = runWithOutput(Path.of("."), "version");
-        
-        // Parse version from output
-        for (String line : output.split("\n")) {
-            if (line.startsWith("Build label:")) {
-                return line.substring("Build label:".length()).trim();
-            }
-        }
-        
-        return "unknown";
     }
 }

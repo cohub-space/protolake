@@ -44,7 +44,8 @@ protolake:
   bazel:
     command: ${PROTO_LAKE_BAZEL_CMD:bazel}
     timeout-seconds: ${PROTO_LAKE_BAZEL_TIMEOUT:300}
-    startup-options: ${PROTO_LAKE_BAZEL_STARTUP:--output_base=/home/protolake/.cache/bazel}
+    # Let Bazel use its default per-workspace cache behavior
+    # Each lake will have its own cache in bazel-* directories
 
   build:
     bazel-build-options: ${PROTO_LAKE_BAZEL_OPTIONS:--jobs=4 --keep_going}
