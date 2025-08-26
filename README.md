@@ -21,6 +21,10 @@ Proto Lake solves the challenge of sharing Protocol Buffer definitions across se
 - Git
 - Access to the protolake-gazelle repository (public)
 
+### Using the Desktop UI (Optional)
+
+Proto Lake includes a desktop application for easier management. See [protolake-ui](../protolake-ui/) for installation and usage instructions.
+
 ### Running Proto Lake
 
 1. Clone this repository:
@@ -170,3 +174,4 @@ Proprietary - All rights reserved.
 ## Related Projects
 
 - [protolake-gazelle](https://github.com/cohub-space/protolake-gazelle) - Gazelle extension for Proto Lake
+- [protolake-ui](../protolake-ui/) - Desktop application for managing Proto Lakes with a modern UI

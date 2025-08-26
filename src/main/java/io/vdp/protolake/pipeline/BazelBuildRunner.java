@@ -286,6 +286,8 @@ public class BazelBuildRunner {
     private static String getBazelTargetFromBundlePath(String bundlePath) {
         // Special case: "." means build everything in the current directory
         if (".".equals(bundlePath)) {
+            // Build all targets in the repository
+            // Note: We'll handle exclusions in buildBazelArgs method
             return "//...";
         }
         // Normal case: convert path to Bazel target
@@ -399,6 +401,12 @@ public class BazelBuildRunner {
         List<String> args = new ArrayList<>();
         args.add(command);
         args.add(target);
+        
+        // If building all targets, exclude .aspect_rules_js
+        // In Bazel 8, we need to pass exclusions as separate arguments
+        if ("//...".equals(target)) {
+            args.add("-//.aspect_rules_js/...");
+        }
         
         // Add default options
         if (defaultBazelOptions != null && !defaultBazelOptions.isEmpty()) {

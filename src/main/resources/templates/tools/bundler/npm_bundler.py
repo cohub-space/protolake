@@ -230,6 +230,22 @@ def main():
                         help='Module format to generate')
 
     args = parser.parse_args()
+    
+    # Handle environment variable expansion for version
+    if args.version.startswith('${') and args.version.endswith('}'):
+        # Extract variable name and default value
+        var_content = args.version[2:-1]  # Remove ${ and }
+        if ':-' in var_content:
+            var_name, default_value = var_content.split(':-', 1)
+            args.version = os.environ.get(var_name, default_value)
+        else:
+            # No default value provided
+            args.version = os.environ.get(var_content, '1.0.0')
+    
+    # Ensure version is valid - if it still contains ${, use default
+    if '${' in args.version:
+        print(f"Warning: Version '{args.version}' contains unexpanded variables, using default '1.0.0'")
+        args.version = '1.0.0'
 
     with tempfile.TemporaryDirectory() as tmpdir:
         print(f"Creating NPM package for {args.package_name}...")

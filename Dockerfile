@@ -35,7 +35,7 @@ RUN curl -fLo /usr/local/bin/bazel https://github.com/bazelbuild/bazel/releases/
     && chmod +x /usr/local/bin/bazel
 
 # Install Buf
-RUN curl -sSL https://github.com/bufbuild/buf/releases/download/v1.32.2/buf-Linux-aarch64 -o /usr/local/bin/buf \
+RUN curl -sSL https://github.com/bufbuild/buf/releases/download/v1.56.0/buf-Linux-aarch64 -o /usr/local/bin/buf \
     && chmod +x /usr/local/bin/buf
 
 # Stage 3: Final runtime image

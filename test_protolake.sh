@@ -27,7 +27,7 @@ BUILD_FAILED=false
 wait_for_service() {
     echo "Waiting for service to be ready..."
     for i in {1..30}; do
-        if curl -sf http://localhost:8080/q/health > /dev/null 2>&1; then
+        if curl -sf http://localhost:8085/q/health > /dev/null 2>&1; then
             echo "✅ Service is healthy!"
             return 0
         fi
@@ -103,7 +103,7 @@ grpcurl -plaintext -d "{
     \"display_name\": \"Test Proto Lake\",
     \"description\": \"Lake for testing protolake-gazelle functionality\"
   }
-}" localhost:9090 protolake.v1.LakeService/CreateLake || { echo "❌ Failed to create lake"; exit 1; }
+}" localhost:9050 protolake.v1.LakeService/CreateLake || { echo "❌ Failed to create lake"; exit 1; }
 
 # Verify lake was created
 verify_file "$LAKE_OUTPUT_DIR/$LAKE_ID/MODULE.bazel" "Lake MODULE.bazel"
@@ -148,7 +148,7 @@ grpcurl -plaintext -d "{
       }
     }
   }
-}" localhost:9090 protolake.v1.BundleService/CreateBundle || { echo "❌ Failed to create bundle service_a"; exit 1; }
+}" localhost:9050 protolake.v1.BundleService/CreateBundle || { echo "❌ Failed to create bundle service_a"; exit 1; }
 
 # Bundle 2: service_b (depends on service_a)
 echo "   Creating bundle: service_b"
@@ -178,7 +178,7 @@ grpcurl -plaintext -d "{
       }
     }
   }
-}" localhost:9090 protolake.v1.BundleService/CreateBundle || { echo "❌ Failed to create bundle service_b"; exit 1; }
+}" localhost:9050 protolake.v1.BundleService/CreateBundle || { echo "❌ Failed to create bundle service_b"; exit 1; }
 
 # Verify bundle structures were created
 verify_file "$LAKE_OUTPUT_DIR/$LAKE_ID/company_a/platform/service_a/bundle.yaml" "Service A bundle.yaml"
@@ -218,6 +218,21 @@ echo ""
 echo "Lake directory structure:"
 tree "$LAKE_OUTPUT_DIR/$LAKE_ID" -I "bazel-*" || find "$LAKE_OUTPUT_DIR/$LAKE_ID" -type f -name "*.proto" -o -name "*.yaml" | sort
 
+# === PHASE 3.5: Pre-fetch Dependencies ===
+echo ""
+echo "=== PHASE 3.5: Pre-fetch Dependencies ==="
+echo "Pre-fetching bazel dependencies to avoid timeout..."
+
+# Change to lake directory and fetch dependencies
+cd "$LAKE_OUTPUT_DIR/$LAKE_ID"
+echo "   Running bazel fetch to download dependencies..."
+if run_bazel "fetch //..."; then
+    echo "   ✅ Dependencies fetched successfully"
+else
+    echo "   ⚠️  Failed to fetch some dependencies"
+fi
+cd - > /dev/null
+
 # === PHASE 4: Build Lake ===
 echo ""
 echo "=== PHASE 4: Build Lake ==="
@@ -228,7 +243,7 @@ echo "   This will run gazelle_wrapper and build all bundles..."
 # Capture the operation response
 BUILD_RESPONSE=$(grpcurl -plaintext -d "{
   \"name\": \"lakes/$LAKE_ID\"
-}" localhost:9090 protolake.v1.LakeService/BuildLake 2>&1)
+}" localhost:9050 protolake.v1.LakeService/BuildLake 2>&1)
 
 if [ $? -ne 0 ]; then
     echo "❌ Failed to start lake build"
@@ -250,7 +265,7 @@ echo "   Operation: $OPERATION_NAME"
 
 # Wait for operation to complete
 echo "   Waiting for build to complete..."
-MAX_WAIT=120  # 2 minutes timeout
+MAX_WAIT=300  # 5 minutes timeout
 WAIT_INTERVAL=5
 ELAPSED=0
 
@@ -258,7 +273,7 @@ while [ $ELAPSED -lt $MAX_WAIT ]; do
     # Get operation status
     OP_STATUS=$(grpcurl -plaintext -d "{
       \"name\": \"$OPERATION_NAME\"
-    }" localhost:9090 google.longrunning.Operations/GetOperation 2>&1)
+    }" localhost:9050 google.longrunning.Operations/GetOperation 2>&1)
     
     if [ $? -ne 0 ]; then
         echo "❌ Failed to get operation status"
@@ -497,6 +512,38 @@ if [ -f "$LAKE_OUTPUT_DIR/$LAKE_ID/company_a/platform/service_a/BUILD.bazel" ]; 
 else
     echo "   Skipping artifact inspection - no BUILD files found"
 fi
+
+# === PHASE 6.5: Manual Build Testing ===
+echo ""
+echo "=== PHASE 6.5: Manual Build Testing ==="
+echo ""
+echo "Testing manual bazel build commands..."
+
+# Change to lake directory
+cd "$LAKE_OUTPUT_DIR/$LAKE_ID"
+
+echo ""
+echo "1. Testing bazel version:"
+run_bazel "--version"
+
+echo ""
+echo "2. Testing bazel query for proto targets:"
+run_bazel 'query "kind(proto_library, //...)"' 2>/dev/null | head -10 || echo "   Query failed"
+
+echo ""
+echo "3. Testing build of a specific bundle target:"
+if run_bazel "build //company_a/platform/service_a:service_a_java_bundle --verbose_failures"; then
+    echo "   ✅ Manual bazel build succeeded!"
+else
+    echo "   ❌ Manual bazel build failed"
+    echo "   Checking bazel output base:"
+    run_bazel "info output_base"
+    echo "   Checking for lock files:"
+    find . -name "*.lock" -type f | head -10
+fi
+
+# Return to original directory
+cd - > /dev/null
 
 # === PHASE 7: Manual Testing Instructions ===
 echo ""

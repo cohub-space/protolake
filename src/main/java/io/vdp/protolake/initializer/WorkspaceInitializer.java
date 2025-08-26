@@ -75,6 +75,8 @@ public class WorkspaceInitializer {
             // Use git repository
             context.put("protolake_gazelle_git_url", gitUrl);
             context.put("protolake_gazelle_git_commit", gitCommit);
+            // Set path to empty when using git
+            context.put("protolake_gazelle_path", "");
             LOG.debugf("Using git repository for protolake-gazelle: %s@%s", gitUrl, gitCommit);
         } else {
             // Use local path
@@ -86,6 +88,9 @@ public class WorkspaceInitializer {
                 // Default relative path for local development
                 context.put("protolake_gazelle_path", "../../../protolake-gazelle");
             }
+            // Set git variables to empty when using local path
+            context.put("protolake_gazelle_git_url", "");
+            context.put("protolake_gazelle_git_commit", "");
             LOG.debugf("Using local path for protolake-gazelle: %s", context.get("protolake_gazelle_path"));
         }
         
