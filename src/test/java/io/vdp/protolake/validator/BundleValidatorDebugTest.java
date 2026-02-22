@@ -10,28 +10,18 @@ import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 @QuarkusTest
 public class BundleValidatorDebugTest {
-    
+
     @Inject
     BundleValidator bundleValidator;
-    
+
     @Test
     void debugEmptyBundleNameValidation() {
-        // Test the exact case that's failing
         Bundle emptyName = Bundle.newBuilder()
             .setName("lakes/name_lake/bundles/")
             .build();
-        
-        System.out.println("Testing bundle with name: '" + emptyName.getName() + "'");
-        
-        try {
-            bundleValidator.validate(emptyName);
-            System.out.println("No exception thrown!");
-        } catch (ValidationException e) {
-            System.out.println("Exception message: " + e.getMessage());
-            System.out.println("Errors: " + e.getErrors());
-            
-            // Re-throw for assertion
-            throw new RuntimeException(e);
-        }
+
+        assertThatThrownBy(() -> bundleValidator.validate(emptyName))
+            .isInstanceOf(ValidationException.class)
+            .hasMessageContaining("Bundle name is required");
     }
 }

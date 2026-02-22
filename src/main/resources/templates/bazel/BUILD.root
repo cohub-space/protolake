@@ -36,6 +36,16 @@ gazelle_binary(
 # gazelle:proto_language java disable
 # gazelle:proto_language python disable
 
+# Resolve external proto imports to their Bazel module repos
+# googleapis (google/api/*)
+# gazelle:resolve proto google/api/annotations.proto @googleapis//google/api:annotations_proto
+# gazelle:resolve proto google/api/client.proto @googleapis//google/api:client_proto
+# gazelle:resolve proto google/api/field_behavior.proto @googleapis//google/api:field_behavior_proto
+# gazelle:resolve proto google/api/http.proto @googleapis//google/api:http_proto
+# gazelle:resolve proto google/api/resource.proto @googleapis//google/api:resource_proto
+# protovalidate (buf/validate/*)
+# gazelle:resolve proto buf/validate/validate.proto @protovalidate//proto/protovalidate/buf/validate:validate_proto
+
 # Main Gazelle target for proto generation
 gazelle(
     name = "gazelle",
@@ -74,14 +84,18 @@ gazelle(
     command = "update-repos",
 )
 
-# Alias for the proto import fixer in tools
-alias(
-    name = "fix-imports",
-    actual = "//tools:fix_proto_imports",
+load("@rules_proto//proto:defs.bzl", "proto_library")
+load("@rules_java//java:defs.bzl", "java_proto_library")
+
+# Java proto library for protovalidate (buf/validate/*)
+# The protovalidate BCR module only exposes proto_library, so we wrap it
+java_proto_library(
+    name = "protovalidate_java_proto",
+    deps = ["@protovalidate//proto/protovalidate/buf/validate:validate_proto"],
+    visibility = ["//visibility:public"],
 )
 
 # Common proto library for well-known types
-# Note: proto_library is built-in in Bazel 8, no load needed
 proto_library(
     name = "well_known_protos",
     srcs = [],

@@ -1,13 +1,14 @@
 package io.vdp.protolake.pipeline;
 
+import io.vdp.protolake.initializer.WorkspaceInitializer;
 import io.vdp.protolake.model.ValidationResult;
 import io.vdp.protolake.model.ValidationErrors;
 import io.vdp.protolake.operation.CancellationToken;
 import io.vdp.protolake.operation.InMemoryOperationManager;
 import io.vdp.protolake.storage.StorageService;
 import io.vdp.protolake.util.LakeUtil;
-import io.vdp.protolake.util.git.BranchVersionManager;
 import io.vdp.protolake.util.git.GitCommand;
+import jakarta.annotation.PreDestroy;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -16,28 +17,27 @@ import protolake.v1.*;
 import com.google.protobuf.Timestamp;
 
 import java.nio.file.Path;
-import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 /**
  * Orchestrates the build pipeline for lakes and bundles.
- * 
+ *
  * Coordinates the execution of gazelle, validation, bazel build, and publishing
- * based on the pipeline configuration. Each runner is responsible for checking
- * its own enabled state from the configuration.
- * 
+ * based on simplified boolean flags (skipValidation, installLocal).
+ *
  * All builds are executed from the lake root directory (where MODULE.bazel exists),
  * with targets computed relative to that lake root.
  */
 @ApplicationScoped
 public class BuildOrchestrator {
     private static final Logger LOG = Logger.getLogger(BuildOrchestrator.class);
-    
+
     private final ExecutorService executorService = Executors.newFixedThreadPool(4);
 
     @ConfigProperty(name = "protolake.storage.base-path")
@@ -59,146 +59,172 @@ public class BuildOrchestrator {
     GitCommand gitCommand;
 
     @Inject
-    BranchVersionManager branchVersionManager;
-    
-    @Inject
     InMemoryOperationManager operationManager;
+
+    @Inject
+    WorkspaceInitializer workspaceInitializer;
 
     /**
      * Builds a specific target asynchronously.
-     * This is the unified method that handles both lake-wide and bundle-specific builds.
      */
-    public void buildTargetAsync(Lake lake, String target, BuildPipelineConfig pipelineConfig,
+    public void buildTargetAsync(Lake lake, String target, boolean skipValidation, boolean installLocal,
                                 String operationName, CancellationToken cancellationToken) {
         CompletableFuture.runAsync(() -> {
             try {
-                // Get initial metadata
                 BuildOperationMetadata metadata = operationManager.get(operationName);
                 if (metadata == null) {
                     LOG.errorf("Operation %s not found", operationName);
                     return;
                 }
 
-                buildTarget(lake, target, pipelineConfig, operationName, cancellationToken);
-                // Success will be reported by buildTarget
+                buildTarget(lake, target, skipValidation, installLocal, operationName, cancellationToken);
             } catch (CancellationToken.CancellationException e) {
-                LOG.infof("Build cancelled for target %s in lake %s", target, 
+                LOG.infof("Build cancelled for target %s in lake %s", target,
                     LakeUtil.extractLakeId(lake.getName()));
-                // Cancellation already handled by operation manager
             } catch (Exception e) {
-                LOG.errorf(e, "Build failed for target %s in lake %s", target, 
+                LOG.errorf(e, "Build failed for target %s in lake %s", target,
                     LakeUtil.extractLakeId(lake.getName()));
                 operationManager.failOperation(operationName, "Build failed: " + e.getMessage());
             }
         }, executorService);
     }
-    
-    /**
-     * Unified method to build any Bazel target.
-     * 
-     * This method handles the coordinate system conversion from base-relative paths
-     * (used by the service layer) to lake-relative paths (used by Bazel).
-     * 
-     * Examples of target conversions:
-     * - Lake build: "z/y/test_lake" → "."
-     * - Bundle build: "z/y/test_lake/company_a/platform/service_a" → "company_a/platform/service_a"
-     * - Subdirectory: "z/y/test_lake/company_a" → "company_a"
-     * 
-     * @param lake The lake containing the target
-     * @param target The target path relative to base directory (will be converted to lake-relative)
-     * @param pipelineConfig The pipeline configuration
-     * @param operationId The operation ID for tracking
-     * @param cancellationToken Token for cancellation
-     */
-    public void buildTarget(Lake lake, String target, BuildPipelineConfig pipelineConfig, 
-                           String operationId, CancellationToken cancellationToken) throws Exception {
-        String lakeName = LakeUtil.extractLakeId(lake.getName());
-        LOG.infof("Starting build for target %s in lake %s", target, lakeName);
 
-        // Get current metadata
-        BuildOperationMetadata metadata = operationManager.get(operationId);
-        
-        // Run gazelle - runner will check if enabled and manage its own phase status
+    /**
+     * Unified method to build any Bazel target (gRPC mode with operation tracking).
+     */
+    public void buildTarget(Lake lake, String target, boolean skipValidation, boolean installLocal,
+                           String operationId, CancellationToken cancellationToken) throws Exception {
+        // Delegate to sync method with an adapter listener that updates operationManager
+        buildTargetSync(lake, target, skipValidation, installLocal, cancellationToken,
+                new io.vdp.protolake.cli.BuildProgressListener() {
+                    @Override
+                    public void onPhaseStart(String phase) {
+                        // Phase transitions are handled inline below
+                    }
+
+                    @Override
+                    public void onPhaseComplete(String phase, boolean success, String message) {
+                    }
+
+                    @Override
+                    public void onMetadataUpdate(BuildOperationMetadata metadata) {
+                        operationManager.updateMetadata(operationId, metadata);
+                    }
+
+                    @Override
+                    public void onBuildComplete(BuildOperationMetadata metadata) {
+                        BuildResponse response = createBuildResponse(metadata);
+                        operationManager.completeOperation(operationId, response);
+                    }
+
+                    @Override
+                    public void onBuildFailed(String error) {
+                        operationManager.failOperation(operationId, error);
+                    }
+                }, operationManager.get(operationId));
+    }
+
+    /**
+     * Synchronous build pipeline usable from both gRPC and CLI modes.
+     * Takes a BuildProgressListener for progress reporting instead of an operation ID.
+     *
+     * @return final BuildOperationMetadata
+     */
+    public BuildOperationMetadata buildTargetSync(Lake lake, String target,
+                                                   boolean skipValidation, boolean installLocal,
+                                                   CancellationToken cancellationToken,
+                                                   io.vdp.protolake.cli.BuildProgressListener listener,
+                                                   BuildOperationMetadata metadata) throws Exception {
+        String lakeName = LakeUtil.extractLakeId(lake.getName());
+        LOG.infof("Starting build for target %s in lake %s (skipValidation=%s, installLocal=%s)",
+            target, lakeName, skipValidation, installLocal);
+
+        // Regenerate workspace files (MODULE.bazel, etc.) to pick up current env vars
+        // This ensures the gazelle source path matches the current container environment
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // Run gazelle
+        listener.onPhaseStart("Running Gazelle");
         metadata = metadata.toBuilder()
             .setCurrentPhase(OperationPhase.RUNNING_GAZELLE)
             .build();
-        operationManager.updateMetadata(operationId, metadata);
+        listener.onMetadataUpdate(metadata);
 
-        // check cancellation before running gazelle
-        cancellationToken.throwIfCancelled();
-        
-        metadata = gazelleRunner.runForLake(lake, pipelineConfig.getGazelle(), metadata);
-        operationManager.updateMetadata(operationId, metadata);
+        if (cancellationToken != null) cancellationToken.throwIfCancelled();
 
-        // Run validation - runner will check if enabled and manage its own phase status
+        metadata = gazelleRunner.runForLake(lake, metadata);
+        listener.onMetadataUpdate(metadata);
+        listener.onPhaseComplete("Running Gazelle", true, null);
+
+        // Run validation (unless skipped)
+        listener.onPhaseStart("Validating");
         metadata = metadata.toBuilder()
             .setCurrentPhase(OperationPhase.VALIDATING)
             .build();
-        operationManager.updateMetadata(operationId, metadata);
+        listener.onMetadataUpdate(metadata);
 
-        // check cancellation before running validation
-        cancellationToken.throwIfCancelled();
-        
-        ValidationResult validationResult = validationRunner.validateLake(lake, pipelineConfig.getValidation(), metadata);
+        if (cancellationToken != null) cancellationToken.throwIfCancelled();
+
+        ValidationResult validationResult = validationRunner.validateLake(lake, skipValidation, metadata);
         metadata = validationResult.getMetadata();
-        operationManager.updateMetadata(operationId, metadata);
-        
+        listener.onMetadataUpdate(metadata);
+
         if (!validationResult.isSuccess()) {
+            listener.onPhaseComplete("Validating", false, "Validation failed");
             throw new BuildException("Validation failed", validationResult.getErrors());
         }
+        listener.onPhaseComplete("Validating", true, null);
 
-        // Run build (and publish) - runner will check if enabled and manage its own phase status
+        // Run build
+        listener.onPhaseStart("Building");
         metadata = metadata.toBuilder()
             .setCurrentPhase(OperationPhase.BUILDING)
             .build();
-        operationManager.updateMetadata(operationId, metadata);
+        listener.onMetadataUpdate(metadata);
 
-        // check cancellation before running bazel build
-        cancellationToken.throwIfCancelled();
+        if (cancellationToken != null) cancellationToken.throwIfCancelled();
 
         LOG.infof("Building target: %s", target);
 
-        // Get the lake root - this is the lake directory where MODULE.bazel exists
         Path lakeRoot = LakeUtil.getLocalPath(lake, basePath);
-        
-        // Convert the target from base-relative to lake-relative coordinate system
-        // The target parameter comes from service layer as base-relative path
-        // (e.g., "z/y/test_lake" for full lake, "z/y/test_lake/company_a/platform" for bundle)
         String lakeRelativeTarget = LakeUtil.convertToLakeRelativePath(target, lake);
-        
+
         LOG.debugf("Converting target from base-relative '%s' to lake-relative '%s'", target, lakeRelativeTarget);
-        
-        // Run the build with the lake-relative target path
-        metadata = bazelBuildRunner.buildTarget(lakeRoot, lakeRelativeTarget, pipelineConfig.getBuild(), metadata);
-        operationManager.updateMetadata(operationId, metadata);
+
+        metadata = bazelBuildRunner.buildTarget(lakeRoot, lakeRelativeTarget, metadata);
+        listener.onMetadataUpdate(metadata);
+        listener.onPhaseComplete("Building", true, null);
+
+        // Run publishing (if installLocal is requested)
+        if (installLocal) {
+            listener.onPhaseStart("Publishing");
+            metadata = metadata.toBuilder()
+                .setCurrentPhase(OperationPhase.PUBLISHING)
+                .build();
+            listener.onMetadataUpdate(metadata);
+
+            if (cancellationToken != null) cancellationToken.throwIfCancelled();
+
+            metadata = bazelBuildRunner.publishLocal(lakeRoot, metadata);
+            listener.onMetadataUpdate(metadata);
+            listener.onPhaseComplete("Publishing", true, null);
+        }
 
         // Mark as complete
         metadata = metadata.toBuilder()
             .setCurrentPhase(OperationPhase.COMPLETED)
             .build();
-        operationManager.updateMetadata(operationId, metadata);
-        
-        // Create final response
-        BuildResponse response = createBuildResponse(metadata);
-        operationManager.completeOperation(operationId, response);
+        listener.onMetadataUpdate(metadata);
+        listener.onBuildComplete(metadata);
 
         LOG.infof("Build completed for target %s in lake %s", target, lakeName);
+        return metadata;
     }
-    
-    /**
-     * Creates a BuildResponse from the completed operation metadata.
-     * This method encapsulates the build-specific logic for creating responses.
-     * 
-     * @param metadata The completed build operation metadata
-     * @return The final BuildResponse
-     */
+
     private BuildResponse createBuildResponse(BuildOperationMetadata metadata) {
-        // Calculate summary
         BuildSummary summary = createBuildSummary(metadata);
-        
-        // Determine overall status
         BuildResponse.OverallStatus overallStatus = determineOverallStatus(metadata, summary);
-        
+
         return BuildResponse.newBuilder()
             .setMetadata(metadata)
             .setStatus(overallStatus)
@@ -208,10 +234,7 @@ public class BuildOrchestrator {
             .setSummary(summary)
             .build();
     }
-    
-    /**
-     * Creates a build summary from the operation metadata.
-     */
+
     private BuildSummary createBuildSummary(BuildOperationMetadata metadata) {
         int totalTargets = metadata.getTargetBuildsCount();
         int successfulTargets = 0;
@@ -219,13 +242,12 @@ public class BuildOrchestrator {
         int skippedTargets = 0;
         List<String> publishedArtifacts = new ArrayList<>();
         String firstError = "";
-        
+
         for (TargetBuildInfo target : metadata.getTargetBuildsMap().values()) {
             switch (target.getStatus()) {
                 case PUBLISHED:
                 case BUILT:
                     successfulTargets++;
-                    // Collect published artifacts
                     for (Artifact artifact : target.getArtifactsMap().values()) {
                         publishedArtifacts.add(formatArtifactString(artifact));
                     }
@@ -241,7 +263,7 @@ public class BuildOrchestrator {
                     break;
             }
         }
-        
+
         return BuildSummary.newBuilder()
             .setTotalTargets(totalTargets)
             .setSuccessfulTargets(successfulTargets)
@@ -251,23 +273,19 @@ public class BuildOrchestrator {
             .setFirstError(firstError)
             .build();
     }
-    
-    /**
-     * Determines the overall build status based on phase statuses and target results.
-     */
+
     private BuildResponse.OverallStatus determineOverallStatus(BuildOperationMetadata metadata, BuildSummary summary) {
         if (metadata.getCurrentPhase() == OperationPhase.CANCELLED) {
             return BuildResponse.OverallStatus.CANCELLED;
         }
-        
-        // Check if any critical phase failed
+
         PhaseStatuses phases = metadata.getPhaseStatuses();
         if ((phases.hasGazelle() && phases.getGazelle().getStatus() == PhaseStatus.Status.FAILED) ||
-            (phases.hasValidation() && phases.getValidation().getStatus() == PhaseStatus.Status.FAILED)) {
+            (phases.hasValidation() && phases.getValidation().getStatus() == PhaseStatus.Status.FAILED) ||
+            (phases.hasPublish() && phases.getPublish().getStatus() == PhaseStatus.Status.FAILED)) {
             return BuildResponse.OverallStatus.FAILED;
         }
-        
-        // Check target results
+
         if (summary.getFailedTargets() > 0) {
             if (summary.getSuccessfulTargets() > 0) {
                 return BuildResponse.OverallStatus.PARTIAL_SUCCESS;
@@ -275,13 +293,10 @@ public class BuildOrchestrator {
                 return BuildResponse.OverallStatus.FAILED;
             }
         }
-        
+
         return BuildResponse.OverallStatus.SUCCEEDED;
     }
-    
-    /**
-     * Formats an artifact into a string representation.
-     */
+
     private String formatArtifactString(Artifact artifact) {
         if (artifact.hasMaven()) {
             MavenCoordinates maven = artifact.getMaven();
@@ -296,9 +311,6 @@ public class BuildOrchestrator {
         return "unknown";
     }
 
-    /**
-     * Gets the current git branch for a lake.
-     */
     public String getCurrentBranch(String lakeName) {
         try {
             Lake lake = storageService.getLake(lakeName)
@@ -312,36 +324,20 @@ public class BuildOrchestrator {
         }
     }
 
-    /**
-     * Gets the default pipeline configuration with all steps enabled.
-     */
-    public static final BuildPipelineConfig getDefaultPipelineConfig() {
-        return BuildPipelineConfig.newBuilder()
-            .setGazelle(RunGazelleConfig.newBuilder()
-                .setEnabled(true)
-                .build())
-            .setValidation(RunValidationConfig.newBuilder()
-                .setEnabled(true)
-                .setChecks(ValidationChecks.newBuilder()
-                    .setCompilation(true)
-                    .setLint(true)
-                    .setBreaking(true)
-                    .setFormat(false)
-                    .build())
-                .build())
-            .setBuild(RunBuildConfig.newBuilder()
-                .setEnabled(true)
-                .setClean(false)
-                .build())
-            .setPublish(RunPublishConfig.newBuilder()
-                .setEnabled(true)
-                .build())
-            .build();
+    @PreDestroy
+    void shutdown() {
+        LOG.info("Shutting down build orchestrator");
+        executorService.shutdown();
+        try {
+            if (!executorService.awaitTermination(10, TimeUnit.SECONDS)) {
+                executorService.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            executorService.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
     }
 
-    /**
-     * Custom exception for build failures.
-     */
     public static class BuildException extends Exception {
         private final ValidationErrors errors;
 

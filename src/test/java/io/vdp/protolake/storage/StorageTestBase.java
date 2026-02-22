@@ -62,9 +62,7 @@ public abstract class StorageTestBase {
             .setName(LakeUtil.toResourceName(name))
             .setDisplayName(displayName)
             .setDescription(description)
-            .setConfig(LakeConfig.newBuilder()
-                .setOrganization("test_org")
-                .build())
+            .setConfig(LakeConfig.getDefaultInstance())
             .setCreateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .setUpdateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .build();
@@ -104,13 +102,12 @@ public abstract class StorageTestBase {
         String yamlContent = String.format("""
             name: "%s"
             lake_prefix: "%s"
-            organization: "test_org"
-            
-            versions:
-              bazel_deps:
-                protobuf: "27.0"
-                grpc: "1.64.0"
-                rules_proto_grpc: "5.0.0"
+
+            config:
+              module_bazel:
+                protobuf_version: "31.1"
+                grpc_version: "1.78.0"
+                rules_proto_grpc_version: "5.8.0"
             """, lakeName, lakePrefix != null ? lakePrefix : "");
         
         Files.writeString(lakePath.resolve("lake.yaml"), yamlContent);

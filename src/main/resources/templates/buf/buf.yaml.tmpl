@@ -1,4 +1,8 @@
 version: v1
+name: buf.build/protolake/{lakeName}
+deps:
+  - buf.build/googleapis/googleapis
+  - buf.build/bufbuild/protovalidate
 breaking:
   use:
 {#for rule in buf_breaking_use}

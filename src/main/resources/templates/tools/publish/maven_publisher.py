@@ -7,6 +7,8 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.request
+import urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -47,6 +49,16 @@ def generate_pom(group_id, artifact_id, version, description=None):
     ET.SubElement(protobuf_dep, "groupId").text = "com.google.protobuf"
     ET.SubElement(protobuf_dep, "artifactId").text = "protobuf-java"
     ET.SubElement(protobuf_dep, "version").text = "3.25.3"  # Fixed version
+
+    grpc_dep = ET.SubElement(dependencies, "dependency")
+    ET.SubElement(grpc_dep, "groupId").text = "io.grpc"
+    ET.SubElement(grpc_dep, "artifactId").text = "grpc-protobuf"
+    ET.SubElement(grpc_dep, "version").text = "1.78.0"
+
+    grpc_stub_dep = ET.SubElement(dependencies, "dependency")
+    ET.SubElement(grpc_stub_dep, "groupId").text = "io.grpc"
+    ET.SubElement(grpc_stub_dep, "artifactId").text = "grpc-stub"
+    ET.SubElement(grpc_stub_dep, "version").text = "1.78.0"
 
     return ET.tostring(project, encoding="unicode", method="xml")
 
@@ -160,6 +172,63 @@ def update_maven_metadata(artifact_dir, artifact_id, version):
     metadata_path.with_suffix('.xml.sha1').write_text(checksums['sha1'])
 
 
+def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registry_url, token):
+    """Publish JAR and POM to a remote Maven registry (e.g., GCP Artifact Registry) via HTTP PUT"""
+    group_path = group_id.replace('.', '/')
+    base_url = registry_url.rstrip('/')
+
+    # Generate POM
+    pom_content = generate_pom(group_id, artifact_id, version,
+                               description=f"Proto definitions for {artifact_id}")
+
+    # Files to upload: (local_path_or_bytes, remote_filename)
+    uploads = []
+
+    jar_name = f"{artifact_id}-{version}.jar"
+    pom_name = f"{artifact_id}-{version}.pom"
+
+    # Read JAR bytes
+    with open(jar_path, 'rb') as f:
+        jar_bytes = f.read()
+
+    pom_bytes = pom_content.encode('utf-8')
+
+    uploads.append((jar_bytes, jar_name, 'application/java-archive'))
+    uploads.append((pom_bytes, pom_name, 'application/xml'))
+
+    # Add checksums for each file
+    for data, filename, _ in list(uploads):
+        md5 = hashlib.md5(data).hexdigest()
+        sha1 = hashlib.sha1(data).hexdigest()
+        uploads.append((md5.encode('utf-8'), filename + '.md5', 'text/plain'))
+        uploads.append((sha1.encode('utf-8'), filename + '.sha1', 'text/plain'))
+
+    artifact_url = f"{base_url}/{group_path}/{artifact_id}/{version}"
+
+    for data, filename, content_type in uploads:
+        url = f"{artifact_url}/{filename}"
+        req = urllib.request.Request(
+            url,
+            data=data,
+            method='PUT',
+            headers={
+                'Content-Type': content_type,
+                'Authorization': f'Bearer {token}',
+            },
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                print(f"Uploaded {filename} -> {url} ({resp.status})")
+        except urllib.error.HTTPError as e:
+            print(f"Error uploading {filename}: {e.code} {e.reason}", file=sys.stderr)
+            body = e.read().decode('utf-8', errors='replace')
+            if body:
+                print(f"  Response: {body[:500]}", file=sys.stderr)
+            sys.exit(1)
+
+    return artifact_url
+
+
 def main():
     parser = argparse.ArgumentParser(description='Publish Proto Lake bundle to Maven')
     parser.add_argument('jar_path', help='Path to the JAR file')
@@ -171,6 +240,8 @@ def main():
                         help='Version (default: 1.0.0)')
     parser.add_argument('--repo', default=os.path.expanduser('~/.m2/repository'),
                         help='Maven repository path (default: ~/.m2/repository)')
+    parser.add_argument('--token', default=os.environ.get('REGISTRY_TOKEN', ''),
+                        help='Auth token for remote registry (default: REGISTRY_TOKEN env var)')
     parser.add_argument('--skip-checksums', action='store_true',
                         help='Skip generating checksums')
 
@@ -182,19 +253,42 @@ def main():
         sys.exit(1)
 
     try:
-        published_jar = publish_to_local_repo(
-            args.jar_path,
-            args.group_id,
-            args.artifact_id,
-            args.version,
-            args.repo
-        )
+        if args.repo.startswith('https://') or args.repo.startswith('http://'):
+            # Remote registry mode
+            if not args.token:
+                print("Error: --token or REGISTRY_TOKEN env var required for remote registry",
+                      file=sys.stderr)
+                sys.exit(1)
 
-        print(f"\nSuccessfully published to Maven repository:")
-        print(f"  Group ID: {args.group_id}")
-        print(f"  Artifact ID: {args.artifact_id}")
-        print(f"  Version: {args.version}")
-        print(f"  Location: {published_jar}")
+            artifact_url = publish_to_remote_registry(
+                args.jar_path,
+                args.group_id,
+                args.artifact_id,
+                args.version,
+                args.repo,
+                args.token
+            )
+
+            print(f"\nSuccessfully published to remote Maven registry:")
+            print(f"  Group ID: {args.group_id}")
+            print(f"  Artifact ID: {args.artifact_id}")
+            print(f"  Version: {args.version}")
+            print(f"  Registry: {artifact_url}")
+        else:
+            # Local repository mode
+            published_jar = publish_to_local_repo(
+                args.jar_path,
+                args.group_id,
+                args.artifact_id,
+                args.version,
+                args.repo
+            )
+
+            print(f"\nSuccessfully published to Maven repository:")
+            print(f"  Group ID: {args.group_id}")
+            print(f"  Artifact ID: {args.artifact_id}")
+            print(f"  Version: {args.version}")
+            print(f"  Location: {published_jar}")
 
     except Exception as e:
         print(f"Error publishing to Maven: {e}", file=sys.stderr)

@@ -99,21 +99,6 @@ public class LakeValidator {
     }
     
     private void validateConfig(Lake lake, List<String> errors) {
-        // Validate organization
-        if (lake.getConfig().getOrganization().trim().isEmpty()) {
-            // Organization is optional, using default is fine
-            LOG.debugf("Lake %s has no organization set, will use default", 
-                LakeUtil.extractLakeId(lake.getName()));
-        }
-        
-        // Validate build defaults
-        if (lake.getConfig().hasBuildDefaults()) {
-            String baseVersion = lake.getConfig().getBuildDefaults().getBaseVersion();
-            if (!baseVersion.isEmpty() && !baseVersion.matches("^\\d+\\.\\d+\\.\\d+$")) {
-                errors.add("Invalid base version format. Expected: X.Y.Z");
-            }
-        }
-        
         // Validate module bazel config
         if (lake.getConfig().hasModuleBazel()) {
             if (lake.getConfig().getModuleBazel().getProtobufVersion().trim().isEmpty()) {

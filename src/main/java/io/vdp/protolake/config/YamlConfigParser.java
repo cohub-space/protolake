@@ -130,37 +130,36 @@ public class YamlConfigParser {
     
     private LakeConfig parseLakeConfig(JsonNode configNode) {
         LakeConfig.Builder builder = LakeConfig.newBuilder();
-        
-        if (configNode.has("organization")) {
-            builder.setOrganization(configNode.get("organization").asText());
+
+        if (configNode.has("local_path")) {
+            builder.setLocalPath(configNode.get("local_path").asText());
         }
-        
+
         if (configNode.has("module_bazel")) {
             builder.setModuleBazel(parseModuleBazelConfig(configNode.get("module_bazel")));
         }
-        
+
         if (configNode.has("language_defaults")) {
             builder.setLanguageDefaults(parseLanguageDefaults(configNode.get("language_defaults")));
         }
-        
-        if (configNode.has("build_defaults")) {
-            builder.setBuildDefaults(parseBuildDefaults(configNode.get("build_defaults")));
-        }
-        
+
         if (configNode.has("validation")) {
             builder.setValidation(parseValidationConfig(configNode.get("validation")));
         }
-        
+
         return builder.build();
     }
     
     private BundleConfig parseBundleConfig(JsonNode configNode) {
         BundleConfig.Builder builder = BundleConfig.newBuilder();
-        
+
         if (configNode.has("languages")) {
             builder.setLanguages(parseLanguageConfig(configNode.get("languages")));
         }
-        
+        if (configNode.has("generate_descriptor_set")) {
+            builder.setGenerateDescriptorSet(configNode.get("generate_descriptor_set").asBoolean());
+        }
+
         return builder.build();
     }
     
@@ -401,7 +400,7 @@ public class YamlConfigParser {
     
     private JavaScriptDefaults parseJavaScriptDefaults(JsonNode node) {
         JavaScriptDefaults.Builder builder = JavaScriptDefaults.newBuilder();
-        
+
         if (node.has("enabled")) {
             builder.setEnabled(node.get("enabled").asBoolean());
         }
@@ -423,19 +422,22 @@ public class YamlConfigParser {
         if (node.has("module_type")) {
             builder.setModuleType(node.get("module_type").asText());
         }
-        
+        if (node.has("proto_loader")) {
+            builder.setProtoLoader(node.get("proto_loader").asBoolean());
+        }
+
         if (node.has("additional_dependencies")) {
             for (JsonNode depNode : node.get("additional_dependencies")) {
                 builder.addAdditionalDependencies(parseNpmDependency(depNode));
             }
         }
-        
+
         return builder.build();
     }
     
     private JavaScriptConfig parseJavaScriptConfig(JsonNode node) {
         JavaScriptConfig.Builder builder = JavaScriptConfig.newBuilder();
-        
+
         if (node.has("enabled")) {
             builder.setEnabled(node.get("enabled").asBoolean());
         }
@@ -457,13 +459,16 @@ public class YamlConfigParser {
         if (node.has("module_type")) {
             builder.setModuleType(node.get("module_type").asText());
         }
-        
+        if (node.has("proto_loader")) {
+            builder.setProtoLoader(node.get("proto_loader").asBoolean());
+        }
+
         if (node.has("dependencies")) {
             for (JsonNode depNode : node.get("dependencies")) {
                 builder.addDependencies(parseNpmDependency(depNode));
             }
         }
-        
+
         return builder.build();
     }
     
@@ -515,19 +520,6 @@ public class YamlConfigParser {
         return builder.build();
     }
     
-    private BuildDefaults parseBuildDefaults(JsonNode node) {
-        BuildDefaults.Builder builder = BuildDefaults.newBuilder();
-        
-        if (node.has("auto_publish_local")) {
-            builder.setAutoPublishLocal(node.get("auto_publish_local").asBoolean());
-        }
-        if (node.has("base_version")) {
-            builder.setBaseVersion(node.get("base_version").asText());
-        }
-        
-        return builder.build();
-    }
-    
     private ValidationConfig parseValidationConfig(JsonNode node) {
         ValidationConfig.Builder builder = ValidationConfig.newBuilder();
         
@@ -542,37 +534,36 @@ public class YamlConfigParser {
     
     private ObjectNode serializeLakeConfig(LakeConfig config) {
         ObjectNode node = yamlMapper.createObjectNode();
-        
-        if (!config.getOrganization().isEmpty()) {
-            node.put("organization", config.getOrganization());
+
+        if (!config.getLocalPath().isEmpty()) {
+            node.put("local_path", config.getLocalPath());
         }
-        
+
         if (config.hasModuleBazel()) {
             node.set("module_bazel", serializeModuleBazelConfig(config.getModuleBazel()));
         }
-        
+
         if (config.hasLanguageDefaults()) {
             node.set("language_defaults", serializeLanguageDefaults(config.getLanguageDefaults()));
         }
-        
-        if (config.hasBuildDefaults()) {
-            node.set("build_defaults", serializeBuildDefaults(config.getBuildDefaults()));
-        }
-        
+
         if (config.hasValidation()) {
             node.set("validation", serializeValidationConfig(config.getValidation()));
         }
-        
+
         return node;
     }
     
     private ObjectNode serializeBundleConfig(BundleConfig config) {
         ObjectNode node = yamlMapper.createObjectNode();
-        
+
         if (config.hasLanguages()) {
             node.set("languages", serializeLanguageConfig(config.getLanguages()));
         }
-        
+        if (config.getGenerateDescriptorSet()) {
+            node.put("generate_descriptor_set", true);
+        }
+
         return node;
     }
     
@@ -697,7 +688,7 @@ public class YamlConfigParser {
     
     private ObjectNode serializeJavaScriptDefaults(JavaScriptDefaults defaults) {
         ObjectNode node = yamlMapper.createObjectNode();
-        
+
         node.put("enabled", defaults.getEnabled());
         node.put("package_scope", defaults.getPackageScope());
         node.put("node_version", defaults.getNodeVersion());
@@ -705,20 +696,24 @@ public class YamlConfigParser {
         node.put("grpc_web_version", defaults.getGrpcWebVersion());
         node.put("use_typescript", defaults.getUseTypescript());
         node.put("module_type", defaults.getModuleType());
-        
+        if (defaults.getProtoLoader()) {
+            node.put("proto_loader", true);
+        }
+
         return node;
     }
     
     private ObjectNode serializeJavaScriptConfig(JavaScriptConfig config) {
         ObjectNode node = yamlMapper.createObjectNode();
-        
+
         node.put("enabled", config.getEnabled());
         if (!config.getPackageName().isEmpty()) {
             node.put("package_name", config.getPackageName());
         }
-        
-        // Add other fields as needed
-        
+        if (config.getProtoLoader()) {
+            node.put("proto_loader", true);
+        }
+
         return node;
     }
     
@@ -739,15 +734,6 @@ public class YamlConfigParser {
         if (!config.getModulePath().isEmpty()) {
             node.put("module_path", config.getModulePath());
         }
-        
-        return node;
-    }
-    
-    private ObjectNode serializeBuildDefaults(BuildDefaults defaults) {
-        ObjectNode node = yamlMapper.createObjectNode();
-        
-        node.put("auto_publish_local", defaults.getAutoPublishLocal());
-        node.put("base_version", defaults.getBaseVersion());
         
         return node;
     }

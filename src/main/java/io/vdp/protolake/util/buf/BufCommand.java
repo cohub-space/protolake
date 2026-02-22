@@ -119,6 +119,24 @@ public class BufCommand {
     }
 
     /**
+     * Runs buf dep update to resolve module dependencies (googleapis, protovalidate, etc.).
+     * Non-fatal: logs warnings but does not throw if dep resolution encounters compilation errors.
+     *
+     * @param directory the directory containing buf.yaml with deps
+     */
+    public void modUpdate(Path directory) throws IOException {
+        LOG.debugf("Running buf dep update in: %s", directory);
+        try {
+            runWithOutput(directory, "dep", "update");
+        } catch (IOException e) {
+            // buf dep update may exit non-zero if protos have compilation issues against
+            // resolved deps (e.g. BSR protovalidate version mismatch). This is non-fatal
+            // since the Bazel build uses its own dep versions from MODULE.bazel.
+            LOG.warnf("buf dep update had issues (non-fatal): %s", e.getMessage());
+        }
+    }
+
+    /**
      * Gets the buf version.
      * 
      * @return version string

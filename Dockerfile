@@ -21,6 +21,8 @@ RUN mvn clean package -DskipTests \
 # Stage 2: Install Proto Lake tools
 FROM ubuntu:24.04 AS tools
 
+ARG TARGETARCH
+
 RUN apt-get update && apt-get install -y \
     curl \
     git \
@@ -30,12 +32,14 @@ RUN apt-get update && apt-get install -y \
     npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Install Bazel 8.3.0 (latest as of June 2025)
-RUN curl -fLo /usr/local/bin/bazel https://github.com/bazelbuild/bazel/releases/download/8.3.0/bazel-8.3.0-linux-arm64 \
+# Install Bazel 8.5.1 (multi-arch) — latest LTS
+RUN BAZEL_ARCH=$(case "${TARGETARCH}" in arm64) echo "linux-arm64";; amd64) echo "linux-x86_64";; *) echo "linux-${TARGETARCH}";; esac) \
+    && curl -fLo /usr/local/bin/bazel "https://github.com/bazelbuild/bazel/releases/download/8.5.1/bazel-8.5.1-${BAZEL_ARCH}" \
     && chmod +x /usr/local/bin/bazel
 
-# Install Buf
-RUN curl -sSL https://github.com/bufbuild/buf/releases/download/v1.56.0/buf-Linux-aarch64 -o /usr/local/bin/buf \
+# Install Buf (multi-arch)
+RUN BUF_ARCH=$(case "${TARGETARCH}" in arm64) echo "Linux-aarch64";; amd64) echo "Linux-x86_64";; *) echo "Linux-${TARGETARCH}";; esac) \
+    && curl -sSL "https://github.com/bufbuild/buf/releases/download/v1.56.0/buf-${BUF_ARCH}" -o /usr/local/bin/buf \
     && chmod +x /usr/local/bin/buf
 
 # Stage 3: Final runtime image
@@ -49,21 +53,27 @@ RUN apt-get update && apt-get install -y \
     nodejs \
     npm \
     curl \
+    unzip \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy Bazel and Buf from tools stage
 COPY --from=tools /usr/local/bin/bazel /usr/local/bin/bazel
 COPY --from=tools /usr/local/bin/buf /usr/local/bin/buf
 
+# Install twine for remote PyPI publishing
+RUN pip3 install twine --break-system-packages
+
 # Create proto-lake user
 RUN groupadd -g 1001 protolake && \
     useradd -r -u 1001 -g protolake protolake && \
-    mkdir -p /var/proto-lake /home/protolake && \
-    chown -R protolake:protolake /var/proto-lake /home/protolake
+    mkdir -p /var/proto-lake /home/protolake /proto-lake && \
+    chown -R protolake:protolake /var/proto-lake /home/protolake /proto-lake
 
-# Set up local package repositories
+# Set up local package repositories and cache directories
 RUN mkdir -p /home/protolake/.m2/repository \
              /home/protolake/.cache/pip/simple \
+             /home/protolake/.cache/bazel \
+             /home/protolake/.proto-lake/npm-packages \
              /home/protolake/.npm \
     && chown -R protolake:protolake /home/protolake
 

@@ -49,9 +49,6 @@ public class SqliteStorageService implements StorageService {
     String basePath;
     
     @Inject
-    BundleDiscoveryService bundleDiscoveryService;
-    
-    @Inject
     LakeValidator lakeValidator;
     
     @Inject
@@ -421,132 +418,51 @@ public class SqliteStorageService implements StorageService {
         }
     }
     
-    /**
-     * Removes bundles that no longer exist on filesystem.
-     * Used by discovery service during refresh operations.
-     */
-    public void removeStaleBundles(String lakeId, List<String> currentBundleIds) {
-        try (Connection conn = getConnection()) {
-            // Get all existing bundles
-            List<String> existingIds = new ArrayList<>();
-            String selectSql = "SELECT id FROM bundles WHERE lake_id = ?";
-            
-            try (PreparedStatement pstmt = conn.prepareStatement(selectSql)) {
-                pstmt.setString(1, lakeId);
-                try (ResultSet rs = pstmt.executeQuery()) {
-                    while (rs.next()) {
-                        existingIds.add(rs.getString("id"));
-                    }
-                }
-            }
-            
-            // Delete bundles that no longer exist
-            String deleteSql = "DELETE FROM bundles WHERE lake_id = ? AND id = ?";
-            try (PreparedStatement pstmt = conn.prepareStatement(deleteSql)) {
-                for (String existing : existingIds) {
-                    if (!currentBundleIds.contains(existing)) {
-                        pstmt.setString(1, lakeId);
-                        pstmt.setString(2, existing);
-                        pstmt.executeUpdate();
-                        LOG.infof("Removed stale bundle: %s/%s", lakeId, existing);
-                    }
-                }
-            }
-            
-        } catch (SQLException e) {
-            LOG.errorf(e, "Failed to remove stale bundles for lake: %s", lakeId);
-        }
-    }
-    
     // ===== Build Operations =====
     
     @Override
-    public TargetBuildInfo recordTargetBuild(String lakeId, String bundleId,
-                                             String branch, TargetBuildInfo buildInfo) {
+    public TargetBuildInfo recordTargetBuild(String lakeId, String bundleId, TargetBuildInfo buildInfo) {
         try (Connection conn = getConnection()) {
             conn.setAutoCommit(false);
-            
+
             try {
-                // Generate unique ID if not present
                 String buildId = UUID.randomUUID().toString();
-                
-                // Extract language from target name or artifacts
                 String language = extractLanguage(buildInfo);
-                
+
                 String sql = """
                     INSERT INTO builds (id, lake_id, bundle_id, target_build_info_json,
-                                      version, branch, language, status, build_time)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                      version, language, status, build_time)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """;
-                
+
                 try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
                     pstmt.setString(1, buildId);
                     pstmt.setString(2, lakeId);
                     pstmt.setString(3, bundleId);
                     pstmt.setString(4, protoJsonPrinter.print(buildInfo));
                     pstmt.setString(5, buildInfo.getVersion());
-                    pstmt.setString(6, branch);
-                    pstmt.setString(7, language);
-                    pstmt.setString(8, buildInfo.getStatus().name());
-                    pstmt.setTimestamp(9, Timestamp.from(Instant.now()));
-                    
+                    pstmt.setString(6, language);
+                    pstmt.setString(7, buildInfo.getStatus().name());
+                    pstmt.setTimestamp(8, Timestamp.from(Instant.now()));
+
                     pstmt.executeUpdate();
                 }
-                
+
                 // Prune old builds
                 pruneOldBuildsInternal(conn, lakeId, bundleId);
-                
+
                 conn.commit();
-                LOG.infof("Recorded build for %s/%s on branch %s", lakeId, bundleId, branch);
-                
+                LOG.infof("Recorded build for %s/%s", lakeId, bundleId);
+
                 return buildInfo;
-                
+
             } catch (Exception e) {
                 conn.rollback();
                 throw e;
             }
-            
+
         } catch (SQLException | InvalidProtocolBufferException e) {
             throw new RuntimeException("Failed to record build", e);
-        }
-    }
-    
-    @Override
-    public Optional<TargetBuildInfo> getLatestTargetBuild(String lakeId, String bundleId,
-                                                          String branch, Language language) {
-        try (Connection conn = getConnection()) {
-            StringBuilder sql = new StringBuilder("""
-                SELECT target_build_info_json FROM builds 
-                WHERE lake_id = ? AND bundle_id = ? AND branch = ?
-            """);
-            
-            if (language != null && language != Language.LANGUAGE_UNSPECIFIED) {
-                sql.append(" AND language = ?");
-            }
-            
-            sql.append(" ORDER BY build_time DESC, id DESC LIMIT 1");
-            
-            try (PreparedStatement pstmt = conn.prepareStatement(sql.toString())) {
-                pstmt.setString(1, lakeId);
-                pstmt.setString(2, bundleId);
-                pstmt.setString(3, branch);
-                
-                if (language != null && language != Language.LANGUAGE_UNSPECIFIED) {
-                    pstmt.setString(4, language.name());
-                }
-                
-                try (ResultSet rs = pstmt.executeQuery()) {
-                    if (rs.next()) {
-                        return Optional.of(parseTargetBuildInfo(rs.getString(1)));
-                    }
-                }
-            }
-            
-            return Optional.empty();
-            
-        } catch (SQLException e) {
-            LOG.errorf(e, "Failed to get latest build");
-            return Optional.empty();
         }
     }
     
@@ -579,36 +495,6 @@ public class SqliteStorageService implements StorageService {
         return builds;
     }
     
-    @Override
-    public List<TargetBuildInfo> listBuildsByBranch(String lakeId, String bundleId, String branch) {
-        List<TargetBuildInfo> builds = new ArrayList<>();
-        
-        try (Connection conn = getConnection()) {
-            String sql = """
-                SELECT target_build_info_json FROM builds 
-                WHERE lake_id = ? AND bundle_id = ? AND branch = ?
-                ORDER BY build_time DESC, id DESC
-            """;
-            
-            try (PreparedStatement pstmt = conn.prepareStatement(sql)) {
-                pstmt.setString(1, lakeId);
-                pstmt.setString(2, bundleId);
-                pstmt.setString(3, branch);
-                
-                try (ResultSet rs = pstmt.executeQuery()) {
-                    while (rs.next()) {
-                        builds.add(parseTargetBuildInfo(rs.getString(1)));
-                    }
-                }
-            }
-            
-        } catch (SQLException e) {
-            LOG.errorf(e, "Failed to list builds by branch");
-        }
-        
-        return builds;
-    }
-
     /**
      * Internal method to prune old builds within a transaction.
      */

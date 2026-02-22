@@ -4,6 +4,7 @@
 import argparse
 import os
 import shutil
+import subprocess
 import sys
 from pathlib import Path
 
@@ -73,6 +74,90 @@ def update_root_index(repo_path):
     print(f"Updated root index: {index_path}")
 
 
+def publish_to_remote_registry(wheel_path, registry_url, token):
+    """Publish wheel to a remote PyPI registry (e.g., GCP Artifact Registry) using twine"""
+    registry_url = registry_url.rstrip('/')
+
+    # Try twine first
+    try:
+        result = subprocess.run(
+            ['twine', '--version'],
+            capture_output=True, text=True,
+        )
+        has_twine = result.returncode == 0
+    except FileNotFoundError:
+        has_twine = False
+
+    if has_twine:
+        print(f"Uploading with twine to: {registry_url}")
+        result = subprocess.run(
+            [
+                'twine', 'upload',
+                '--repository-url', registry_url,
+                '-u', 'oauth2accesstoken',
+                '-p', token,
+                '--non-interactive',
+                wheel_path,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode != 0:
+            print(f"Error uploading with twine: {result.stderr}", file=sys.stderr)
+            if result.stdout:
+                print(f"  stdout: {result.stdout}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Successfully uploaded: {os.path.basename(wheel_path)}")
+    else:
+        # Fallback: HTTP upload using urllib
+        print(f"twine not found, using urllib fallback to: {registry_url}")
+        import urllib.request
+        import urllib.error
+
+        wheel_name = os.path.basename(wheel_path)
+        with open(wheel_path, 'rb') as f:
+            wheel_data = f.read()
+
+        # Construct multipart form data for PyPI upload
+        boundary = '----ProtolakeUploadBoundary'
+        fields = [
+            (':action', 'file_upload'),
+            ('protocol_version', '1'),
+        ]
+        body = b''
+        for field_name, field_value in fields:
+            body += f'--{boundary}\r\n'.encode()
+            body += f'Content-Disposition: form-data; name="{field_name}"\r\n\r\n'.encode()
+            body += f'{field_value}\r\n'.encode()
+
+        body += f'--{boundary}\r\n'.encode()
+        body += f'Content-Disposition: form-data; name="content"; filename="{wheel_name}"\r\n'.encode()
+        body += b'Content-Type: application/octet-stream\r\n\r\n'
+        body += wheel_data
+        body += f'\r\n--{boundary}--\r\n'.encode()
+
+        req = urllib.request.Request(
+            registry_url + '/',
+            data=body,
+            method='POST',
+            headers={
+                'Content-Type': f'multipart/form-data; boundary={boundary}',
+                'Authorization': f'Bearer {token}',
+            },
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                print(f"Uploaded {wheel_name} ({resp.status})")
+        except urllib.error.HTTPError as e:
+            print(f"Error uploading {wheel_name}: {e.code} {e.reason}", file=sys.stderr)
+            resp_body = e.read().decode('utf-8', errors='replace')
+            if resp_body:
+                print(f"  Response: {resp_body[:500]}", file=sys.stderr)
+            sys.exit(1)
+
+    return wheel_path
+
+
 def main():
     parser = argparse.ArgumentParser(description='Publish Proto Lake bundle to PyPI')
     parser.add_argument('wheel_path', help='Path to the wheel file')
@@ -92,11 +177,36 @@ def main():
         sys.exit(1)
 
     try:
-        if args.index_url:
-            # Production mode - use twine
-            print(f"Would upload to PyPI: {args.index_url}")
-            print("Production PyPI upload not implemented yet")
-            sys.exit(1)
+        if args.repo.startswith('https://') or args.repo.startswith('http://'):
+            # Remote registry mode
+            token = os.environ.get('REGISTRY_TOKEN', '')
+            if not token:
+                print("Error: REGISTRY_TOKEN env var required for remote registry",
+                      file=sys.stderr)
+                sys.exit(1)
+
+            publish_to_remote_registry(args.wheel_path, args.repo, token)
+
+            print(f"\nSuccessfully published to remote PyPI registry:")
+            print(f"  Package: {args.package_name}")
+            print(f"  Version: {args.version}")
+            print(f"  Registry: {args.repo}")
+
+        elif args.index_url:
+            # Legacy --index-url flag (redirect to remote)
+            token = os.environ.get('REGISTRY_TOKEN', '')
+            if not token:
+                print("Error: REGISTRY_TOKEN env var required for remote upload",
+                      file=sys.stderr)
+                sys.exit(1)
+
+            publish_to_remote_registry(args.wheel_path, args.index_url, token)
+
+            print(f"\nSuccessfully published to PyPI:")
+            print(f"  Package: {args.package_name}")
+            print(f"  Version: {args.version}")
+            print(f"  Registry: {args.index_url}")
+
         else:
             # Local repository mode
             published_wheel = publish_to_local_repo(

@@ -3,6 +3,14 @@ quarkus:
   application:
     name: proto-lake-service
 
+  # gRPC code generation - scan proto-google-common-protos for google/longrunning etc.
+  generate-code:
+    grpc:
+      scan-for-imports: "com.google.protobuf:protobuf-java,com.google.api.grpc:proto-google-common-protos"
+      scan-for-proto: "com.google.api.grpc:proto-google-common-protos"
+      scan-for-proto-include:
+        "com.google.api.grpc:proto-google-common-protos": "google/longrunning/**"
+
   # gRPC configuration
   grpc:
     server:

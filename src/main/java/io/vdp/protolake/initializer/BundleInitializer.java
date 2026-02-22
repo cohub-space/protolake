@@ -96,6 +96,16 @@ public class BundleInitializer {
     }
 
     /**
+     * Updates the bundle.yaml configuration file for an existing bundle.
+     */
+    public void updateBundleYaml(Lake lake, Bundle bundle) throws IOException {
+        String bundleId = BundleUtil.extractBundleId(bundle.getName());
+        String lakeName = LakeUtil.extractLakeId(lake.getName());
+        LOG.infof("Updating bundle.yaml for %s in lake %s", bundleId, lakeName);
+        generateBundleYaml(bundle, lake);
+    }
+
+    /**
      * Generates the bundle.yaml configuration file.
      */
     private void generateBundleYaml(Bundle bundle, Lake lake) throws IOException {
@@ -119,6 +129,8 @@ public class BundleInitializer {
         String pythonPackageName = "";
         String jsPackageName = "";
         
+        String javaGroupId = "";
+
         // Check if bundle has config overrides
         if (bundle.hasConfig() && bundle.getConfig().hasLanguages()) {
             if (bundle.getConfig().getLanguages().hasJava()) {
@@ -126,6 +138,10 @@ public class BundleInitializer {
                 // Extract artifact_id if provided
                 if (!bundle.getConfig().getLanguages().getJava().getArtifactId().isEmpty()) {
                     javaArtifactId = bundle.getConfig().getLanguages().getJava().getArtifactId();
+                }
+                // Extract group_id if provided
+                if (!bundle.getConfig().getLanguages().getJava().getGroupId().isEmpty()) {
+                    javaGroupId = bundle.getConfig().getLanguages().getJava().getGroupId();
                 }
             }
             if (bundle.getConfig().getLanguages().hasPython()) {
@@ -149,6 +165,7 @@ public class BundleInitializer {
         context.put("jsEnabled", jsEnabled);
         
         // Always add bundle-specific identifiers to context for Qute template compatibility
+        context.put("javaGroupId", javaGroupId);
         context.put("javaArtifactId", javaArtifactId);
         context.put("pythonPackageName", pythonPackageName);
         context.put("jsPackageName", jsPackageName);

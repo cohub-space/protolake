@@ -18,7 +18,7 @@ import java.nio.file.Path;
 
 /**
  * Runs Gazelle to generate and update BUILD.bazel files across the entire lake.
- * 
+ *
  * Gazelle automatically generates Bazel BUILD files by analyzing proto imports
  * and dependencies. It operates at the lake (workspace) level to ensure consistent
  * dependency resolution across all bundles.
@@ -32,37 +32,21 @@ public class GazelleRunner {
 
     @Inject
     BazelCommand bazelCommand;
-    
+
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
 
-
-
     /**
-     * Runs Gazelle for an entire lake with specified configuration.
-     * 
+     * Runs Gazelle for an entire lake.
+     *
      * This analyzes all proto files in the lake and generates appropriate BUILD files,
      * ensuring proper dependency resolution across bundles.
-     * 
+     *
      * @return Updated metadata with gazelle phase results
      */
-    public BuildOperationMetadata runForLake(protolake.v1.Lake lake, RunGazelleConfig config, BuildOperationMetadata metadata) throws IOException {
-        if (!config.getEnabled()) {
-            LOG.debugf("Gazelle disabled for lake: %s", lake.getName());
-            // Mark phase as skipped
-            PhaseStatus skipped = PhaseStatus.newBuilder()
-                .setStatus(PhaseStatus.Status.SKIPPED)
-                .build();
-            return metadata.toBuilder()
-                .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder()
-                    .setGazelle(skipped)
-                    .build())
-                .build();
-        }
-
+    public BuildOperationMetadata runForLake(protolake.v1.Lake lake, BuildOperationMetadata metadata) throws IOException {
         LOG.infof("Running Gazelle for lake: %s", lake.getName());
 
-        // First ensure gazelle target exists
         Path lakeRoot = LakeUtil.getLocalPath(lake, basePath);
         if (!Files.exists(lakeRoot.resolve("BUILD.bazel"))) {
             throw new IOException("Lake not properly initialized - missing root BUILD.bazel");
@@ -74,46 +58,38 @@ public class GazelleRunner {
             .setStartTime(com.google.protobuf.Timestamp.newBuilder()
                 .setSeconds(java.time.Instant.now().getEpochSecond())
                 .build());
-        
+
         List<String> logs = new ArrayList<>();
-        
+
         try {
-            // Run the gazelle wrapper which includes import fixing
+            // Run the gazelle wrapper (standard + protolake passes)
             LOG.debugf("Running gazelle wrapper for lake: %s", lake.getName());
             gazelleStatus.setSubPhase("Running gazelle wrapper");
-            
-            // Use runWithOutput to capture logs
+
             String logOutput = bazelCommand.runWithOutput(lakeRoot, "run", "//tools:gazelle_wrapper");
             logs.add(logOutput);
-            
+
             LOG.infof("Gazelle completed successfully for lake: %s", lake.getName());
-            
-            // Mark as successful
+
             gazelleStatus
                 .setStatus(PhaseStatus.Status.SUCCEEDED)
                 .setEndTime(com.google.protobuf.Timestamp.newBuilder()
                     .setSeconds(java.time.Instant.now().getEpochSecond())
                     .build())
                 .addAllLogLines(logs);
-                
+
         } catch (Exception e) {
             // Fallback to standard gazelle if wrapper fails
             LOG.warnf("Gazelle wrapper failed, trying standard gazelle: %s", e.getMessage());
             logs.add("Gazelle wrapper failed: " + e.getMessage());
-            
+
             try {
-                // Run standard gazelle
                 gazelleStatus.setSubPhase("Running standard gazelle");
                 gazelleCommand.run(lakeRoot);
-                
-                // Run import fixer separately
-                gazelleStatus.setSubPhase("Running import fixer");
-                runImportFixer(lakeRoot);
-                
-                // Run protolake gazelle for bundle detection
+
                 gazelleStatus.setSubPhase("Running protolake-gazelle");
                 runProtolakeGazelle(lakeRoot);
-                
+
                 gazelleStatus
                     .setStatus(PhaseStatus.Status.SUCCEEDED)
                     .setEndTime(com.google.protobuf.Timestamp.newBuilder()
@@ -121,7 +97,6 @@ public class GazelleRunner {
                         .build())
                     .addAllLogLines(logs);
             } catch (Exception fallbackError) {
-                // Mark as failed
                 gazelleStatus
                     .setStatus(PhaseStatus.Status.FAILED)
                     .setEndTime(com.google.protobuf.Timestamp.newBuilder()
@@ -129,51 +104,23 @@ public class GazelleRunner {
                         .build())
                     .setErrorMessage("Gazelle failed: " + fallbackError.getMessage())
                     .addAllLogLines(logs);
-                    
-                // Update metadata before throwing
+
                 metadata = metadata.toBuilder()
                     .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder()
                         .setGazelle(gazelleStatus.build())
                         .build())
                     .build();
-                    
+
                 throw new IOException("Gazelle failed", fallbackError);
             }
         }
-        
+
         // Return updated metadata
         return metadata.toBuilder()
             .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder()
                 .setGazelle(gazelleStatus.build())
                 .build())
             .build();
-    }
-
-    /**
-     * Runs the import fixer to update proto imports for Bazel 8.
-     */
-    private void runImportFixer(Path lakeRoot) {
-        try {
-            Path fixerScript = lakeRoot.resolve("tools/fix_proto_imports.py");
-            if (Files.exists(fixerScript)) {
-                LOG.debugf("Running import fixer at: %s", lakeRoot);
-                
-                ProcessBuilder pb = new ProcessBuilder("python3", fixerScript.toString());
-                pb.directory(lakeRoot.toFile());
-                pb.inheritIO();
-                
-                Process process = pb.start();
-                int exitCode = process.waitFor();
-                
-                if (exitCode != 0) {
-                    LOG.warnf("Import fixer exited with code: %d", exitCode);
-                }
-            } else {
-                LOG.debugf("Import fixer script not found, skipping");
-            }
-        } catch (Exception e) {
-            LOG.warnf("Failed to run import fixer: %s", e.getMessage());
-        }
     }
 
     /**

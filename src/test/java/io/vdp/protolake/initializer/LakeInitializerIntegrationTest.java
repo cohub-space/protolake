@@ -94,8 +94,7 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
         
         // Verify lake.yaml content
         assertFileContains(lakePath.resolve("lake.yaml"),
-            "name: \"test-lake\"",  // Just the lake ID
-            "organization: \"example\""    // default from config
+            "name: \"test-lake\""  // Just the lake ID
         );
         
         // Verify Git repository was initialized
@@ -143,7 +142,6 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
     void testInitializeLakeWithCustomVersions() throws IOException {
         // Create lake with custom MODULE.bazel versions
         LakeConfig config = LakeConfig.newBuilder()
-            .setOrganization("com.company")
             .setModuleBazel(ModuleBazelConfig.newBuilder()
                 .setProtobufVersion("28.3")
                 .setGrpcVersion("1.65.0")
@@ -174,22 +172,21 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
             "io.grpc:grpc-api:1.65.0"  // gRPC version in maven.install
         );
         
-        // Verify lake.yaml has the organization from config
-        assertFileContains(lakePath.resolve("lake.yaml"),
-            "organization: \"com.company\""
-        );
+        // Verify lake.yaml was created
+        assertFileExists(lakePath, "lake.yaml");
     }
     
     @Test
     void testInitializeLakeWithExistingDirectory() throws IOException {
         // Create a lake
         Lake lake = createTestLake("existing-lake", "Existing Lake", "Should fail");
-        
-        // Create the directory first at the correct location where the lake will be created
+
+        // Create the directory first with a lake.yaml to simulate an already-initialized lake
         Path lakePath = LakeUtil.getLocalPath(lake, basePath.toString());
         Files.createDirectories(lakePath);
-        
-        // Try to initialize - should fail
+        Files.writeString(lakePath.resolve("lake.yaml"), "name: existing-lake\n");
+
+        // Try to initialize - should fail because lake.yaml already exists
         assertThatThrownBy(() -> lakeInitializer.initializeLake(
             LakeUtil.extractLakeId(lake.getName()),  // Pass just the lake ID, not the full resource name
             lake.getDisplayName(),
@@ -198,7 +195,7 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
             lake.getLakePrefix()
         ))
             .isInstanceOf(IllegalStateException.class)
-            .hasMessageContaining("Lake directory already exists");
+            .hasMessageContaining("Lake already initialized");
     }
     
     @Test
@@ -231,7 +228,6 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
         
         // Verify utility scripts
         assertExecutableFile(toolsPath.resolve("gazelle_wrapper.py"));
-        assertExecutableFile(toolsPath.resolve("fix_proto_imports.py"));
         
         // Verify proto bundle rules
         assertFileExists(toolsPath, "proto_bundle.bzl");
@@ -271,17 +267,16 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
         
         // Create a lake that will fail during initialization
         Lake lake = createTestLake("fail-lake", "Fail Lake", "Should cleanup on failure");
-        
+
         // Calculate the expected lake path
         Path lakePath = LakeUtil.getLocalPath(lake, basePath.toString());
-        
+
         // Create a scenario where initialization fails after directory is created
-        // by creating a read-only subdirectory that will cause directory structure creation to fail
+        // by creating a lake.yaml to simulate an already-initialized lake
         Files.createDirectories(lakePath);
-        Path blockerPath = lakePath.resolve("bundles");
-        Files.createFile(blockerPath); // Create file instead of directory to cause failure
-        
-        // Try to initialize - should fail when trying to create bundles directory
+        Files.writeString(lakePath.resolve("lake.yaml"), "name: fail-lake\n");
+
+        // Try to initialize - should fail because lake.yaml already exists
         assertThatThrownBy(() -> lakeInitializer.initializeLake(
             LakeUtil.extractLakeId(lake.getName()),
             lake.getDisplayName(),
@@ -290,31 +285,31 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
             lake.getLakePrefix()
         ))
             .isInstanceOf(IllegalStateException.class)
-            .hasMessageContaining("Lake directory already exists");
-        
+            .hasMessageContaining("Lake already initialized");
+
         // Verify the directory was NOT cleaned up (we don't delete pre-existing directories)
         assertThat(lakePath).exists();
-        
+
         // Clean up for the test
-        Files.delete(blockerPath);
+        Files.delete(lakePath.resolve("lake.yaml"));
         Files.delete(lakePath);
     }
     
     @Test
     void testCleanupOnInitializationFailure() throws IOException {
-        // Test cleanup when initialization fails during the process (not due to pre-existing directory)
-        // This would require mocking some internal components to force a failure
-        // For now, we'll test that pre-existing directories are preserved
-        
+        // Test that re-initializing an already-initialized lake is rejected
+        // and existing content is preserved
+
         Lake lake = createTestLake("preserve-lake", "Preserve Lake", "Should not delete existing");
         Path lakePath = LakeUtil.getLocalPath(lake, basePath.toString());
-        
-        // Create existing directory with some content
+
+        // Create existing directory with lake.yaml and some content
         Files.createDirectories(lakePath);
+        Files.writeString(lakePath.resolve("lake.yaml"), "name: preserve-lake\n");
         Path existingFile = lakePath.resolve("important-data.txt");
         Files.writeString(existingFile, "This should not be deleted");
-        
-        // Try to initialize - should fail due to existing directory
+
+        // Try to initialize - should fail because lake.yaml already exists
         assertThatThrownBy(() -> lakeInitializer.initializeLake(
             LakeUtil.extractLakeId(lake.getName()),
             lake.getDisplayName(),
@@ -323,15 +318,16 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
             lake.getLakePrefix()
         ))
             .isInstanceOf(IllegalStateException.class)
-            .hasMessageContaining("Lake directory already exists");
-        
+            .hasMessageContaining("Lake already initialized");
+
         // Verify the existing content was preserved
         assertThat(lakePath).exists();
         assertThat(existingFile).exists();
         assertThat(Files.readString(existingFile)).isEqualTo("This should not be deleted");
-        
+
         // Clean up
         Files.delete(existingFile);
+        Files.delete(lakePath.resolve("lake.yaml"));
         Files.delete(lakePath);
     }
     
@@ -341,9 +337,7 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
             .setName(LakeUtil.toResourceName(name))
             .setDisplayName(displayName)
             .setDescription(description)
-            .setConfig(LakeConfig.newBuilder()
-                .setOrganization("example")
-                .build())
+            .setConfig(LakeConfig.getDefaultInstance())
             .setCreateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .setUpdateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .build();

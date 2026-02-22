@@ -51,6 +51,31 @@ public class BazelCommand {
     }
 
     /**
+     * Result of a command execution, including output and exit code.
+     */
+    public static class CommandResult {
+        public final String output;
+        public final int exitCode;
+
+        public CommandResult(String output, int exitCode) {
+            this.output = output;
+            this.exitCode = exitCode;
+        }
+
+        public boolean isSuccess() {
+            return exitCode == 0;
+        }
+    }
+
+    /**
+     * Runs a bazel command and returns the result (output + exit code) without throwing on non-zero exit.
+     */
+    public CommandResult runWithResult(Path workingDir, String... args) throws IOException {
+        List<String> command = buildCommand(args);
+        return executeCommandWithResult(workingDir, command, null);
+    }
+
+    /**
      * Builds the full command with bazel executable and startup options.
      */
     private List<String> buildCommand(String... args) {
@@ -130,52 +155,93 @@ public class BazelCommand {
     private String executeCommandWithOutput(Path workingDir, List<String> command,
                                           Map<String, String> env) throws IOException {
         LOG.debugf("Executing: %s in %s", String.join(" ", command), workingDir);
-        
+
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(workingDir.toFile());
-        
+        pb.redirectErrorStream(true);
+
         if (env != null) {
             pb.environment().putAll(env);
         }
-        
+
         Process process = pb.start();
-        
+
         try {
             StringBuilder output = new StringBuilder();
-            StringBuilder error = new StringBuilder();
-            
-            // Read standard output
+
+            // Read combined stdout+stderr to prevent deadlock
             try (BufferedReader reader = new BufferedReader(
                     new InputStreamReader(process.getInputStream()))) {
                 String line;
                 while ((line = reader.readLine()) != null) {
                     output.append(line).append("\n");
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug(line);
+                    }
                 }
             }
-            
-            // Read error output
-            try (BufferedReader reader = new BufferedReader(
-                    new InputStreamReader(process.getErrorStream()))) {
-                String line;
-                while ((line = reader.readLine()) != null) {
-                    error.append(line).append("\n");
-                }
-            }
-            
+
             boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
                 throw new IOException("Bazel command timed out after " + timeoutSeconds + " seconds");
             }
-            
+
             int exitCode = process.exitValue();
             if (exitCode != 0) {
-                throw new IOException("Bazel command failed with exit code " + exitCode + 
-                    "\nError: " + error);
+                throw new IOException("Bazel command failed with exit code " + exitCode +
+                    "\nError: " + output);
             }
-            
+
             return output.toString();
-            
+
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            process.destroyForcibly();
+            throw new IOException("Bazel command interrupted", e);
+        }
+    }
+
+    /**
+     * Executes a command and returns output + exit code without throwing on non-zero exit.
+     * Only throws on timeout, interrupt, or process start failure.
+     */
+    private CommandResult executeCommandWithResult(Path workingDir, List<String> command,
+                                                   Map<String, String> env) throws IOException {
+        LOG.debugf("Executing: %s in %s", String.join(" ", command), workingDir);
+
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(workingDir.toFile());
+        pb.redirectErrorStream(true);
+
+        if (env != null) {
+            pb.environment().putAll(env);
+        }
+
+        Process process = pb.start();
+
+        try {
+            StringBuilder output = new StringBuilder();
+
+            try (BufferedReader reader = new BufferedReader(
+                    new InputStreamReader(process.getInputStream()))) {
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    output.append(line).append("\n");
+                    if (LOG.isDebugEnabled()) {
+                        LOG.debug(line);
+                    }
+                }
+            }
+
+            boolean finished = process.waitFor(timeoutSeconds, TimeUnit.SECONDS);
+            if (!finished) {
+                process.destroyForcibly();
+                throw new IOException("Bazel command timed out after " + timeoutSeconds + " seconds");
+            }
+
+            return new CommandResult(output.toString(), process.exitValue());
+
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             process.destroyForcibly();
