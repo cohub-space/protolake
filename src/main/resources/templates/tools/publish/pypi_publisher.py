@@ -90,17 +90,19 @@ def publish_to_remote_registry(wheel_path, registry_url, token):
 
     if has_twine:
         print(f"Uploading with twine to: {registry_url}")
+        env = os.environ.copy()
+        env['TWINE_USERNAME'] = 'oauth2accesstoken'
+        env['TWINE_PASSWORD'] = token
         result = subprocess.run(
             [
                 'twine', 'upload',
                 '--repository-url', registry_url,
-                '-u', 'oauth2accesstoken',
-                '-p', token,
                 '--non-interactive',
                 wheel_path,
             ],
             capture_output=True,
             text=True,
+            env=env,
         )
         if result.returncode != 0:
             print(f"Error uploading with twine: {result.stderr}", file=sys.stderr)
