@@ -46,11 +46,15 @@ public class LakeInitializer {
     @Inject
     WorkspaceInitializer workspaceInitializer;
 
+    public String getBasePath() {
+        return basePath;
+    }
+
     /**
      * Initializes a new lake with all necessary setup.
      * Returns a Lake proto message with lake_prefix set.
      */
-    public Lake initializeLake(String name, String displayName, String description, 
+    public Lake initializeLake(String name, String displayName, String description,
                              LakeConfig config, String lakePrefix)
             throws IOException {
         LOG.infof("Initializing lake: %s", name);
@@ -83,8 +87,8 @@ public class LakeInitializer {
         // Calculate lake path using the util method
         Path lakePath = LakeUtil.getLocalPath(lake, basePath);
         
-        if (Files.exists(lakePath)) {
-            throw new IllegalStateException("Lake directory already exists: " + lakePath);
+        if (Files.exists(lakePath.resolve("lake.yaml"))) {
+            throw new IllegalStateException("Lake already initialized at: " + lakePath);
         }
         Files.createDirectories(lakePath);
 
@@ -99,6 +103,9 @@ public class LakeInitializer {
 
             // Initialize Bazel workspace
             workspaceInitializer.initializeWorkspace(lake);
+
+            // Generate protolakew wrapper script
+            generateProtolakew(lake, lakePath);
 
             // Create initial directory structure
             createDirectoryStructure(lakePath);
@@ -123,6 +130,30 @@ public class LakeInitializer {
     }
 
     /**
+     * Generates the protolakew wrapper script in the lake root.
+     * Uses simple string replacement instead of Qute to avoid conflicts
+     * with bash brace syntax.
+     */
+    private void generateProtolakew(Lake lake, Path lakePath) throws IOException {
+        String lakeId = LakeUtil.extractLakeId(lake.getName());
+
+        try (var is = getClass().getResourceAsStream("/protolakew.sh.tmpl")) {
+            if (is == null) {
+                throw new IOException("protolakew.sh.tmpl template not found on classpath");
+            }
+            String template = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            String rendered = template
+                    .replace("{lakeName}", lakeId)
+                    .replace("{lakePrefix}", lake.getLakePrefix() != null ? lake.getLakePrefix() : "");
+
+            Path protolakewPath = lakePath.resolve("protolakew");
+            Files.writeString(protolakewPath, rendered, java.nio.charset.StandardCharsets.UTF_8);
+            protolakewPath.toFile().setExecutable(true, false);
+            LOG.infof("Generated protolakew wrapper at %s", protolakewPath);
+        }
+    }
+
+    /**
      * Generates the lake.yaml configuration file.
      */
     private void generateLakeYaml(Lake lake) throws IOException {
@@ -136,9 +167,6 @@ public class LakeInitializer {
         context.put("lakePrefix", lake.getLakePrefix());
         
         LakeConfig config = lake.getConfig();
-        
-        // Organization
-        context.put("organization", config.getOrganization().isEmpty() ? "example" : config.getOrganization());
         
         // MODULE.bazel configuration with defaults
         if (config.hasModuleBazel()) {
@@ -166,9 +194,9 @@ public class LakeInitializer {
                 context.put("javaMultipleFiles", java.getJavaMultipleFiles());
                 context.put("javaOuterClassnameSuffix", java.getJavaOuterClassnameSuffix());
             } else {
-                setDefaultJavaConfig(context, config.getOrganization());
+                setDefaultJavaConfig(context);
             }
-            
+
             // Python defaults
             if (config.getLanguageDefaults().hasPython()) {
                 var python = config.getLanguageDefaults().getPython();
@@ -179,9 +207,9 @@ public class LakeInitializer {
                 context.put("pythonGrpcioVersion", python.getGrpcioVersion());
                 context.put("pythonStubType", python.getStubType());
             } else {
-                setDefaultPythonConfig(context, config.getOrganization());
+                setDefaultPythonConfig(context);
             }
-            
+
             // JavaScript defaults
             if (config.getLanguageDefaults().hasJavascript()) {
                 var js = config.getLanguageDefaults().getJavascript();
@@ -193,9 +221,9 @@ public class LakeInitializer {
                 context.put("javascriptUseTypescript", js.getUseTypescript());
                 context.put("javascriptModuleType", js.getModuleType());
             } else {
-                setDefaultJavaScriptConfig(context, config.getOrganization());
+                setDefaultJavaScriptConfig(context);
             }
-            
+
             // Go defaults
             if (config.getLanguageDefaults().hasGo()) {
                 var go = config.getLanguageDefaults().getGo();
@@ -203,25 +231,16 @@ public class LakeInitializer {
                 context.put("goModulePrefix", go.getModulePrefix());
                 context.put("goVersion", go.getGoVersion());
             } else {
-                setDefaultGoConfig(context, config.getOrganization());
+                setDefaultGoConfig(context);
             }
         } else {
             // Set all language defaults
-            setDefaultJavaConfig(context, config.getOrganization());
-            setDefaultPythonConfig(context, config.getOrganization());
-            setDefaultJavaScriptConfig(context, config.getOrganization());
-            setDefaultGoConfig(context, config.getOrganization());
+            setDefaultJavaConfig(context);
+            setDefaultPythonConfig(context);
+            setDefaultJavaScriptConfig(context);
+            setDefaultGoConfig(context);
         }
-        
-        // Build defaults
-        if (config.hasBuildDefaults()) {
-            context.put("autoPublishLocal", config.getBuildDefaults().getAutoPublishLocal());
-            context.put("baseVersion", config.getBuildDefaults().getBaseVersion());
-        } else {
-            context.put("autoPublishLocal", true);
-            context.put("baseVersion", "1.0.0");
-        }
-        
+
         // Validation config
         if (config.hasValidation()) {
             context.put("bufConfigPath", config.getValidation().getBufConfigPath());
@@ -234,40 +253,40 @@ public class LakeInitializer {
         templateEngine.renderToFile("lake.yaml.tmpl", context, configPath);
     }
     
-    private void setDefaultJavaConfig(Map<String, Object> context, String organization) {
+    private void setDefaultJavaConfig(Map<String, Object> context) {
         context.put("javaEnabled", true);
-        context.put("javaGroupId", "com." + (organization.isEmpty() ? "example" : organization) + ".proto");
+        context.put("javaGroupId", "com.example.proto");
         context.put("javaSourceVersion", "21");
         context.put("javaTargetVersion", "21");
-        context.put("protobufJavaVersion", "4.31.0");
-        context.put("grpcJavaVersion", "1.64.0");
+        context.put("protobufJavaVersion", "4.31.1");
+        context.put("grpcJavaVersion", "1.78.0");
         context.put("javaMultipleFiles", true);
         context.put("javaOuterClassnameSuffix", "Proto");
     }
-    
-    private void setDefaultPythonConfig(Map<String, Object> context, String organization) {
+
+    private void setDefaultPythonConfig(Map<String, Object> context) {
         context.put("pythonEnabled", true);
-        context.put("pythonPackagePrefix", (organization.isEmpty() ? "example" : organization) + "_proto");
+        context.put("pythonPackagePrefix", "example_proto");
         context.put("pythonVersion", ">=3.8,<4.0");
         context.put("pythonProtobufVersion", "5.27.0");
-        context.put("pythonGrpcioVersion", "1.64.0");
+        context.put("pythonGrpcioVersion", "1.78.0");
         context.put("pythonStubType", "pyi");
     }
-    
-    private void setDefaultJavaScriptConfig(Map<String, Object> context, String organization) {
+
+    private void setDefaultJavaScriptConfig(Map<String, Object> context) {
         context.put("javascriptEnabled", true);
-        context.put("javascriptPackageScope", "@" + (organization.isEmpty() ? "example" : organization));
+        context.put("javascriptPackageScope", "@example");
         context.put("javascriptNodeVersion", ">=18");
         context.put("javascriptProtobufVersion", "3.21.2");
         context.put("javascriptGrpcWebVersion", "1.5.0");
         context.put("javascriptUseTypescript", true);
         context.put("javascriptModuleType", "commonjs");
     }
-    
-    private void setDefaultGoConfig(Map<String, Object> context, String organization) {
+
+    private void setDefaultGoConfig(Map<String, Object> context) {
         context.put("goEnabled", false);
-        context.put("goModulePrefix", "github.com/" + (organization.isEmpty() ? "example" : organization) + "/proto");
-        context.put("goVersion", "1.21");
+        context.put("goModulePrefix", "github.com/example/proto");
+        context.put("goVersion", "1.25");
     }
 
     /**
@@ -285,16 +304,6 @@ public class LakeInitializer {
         // Create README using template
         templateEngine.renderToFile("lake-readme.md.tmpl", new HashMap<>(),
                 lakePath.resolve("README.md"));
-    }
-
-    /**
-     * Extracts organization from lake config.
-     */
-    private String extractOrganization(LakeConfig config) {
-        if (config != null && !config.getOrganization().isEmpty()) {
-            return config.getOrganization();
-        }
-        return "example"; // Default organization
     }
 
     /**

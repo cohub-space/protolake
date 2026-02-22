@@ -2,7 +2,6 @@ package io.vdp.protolake.storage;
 
 import protolake.v1.Bundle;
 import protolake.v1.Lake;
-import protolake.v1.Language;
 import protolake.v1.TargetBuildInfo;
 
 import java.util.List;
@@ -111,48 +110,24 @@ public interface StorageService {
     boolean deleteBundle(String lakeId, String bundleId);
 
     // ===== Build Operations =====
-    
+
     /**
      * Records a build from TargetBuildInfo.
      * Automatically prunes old builds to maintain storage limits.
-     * 
+     *
      * @param lakeId The lake id
      * @param bundleId The bundle id
-     * @param branch The git branch
      * @param buildInfo The target build info
      * @return The recorded build info
      */
-    TargetBuildInfo recordTargetBuild(String lakeId, String bundleId,
-                                      String branch, TargetBuildInfo buildInfo);
-    
-    /**
-     * Gets the latest TargetBuildInfo for a bundle.
-     * 
-     * @param lakeId The lake id
-     * @param bundleId The bundle id
-     * @param branch The git branch
-     * @param language The target language (optional, null for any)
-     * @return The latest build info if found
-     */
-    Optional<TargetBuildInfo> getLatestTargetBuild(String lakeId, String bundleId,
-                                                  String branch, Language language);
+    TargetBuildInfo recordTargetBuild(String lakeId, String bundleId, TargetBuildInfo buildInfo);
 
     /**
      * Lists all builds for a bundle.
-     * 
+     *
      * @param lakeId The lake id
      * @param bundleId The bundle id
      * @return List of all builds for the bundle
      */
     List<TargetBuildInfo> listBuilds(String lakeId, String bundleId);
-
-    /**
-     * Lists builds for a bundle filtered by branch.
-     * 
-     * @param lakeId The lake id
-     * @param bundleId The bundle id
-     * @param branch The git branch
-     * @return List of builds on the specified branch
-     */
-    List<TargetBuildInfo> listBuildsByBranch(String lakeId, String bundleId, String branch);
 }

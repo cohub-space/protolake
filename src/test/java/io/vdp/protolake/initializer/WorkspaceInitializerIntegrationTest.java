@@ -215,7 +215,7 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
             "- FILE",
             "lint:",
             "use:",
-            "- DEFAULT",
+            "- STANDARD",
             "except:",
             "- PACKAGE_VERSION_SUFFIX"
         );
@@ -247,12 +247,6 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
             "Wrapper script that runs Gazelle in two passes"
         );
         
-        // Verify proto import fixer
-        assertExecutableFile(toolsPath.resolve("fix_proto_imports.py"));
-        assertFileContains(toolsPath.resolve("fix_proto_imports.py"),
-            "#!/usr/bin/env python3",
-            "Fix proto imports in BUILD files for Bazel 8 compatibility"
-        );
     }
     
     @Test
@@ -261,7 +255,6 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         Lake lake = createTestLake("lang-lake")
             .toBuilder()
             .setConfig(LakeConfig.newBuilder()
-                .setOrganization("com.mycompany")
                 .setLanguageDefaults(LanguageDefaults.newBuilder()
                     .setJava(JavaDefaults.newBuilder()
                         .setEnabled(true)
@@ -296,7 +289,6 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         Lake lake = createTestLake("context-lake")
             .toBuilder()
             .setConfig(LakeConfig.newBuilder()
-                .setOrganization("test.company")
                 .setModuleBazel(ModuleBazelConfig.newBuilder()
                     .setProtobufVersion("27.0")
                     .setGrpcVersion("1.64.0")
@@ -323,9 +315,7 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
             .setName(LakeUtil.toResourceName(name))
             .setDisplayName("Test Lake")
             .setDescription("Lake for testing workspace initialization")
-            .setConfig(LakeConfig.newBuilder()
-                .setOrganization("example")
-                .build())
+            .setConfig(LakeConfig.getDefaultInstance())
             .setCreateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .setUpdateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .build();

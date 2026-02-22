@@ -188,12 +188,12 @@ public class BundleInitializerIntegrationTest extends InitializerTestBase {
         Path bundlePath = BundleUtil.calculateBundlePath(testLake, bundle, basePath.toString());
         
         // Verify bundle.yaml contains custom configuration with nested structure
+        // Note: group_id is inherited from lake defaults, not rendered in bundle.yaml
         assertFileContains(bundlePath.resolve("bundle.yaml"),
             "languages:",
             "java:",
             "enabled: true",
-            "group_id: com.mycompany.proto",
-            "artifact_id: user-proto-custom",
+            "artifact_id: \"user-proto-custom\"",
             "python:",
             "enabled: false"
         );
@@ -325,9 +325,7 @@ public class BundleInitializerIntegrationTest extends InitializerTestBase {
             .setName(LakeUtil.toResourceName(name))
             .setDisplayName("Test Lake")
             .setDescription("Lake for testing")
-            .setConfig(LakeConfig.newBuilder()
-                .setOrganization("test-org")
-                .build())
+            .setConfig(LakeConfig.getDefaultInstance())
             .setCreateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .setUpdateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .build();

@@ -1,4 +1,4 @@
-# Enable bzlmod
+# Enable bzlmod (default in Bazel 8)
 common --enable_bzlmod
 common --registry=https://bcr.bazel.build
 
@@ -23,10 +23,6 @@ build --tool_java_runtime_version=local_jdk
 # Proto options
 build --protocopt=--experimental_allow_proto3_optional
 
-# Performance options
-build --experimental_remote_merkle_tree_cache
-build --experimental_remote_merkle_tree_cache_size=1000
-
 # Output options
 build --show_timestamps
 build --show_progress_rate_limit=5
@@ -34,6 +30,19 @@ build --show_progress_rate_limit=5
 # Platform configuration
 build --incompatible_enable_cc_toolchain_resolution
 build --incompatible_strict_action_env
+
+# Publish genrules need filesystem access for local install
+build --strategy=Genrule=local
+
+# Pass publishing env vars through to Bazel actions
+build --action_env=HOME
+build --action_env=MAVEN_REPO
+build --action_env=PYPI_REPO
+build --action_env=VERSION
+build --action_env=NPM_PUBLISH_MODE
+build --action_env=REGISTRY_TOKEN
+build --action_env=NPM_REGISTRY_URL
+build --action_env=NPM_REGISTRY_TOKEN
 
 # Disk cache for build artifacts
 build --disk_cache=/home/protolake/.cache/bazel-disk-cache

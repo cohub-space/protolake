@@ -7,14 +7,7 @@ exports_files([
     "proto_bundle.bzl",
 ])
 
-# Python script for fixing proto imports after Gazelle runs
-# This is a temporary fix for Bazel 8 compatibility until Gazelle is updated
-py_binary(
-    name = "fix_proto_imports",
-    srcs = ["fix_proto_imports.py"],
-)
-
-# Python script wrapper that runs both gazelle and fix_proto_imports
+# Gazelle wrapper that runs standard and protolake passes
 py_binary(
     name = "gazelle_wrapper",
     srcs = ["gazelle_wrapper.py"],
@@ -48,6 +41,20 @@ py_binary(
     srcs = ["publish/npm_publisher.py"],
     main = "publish/npm_publisher.py",
     deps = [":publisher_utils"],
+)
+
+# Proto-loader publisher (packages raw .proto files for @grpc/proto-loader)
+py_binary(
+    name = "proto_loader_publisher",
+    srcs = ["publish/proto_loader_publisher.py"],
+    main = "publish/proto_loader_publisher.py",
+)
+
+# Proto-loader npm publisher (genrule tool for publishing proto-loader packages)
+py_binary(
+    name = "publish_proto_loader_to_npm",
+    srcs = ["publish/proto_loader_publisher.py"],
+    main = "publish/proto_loader_publisher.py",
 )
 
 # Bundler tools

@@ -8,7 +8,6 @@ import io.vdp.protolake.validator.LakeValidator;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
-import protolake.v1.BuildDefaults;
 import protolake.v1.Bundle;
 import protolake.v1.BundleConfig;
 import protolake.v1.JavaConfig;
@@ -144,25 +143,11 @@ public class ValidationTest extends StorageTestBase {
         Lake noConfig = Lake.newBuilder()
             .setName(LakeUtil.toResourceName("no_config"))
             .build();
-        
+
         assertThatThrownBy(() -> lakeValidator.validate(noConfig))
             .isInstanceOf(ValidationException.class)
             .hasMessageContaining("Lake configuration is required");
-        
-        // Invalid version format
-        Lake badVersion = createTestLake("bad_version", "Bad Version", "Invalid version")
-            .toBuilder()
-            .setConfig(LakeConfig.newBuilder()
-                .setBuildDefaults(BuildDefaults.newBuilder()
-                    .setBaseVersion("not-a-version")
-                    .build())
-                .build())
-            .build();
-        
-        assertThatThrownBy(() -> lakeValidator.validate(badVersion))
-            .isInstanceOf(ValidationException.class)
-            .hasMessageContaining("Invalid base version format");
-        
+
         // Missing required protobuf version
         Lake noProtobuf = createTestLake("no_protobuf", "No Protobuf", "Missing version")
             .toBuilder()
@@ -172,7 +157,7 @@ public class ValidationTest extends StorageTestBase {
                     .build())
                 .build())
             .build();
-        
+
         assertThatThrownBy(() -> lakeValidator.validate(noProtobuf))
             .isInstanceOf(ValidationException.class)
             .hasMessageContaining("Protobuf version is required");
@@ -372,15 +357,10 @@ public class ValidationTest extends StorageTestBase {
             .setDescription("Lake for complex validation")
             .setLakePrefix("org/division")
             .setConfig(LakeConfig.newBuilder()
-                .setOrganization("com.company")
                 .setModuleBazel(ModuleBazelConfig.newBuilder()
-                    .setProtobufVersion("27.0")
-                    .setGrpcVersion("1.64.0")
-                    .setRulesProtoGrpcVersion("5.0.0")
-                    .build())
-                .setBuildDefaults(BuildDefaults.newBuilder()
-                    .setAutoPublishLocal(true)
-                    .setBaseVersion("1.0.0")
+                    .setProtobufVersion("31.1")
+                    .setGrpcVersion("1.78.0")
+                    .setRulesProtoGrpcVersion("5.8.0")
                     .build())
                 .build())
             .setCreateTime(LakeUtil.toProtoTimestamp(Instant.now()))

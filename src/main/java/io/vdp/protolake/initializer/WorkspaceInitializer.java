@@ -72,26 +72,29 @@ public class WorkspaceInitializer {
         String gitCommit = System.getenv("PROTOLAKE_GAZELLE_GIT_COMMIT");
         
         if (gitUrl != null && !gitUrl.isEmpty() && gitCommit != null && !gitCommit.isEmpty()) {
-            // Use git repository
+            // Use git repository (explicit env vars)
             context.put("protolake_gazelle_git_url", gitUrl);
             context.put("protolake_gazelle_git_commit", gitCommit);
-            // Set path to empty when using git
             context.put("protolake_gazelle_path", "");
             LOG.debugf("Using git repository for protolake-gazelle: %s@%s", gitUrl, gitCommit);
         } else {
-            // Use local path
+            // Check for explicit local path override
             String protolakeGazellePath = System.getenv("PROTOLAKE_GAZELLE_SOURCE_PATH");
             if (protolakeGazellePath != null && !protolakeGazellePath.isEmpty()) {
                 // Running inside Docker or with explicit path
                 context.put("protolake_gazelle_path", protolakeGazellePath);
+                context.put("protolake_gazelle_git_url", "");
+                context.put("protolake_gazelle_git_commit", "");
+                LOG.debugf("Using local path for protolake-gazelle: %s", protolakeGazellePath);
             } else {
-                // Default relative path for local development
-                context.put("protolake_gazelle_path", "../../../protolake-gazelle");
+                // Default: fetch from public GitHub repository
+                context.put("protolake_gazelle_git_url",
+                        "https://github.com/cohub-space/protolake-gazelle.git");
+                context.put("protolake_gazelle_git_commit",
+                        "acc01c461811c348a764940491fc84a1f062ac7d");
+                context.put("protolake_gazelle_path", "");
+                LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }
-            // Set git variables to empty when using local path
-            context.put("protolake_gazelle_git_url", "");
-            context.put("protolake_gazelle_git_commit", "");
-            LOG.debugf("Using local path for protolake-gazelle: %s", context.get("protolake_gazelle_path"));
         }
         
         Path lakePath = LakeUtil.getLocalPath(lake, basePath);
@@ -231,6 +234,8 @@ public class WorkspaceInitializer {
                 publishPath.resolve("pypi_publisher.py"));
         copyAndMakeExecutable("tools/publish/npm_publisher.py",
                 publishPath.resolve("npm_publisher.py"));
+        copyAndMakeExecutable("tools/publish/proto_loader_publisher.py",
+                publishPath.resolve("proto_loader_publisher.py"));
 
         // Copy utility module (not executable)
         templateEngine.copyResource("tools/publish/publisher_utils.py",
@@ -238,14 +243,12 @@ public class WorkspaceInitializer {
     }
 
     /**
-     * Creates utility scripts (gazelle wrapper, import fixer).
+     * Creates utility scripts (gazelle wrapper).
      * These are static scripts with no template variables.
      */
     private void createUtilityScripts(Path toolsPath) throws IOException {
         copyAndMakeExecutable("tools/gazelle_wrapper.py",
                 toolsPath.resolve("gazelle_wrapper.py"));
-        copyAndMakeExecutable("tools/fix_proto_imports.py",
-                toolsPath.resolve("fix_proto_imports.py"));
     }
 
     /**
@@ -258,31 +261,24 @@ public class WorkspaceInitializer {
 
         LakeConfig config = lake.getConfig();
         if (config != null) {
-            context.put("organization", config.getOrganization());
-
             if (config.hasModuleBazel()) {
-                // Use the template variable names with underscores
                 context.put("protobuf_version", config.getModuleBazel().getProtobufVersion());
                 context.put("grpc_version", config.getModuleBazel().getGrpcVersion());
                 context.put("rules_proto_grpc_version", config.getModuleBazel().getRulesProtoGrpcVersion());
-                
-                // Also set the Java-specific versions from the module bazel config
                 context.put("grpc_java_version", config.getModuleBazel().getGrpcVersion());
-                // Note: protobuf_java_version would need to be derived or set separately
             }
         }
 
         // Add defaults
-        context.putIfAbsent("organization", "com.example");
-        context.putIfAbsent("protobuf_version", "31.1");
-        context.putIfAbsent("grpc_version", "1.64.0");
-        context.putIfAbsent("rules_proto_grpc_version", "5.3.1");
+        context.putIfAbsent("protobuf_version", "33.5");
+        context.putIfAbsent("grpc_version", "1.78.0");
+        context.putIfAbsent("rules_proto_grpc_version", "5.8.0");
 
         // Add additional dependencies needed by MODULE.bazel.tmpl
-        context.putIfAbsent("protobuf_java_version", "4.28.3");
-        context.putIfAbsent("grpc_java_version", "1.68.1");
-        context.putIfAbsent("rules_java_version", "8.13.0");
-        context.putIfAbsent("rules_python_version", "1.5.1");
+        context.putIfAbsent("protobuf_java_version", "4.33.5");
+        context.putIfAbsent("grpc_java_version", "1.78.0");
+        context.putIfAbsent("rules_java_version", "9.5.0");
+        context.putIfAbsent("rules_python_version", "1.8.4");
 
         return context;
     }

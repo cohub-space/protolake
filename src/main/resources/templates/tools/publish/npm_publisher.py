@@ -38,6 +38,9 @@ def publish_npm_package(bundle_path, coordinates_path):
         coordinates = f.read().strip()
     package_name, version = coordinates.rsplit('@', 1)
 
+    # Convert to absolute path before changing cwd for extraction
+    bundle_path = os.path.abspath(bundle_path)
+
     with tempfile.TemporaryDirectory() as tmpdir:
         # Extract bundle
         print(f"Extracting bundle: {bundle_path}")
@@ -105,6 +108,7 @@ def publish_npm_package(bundle_path, coordinates_path):
             packages_dir.mkdir(parents=True, exist_ok=True)
 
             dest = packages_dir / package_name.replace('/', '-') / version
+            dest.parent.mkdir(parents=True, exist_ok=True)
             if dest.exists():
                 shutil.rmtree(dest)
 
@@ -123,9 +127,46 @@ def publish_npm_package(bundle_path, coordinates_path):
             print(f"✓ Package saved to: {dest}")
             print(f"  Install with: npm install {dest}")
 
+        elif publish_mode == 'registry':
+            # Publish to a remote npm registry (e.g., GCP Artifact Registry)
+            registry_url = os.environ.get('NPM_REGISTRY_URL', '')
+            token = os.environ.get('NPM_REGISTRY_TOKEN', '') or os.environ.get('REGISTRY_TOKEN', '')
+
+            if not registry_url:
+                print("Error: NPM_REGISTRY_URL env var required for registry mode",
+                      file=sys.stderr)
+                return False
+            if not token:
+                print("Error: NPM_REGISTRY_TOKEN or REGISTRY_TOKEN env var required for registry mode",
+                      file=sys.stderr)
+                return False
+
+            # Write .npmrc with auth token for the registry host
+            from urllib.parse import urlparse
+            parsed = urlparse(registry_url)
+            registry_host = f"//{parsed.netloc}{parsed.path}"
+            npmrc_path = pkg_dir / '.npmrc'
+            npmrc_path.write_text(f"{registry_host}:_authToken={token}\n")
+
+            print(f"Publishing to registry: {registry_url}")
+            result = subprocess.run(
+                ['npm', 'publish', f'--registry={registry_url}'],
+                cwd=pkg_dir,
+                capture_output=True,
+                text=True
+            )
+            if result.returncode == 0:
+                print(f"✓ Published: {package_name}@{version}")
+                print(f"  Install with: npm install {package_name} --registry {registry_url}")
+            else:
+                print(f"✗ Failed to publish: {result.stderr}")
+                if result.stdout:
+                    print(f"  stdout: {result.stdout}")
+                return False
+
         else:
             print(f"Unknown publish mode: {publish_mode}")
-            print("Supported modes: link, local-registry, file, pack")
+            print("Supported modes: link, local-registry, file, pack, registry")
             return False
 
         return True
@@ -143,19 +184,25 @@ Environment variables:
                       - local-registry: publish to local registry
                       - file: copy to ~/.proto-lake/npm-packages
                       - pack: save tarball to ~/.proto-lake/npm-packs
-  
+                      - registry: publish to remote npm registry
+
   NPM_REGISTRY        Registry URL for local-registry mode
                       (default: http://localhost:4873)
+  NPM_REGISTRY_URL    Registry URL for registry mode (e.g., GCP Artifact Registry)
+  NPM_REGISTRY_TOKEN  Auth token for registry mode (falls back to REGISTRY_TOKEN)
 
 Examples:
   # Default npm link mode
   bazel run //path/to:publish_to_npm
-  
+
   # Publish to local registry
   NPM_PUBLISH_MODE=local-registry bazel run //path/to:publish_to_npm
-  
+
   # Save to file system
   NPM_PUBLISH_MODE=file bazel run //path/to:publish_to_npm
+
+  # Publish to remote registry
+  NPM_PUBLISH_MODE=registry NPM_REGISTRY_URL=https://... bazel run //path/to:publish_to_npm
 """
     )
 

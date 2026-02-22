@@ -25,8 +25,8 @@ import java.util.regex.Pattern;
 
 /**
  * Runs buf validation on proto files across the entire lake.
- * 
- * Buf provides compilation checking, linting, breaking change detection, 
+ *
+ * Buf provides compilation checking, linting, breaking change detection,
  * and format checking for proto files. It operates at the lake level to
  * ensure cross-bundle dependencies are properly validated.
  */
@@ -44,28 +44,23 @@ public class ValidationRunner {
 
     @Inject
     GitCommand gitCommand;
-    
+
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
 
-
-
     /**
-     * Validates an entire lake with specified configuration.
-     * 
-     * This runs buf against all proto files in the lake, checking for:
+     * Validates an entire lake.
+     *
+     * When skipValidation is true, all checks are skipped and the phase is marked as SKIPPED.
+     * Otherwise, runs buf against all proto files in the lake, checking for:
      * - Compilation errors
      * - Lint violations
      * - Breaking changes
-     * - Format consistency
-     * 
-     * Cross-bundle dependencies are properly validated since buf sees
-     * the entire proto graph.
+     * - Format consistency (warnings only)
      */
-    public ValidationResult validateLake(protolake.v1.Lake lake, RunValidationConfig config, BuildOperationMetadata metadata) throws IOException {
-        if (!config.getEnabled()) {
-            LOG.debugf("Validation disabled for lake: %s", lake.getName());
-            // Mark phase as skipped
+    public ValidationResult validateLake(protolake.v1.Lake lake, boolean skipValidation, BuildOperationMetadata metadata) throws IOException {
+        if (skipValidation) {
+            LOG.debugf("Validation skipped for lake: %s", lake.getName());
             PhaseStatus skipped = PhaseStatus.newBuilder()
                 .setStatus(PhaseStatus.Status.SKIPPED)
                 .build();
@@ -85,7 +80,6 @@ public class ValidationRunner {
         Path lakePath = LakeUtil.getLocalPath(lake, basePath);
         if (!Files.exists(lakePath.resolve("buf.yaml"))) {
             LOG.warnf("No buf.yaml found for lake: %s, skipping validation", lake.getName());
-            // Mark as skipped since we can't validate without buf.yaml
             PhaseStatus skipped = PhaseStatus.newBuilder()
                 .setStatus(PhaseStatus.Status.SKIPPED)
                 .build();
@@ -106,44 +100,41 @@ public class ValidationRunner {
             .setStartTime(Timestamp.newBuilder()
                 .setSeconds(Instant.now().getEpochSecond())
                 .build());
-        
+
         List<String> logs = new ArrayList<>();
         List<ValidationError> errors = new ArrayList<>();
-        ValidationChecks checks = config.getChecks();
-        
+
         try {
+            // Resolve buf module dependencies (googleapis, protovalidate, etc.)
+            validationStatus.setSubPhase("Resolving proto dependencies");
+            bufCommand.modUpdate(lakePath);
+
             // Run buf build (compilation check)
-            if (checks.getCompilation()) {
-                validationStatus.setSubPhase("Running proto compilation checks");
-                List<ValidationError> buildErrors = runBufBuild(lakePath, logs);
-                errors.addAll(buildErrors);
-            }
-            
+            validationStatus.setSubPhase("Running proto compilation checks");
+            List<ValidationError> buildErrors = runBufBuild(lakePath, logs);
+            errors.addAll(buildErrors);
+
             // Run buf lint
-            if (checks.getLint()) {
-                validationStatus.setSubPhase("Running lint checks");
-                List<ValidationError> lintErrors = runBufLint(lakePath, logs);
-                errors.addAll(lintErrors);
-            }
-            
+            validationStatus.setSubPhase("Running lint checks");
+            List<ValidationError> lintErrors = runBufLint(lakePath, logs);
+            errors.addAll(lintErrors);
+
             // Run buf breaking (if there's a previous version to compare against)
-            if (checks.getBreaking() && hasGitHistory(lakePath)) {
+            if (hasGitHistory(lakePath)) {
                 validationStatus.setSubPhase("Running breaking change detection");
                 List<ValidationError> breakingErrors = runBufBreaking(lakePath, logs);
                 errors.addAll(breakingErrors);
             }
-            
-            // Run buf format check
-            if (checks.getFormat()) {
-                validationStatus.setSubPhase("Running format checks");
-                List<ValidationError> formatErrors = runBufFormat(lakePath, logs);
-                errors.addAll(formatErrors);
-            }
-            
+
+            // Run buf format check (warnings only)
+            validationStatus.setSubPhase("Running format checks");
+            List<ValidationError> formatErrors = runBufFormat(lakePath, logs);
+            errors.addAll(formatErrors);
+
             // Update status based on results
             boolean hasErrors = errors.stream()
                 .anyMatch(e -> e.getSeverity() == ValidationError.Severity.ERROR);
-            
+
             if (!hasErrors) {
                 validationStatus
                     .setStatus(PhaseStatus.Status.SUCCEEDED)
@@ -156,22 +147,22 @@ public class ValidationRunner {
                     .setEndTime(Timestamp.newBuilder()
                         .setSeconds(Instant.now().getEpochSecond())
                         .build());
-                String errorSummary = String.format("Validation failed with %d errors", 
+                String errorSummary = String.format("Validation failed with %d errors",
                     errors.stream().filter(e -> e.getSeverity() == ValidationError.Severity.ERROR).count());
                 validationStatus.setErrorMessage(errorSummary);
             }
-            
+
             validationStatus.addAllLogLines(logs);
-            
+
             // Create updated metadata
             BuildOperationMetadata updatedMetadata = metadata.toBuilder()
                 .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder()
                     .setValidation(validationStatus.build())
                     .build())
                 .build();
-            
+
             return buildValidationResult(errors, updatedMetadata);
-            
+
         } catch (Exception e) {
             // Mark validation as failed
             validationStatus
@@ -181,13 +172,7 @@ public class ValidationRunner {
                     .build())
                 .setErrorMessage("Validation failed: " + e.getMessage())
                 .addAllLogLines(logs);
-                
-            BuildOperationMetadata failedMetadata = metadata.toBuilder()
-                .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder()
-                    .setValidation(validationStatus.build())
-                    .build())
-                .build();
-                
+
             throw new IOException("Validation failed", e);
         }
     }
@@ -197,10 +182,9 @@ public class ValidationRunner {
      */
     private List<ValidationError> runBufBuild(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
-        
+
         List<String> buildErrors = bufCommand.build(directory);
         if (!buildErrors.isEmpty()) {
-            // Combine all error lines into a single message
             String errorMessage = String.join("\n", buildErrors);
             logs.add("Compilation errors found:\n" + errorMessage);
             errors.add(ValidationError.newBuilder()
@@ -209,7 +193,7 @@ public class ValidationRunner {
                 .setSeverity(ValidationError.Severity.ERROR)
                 .build());
         }
-        
+
         LOG.debugf("Buf build found %d compilation issues", errors.size());
         return errors;
     }
@@ -219,7 +203,7 @@ public class ValidationRunner {
      */
     private List<ValidationError> runBufLint(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
-        
+
         List<String> lintOutput = bufCommand.lint(directory);
         for (String line : lintOutput) {
             ValidationError error = parseBufLintLine(line);
@@ -227,7 +211,7 @@ public class ValidationRunner {
                 errors.add(error);
             }
         }
-        
+
         LOG.debugf("Buf lint found %d issues", errors.size());
         if (!errors.isEmpty()) {
             logs.add(String.format("Lint validation found %d issues", errors.size()));
@@ -240,7 +224,7 @@ public class ValidationRunner {
      */
     private List<ValidationError> runBufBreaking(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
-        
+
         List<String> breakingOutput = bufCommand.breaking(directory, ".git#branch=HEAD~1");
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
@@ -251,12 +235,12 @@ public class ValidationRunner {
                     .build());
             }
         }
-        
+
         if (!errors.isEmpty()) {
             LOG.warnf("Buf found %d breaking changes", errors.size());
             logs.add(String.format("Breaking change detection found %d issues", errors.size()));
         }
-        
+
         return errors;
     }
 
@@ -265,17 +249,16 @@ public class ValidationRunner {
      */
     private List<ValidationError> runBufFormat(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
-        
+
         List<String> formatOutput = bufCommand.format(directory, true);
         if (!formatOutput.isEmpty()) {
-            // Format issues found
             errors.add(ValidationError.newBuilder()
                 .setType(ValidationError.Type.LINT)
                 .setMessage("Format issues found. Run 'buf format' to fix.")
                 .setSeverity(ValidationError.Severity.WARNING)
                 .build());
         }
-        
+
         LOG.debugf("Buf format check found %d issues", errors.size());
         if (!errors.isEmpty()) {
             logs.add("Format check found issues. Run 'buf format' to fix.");
@@ -290,7 +273,7 @@ public class ValidationRunner {
         if (line == null || line.trim().isEmpty()) {
             return null;
         }
-        
+
         Matcher matcher = BUF_LINT_PATTERN.matcher(line);
         if (matcher.matches()) {
             return ValidationError.newBuilder()
@@ -302,8 +285,7 @@ public class ValidationRunner {
                 .setSeverity(ValidationError.Severity.WARNING)
                 .build();
         }
-        
-        // If doesn't match pattern, create a general error
+
         return ValidationError.newBuilder()
             .setMessage(line)
             .setType(ValidationError.Type.LINT)
@@ -317,8 +299,6 @@ public class ValidationRunner {
     private boolean hasGitHistory(Path directory) {
         try {
             gitCommand.getCurrentCommit(directory);
-            // Check if there's a previous commit
-            gitCommand.getCurrentCommit(directory); // This will throw if no commits
             return true;
         } catch (Exception e) {
             return false;
@@ -331,30 +311,15 @@ public class ValidationRunner {
     private ValidationResult buildValidationResult(List<ValidationError> errors, BuildOperationMetadata metadata) {
         boolean hasErrors = errors.stream()
             .anyMatch(e -> e.getSeverity() == ValidationError.Severity.ERROR);
-        
+
         ValidationErrors validationErrors = ValidationErrors.newBuilder()
             .addAllErrors(errors)
             .build();
-        
+
         return ValidationResult.newBuilder()
             .setSuccess(!hasErrors)
             .setErrors(validationErrors)
             .setMetadata(metadata)
-            .build();
-    }
-
-    /**
-     * Gets default validation configuration with standard checks enabled.
-     */
-    private RunValidationConfig getDefaultValidationConfig() {
-        return RunValidationConfig.newBuilder()
-            .setEnabled(true)
-            .setChecks(ValidationChecks.newBuilder()
-                .setCompilation(true)
-                .setLint(true)
-                .setBreaking(true)
-                .setFormat(false)
-                .build())
             .build();
     }
 }

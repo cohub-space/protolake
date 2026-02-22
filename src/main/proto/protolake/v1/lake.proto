@@ -32,10 +32,6 @@ service LakeService {
   // Build all bundles in the lake
   // Returns a long-running operation that tracks build progress
   rpc BuildLake(BuildLakeRequest) returns (google.longrunning.Operation);
-
-  // Refresh lakes from filesystem
-  // Discovers lakes and bundles by scanning for lake.yaml and bundle.yaml files
-  rpc RefreshLakes(RefreshLakesRequest) returns (RefreshLakesResponse);
 }
 
 // A Lake is a collection of proto bundles with shared configuration
@@ -58,7 +54,7 @@ message Lake {
   // Automatically set by the system
   google.protobuf.Timestamp create_time = 5;
   google.protobuf.Timestamp update_time = 6;
-  
+
   // Path prefix from base workspace to the lake directory
   // For example: "z/y" means the lake is at {base_workspace}/z/y/{name}/
   // If empty, lake is directly under base workspace
@@ -68,23 +64,19 @@ message Lake {
 // Lake configuration controls how protolake builds all bundles
 // These settings provide defaults that individual bundles can override
 message LakeConfig {
+  // Local path where the lake is stored on disk
+  string local_path = 1;
+
   // Controls the MODULE.bazel generation for Bazel builds
   // This defines which versions of protoc, gRPC, etc. are used
-  ModuleBazelConfig module_bazel = 1;
+  ModuleBazelConfig module_bazel = 2;
 
   // Default language settings inherited by all bundles
   // Individual bundles can override these settings
-  LanguageDefaults language_defaults = 2;
-
-  // Build behavior configuration
-  BuildDefaults build_defaults = 3;
+  LanguageDefaults language_defaults = 3;
 
   // Validation configuration using buf
   ValidationConfig validation = 4;
-
-  // Organization name for package naming
-  // Used to generate default package names across languages
-  string organization = 5;
 }
 
 // Controls MODULE.bazel generation for the entire protolake
@@ -164,6 +156,11 @@ message JavaDefaults {
   // Proto compilation options
   bool java_multiple_files = 8;      // Generate separate .java file per message
   string java_outer_classname_suffix = 9;  // e.g., "Proto"
+
+  // Whether to create a fat JAR with all transitive dependencies bundled in.
+  // If false (default), creates a thin JAR with only generated code.
+  // Transitive deps are declared in the POM for Maven resolution.
+  bool fat_jar = 10;
 }
 
 // Maven dependency specification
@@ -215,6 +212,10 @@ message JavaScriptDefaults {
 
   // Additional npm dependencies to include in package.json
   repeated NpmDependency additional_dependencies = 8;
+
+  // Generate proto-loader compatible npm packages with raw .proto files
+  // for use with @grpc/proto-loader dynamic loading
+  bool proto_loader = 9;
 }
 
 // npm dependency specification
@@ -237,20 +238,6 @@ message GoDefaults {
   // Go module settings
   string module_prefix = 2;    // e.g., "github.com/company/proto"
   string go_version = 3;       // e.g., "1.21"
-}
-
-// Build behavior configuration
-message BuildDefaults {
-  // Automatically publish to local repositories after successful build
-  // For Maven: ~/.m2/repository
-  // For Python: pip install -e
-  // For npm: npm link
-  bool auto_publish_local = 1;
-
-  // Base version for all bundles
-  // Local builds append branch name: "1.0.0" -> "1.0.0-feature-x"
-  // Remote builds use clean versions: "1.0.0"
-  string base_version = 2;
 }
 
 // Validation configuration
@@ -306,7 +293,7 @@ message UpdateLakeRequest {
 message DeleteLakeRequest {
   // Lake name to delete
   string name = 1;
-  
+
   // Delete options
   // If true: delete entire lake directory including all files
   // If false: delete only protolake files (lake.yaml, bundle.yaml) - default
@@ -322,82 +309,11 @@ message BuildLakeRequest {
   // If empty, builds all bundles in the lake
   repeated string bundle_names = 2;
 
-  // NOTE: We always build the current git branch
-  // No branch switching to keep things simple
+  // Install artifacts locally after build
+  bool install_local = 3;
 
-  // Optional: Configure which pipeline steps to run
-  // If not specified, runs all steps
-  BuildPipelineConfig pipeline_config = 3;
-}
-
-// Configuration for which build pipeline steps to run
-message BuildPipelineConfig {
-  // Configuration for Gazelle step
-  RunGazelleConfig gazelle = 1;
-
-  // Configuration for validation step
-  RunValidationConfig validation = 2;
-
-  // Configuration for Bazel build step
-  RunBuildConfig build = 3;
-
-  // Configuration for publishing step
-  RunPublishConfig publish = 4;
-}
-
-// Gazelle configuration
-message RunGazelleConfig {
-  // Whether to run Gazelle at all
-  bool enabled = 1;
-}
-
-// Build configuration
-message RunBuildConfig {
-  // Whether to run build at all
-  bool enabled = 1;
-
-  // Clean before building
-  bool clean = 2;  // Default: false
-  
-  // Whether to keep going on failures
-  bool keep_going = 3;  // Default: false
-  
-  // Build bundles individually instead of all at once
-  // When true: Query for bundle targets and build each separately
-  // When false: Build target directly (e.g., //... for lake builds)
-  bool isolate_bundle_builds = 4;  // Default: false
-}
-
-// Publishing configuration
-message RunPublishConfig {
-  // Whether to publish at all
-  bool enabled = 1;
-}
-
-// Validation configuration
-// We delegate to buf for proto validation and linting
-message RunValidationConfig {
-  // Whether to run validation at all
-  bool enabled = 1;
-
-  // Which validation checks to perform
-  ValidationChecks checks = 2;
-}
-
-message ValidationChecks {
-  // Run buf build to verify compilation
-  bool compilation = 1;  // Default: true
-
-  // Run buf lint
-  bool lint = 2;  // Default: true
-
-  // Run buf breaking
-  bool breaking = 3;  // Default: true in STRICT mode, false in FORCE
-
-  // Run buf format --diff (check formatting)
-  bool format = 4;  // Default: false (opt-in)
-
-  // Future: custom validation plugins
+  // Skip proto validation (buf lint/breaking)
+  bool skip_validation = 4;
 }
 
 // =============================================================================
@@ -412,27 +328,27 @@ message BuildOperationMetadata {
   string resource_name = 1;
 
   // The requested target being built
-  // For lake: "//..." 
+  // For lake: "//..."
   // For bundle: "//bundles/my-bundle:all"
   string requested_target = 2;
-  
+
   // Current git branch
   string branch = 3;
-  
+
   // Start time of the entire operation
   google.protobuf.Timestamp start_time = 4;
-  
+
   // Current phase of the operation
   OperationPhase current_phase = 5;
-  
+
   // Status of all phases (preserves history)
   PhaseStatuses phase_statuses = 6;
-  
+
   // Map of all discovered targets and their build status
   // Key: target name (e.g., "//bundles/user:all")
   // Value: build information for that target
   map<string, TargetBuildInfo> target_builds = 7;
-  
+
   // Lake being built (for use in build pipeline)
   Lake lake = 8;
 }
@@ -442,7 +358,7 @@ message PhaseStatuses {
   PhaseStatus gazelle = 1;
   PhaseStatus validation = 2;
   PhaseStatus build = 3;
-  // Publishing is merged into the build phase
+  PhaseStatus publish = 4;
 }
 
 // Generic status for any phase of the operation
@@ -454,19 +370,19 @@ message PhaseStatus {
     FAILED = 3;
     SKIPPED = 4;
   }
-  
+
   Status status = 1;
-  
+
   // Human-readable description of current sub-phase
   // e.g., "Running lint checks", "Building target 2 of 5"
   string sub_phase = 2;
-  
+
   google.protobuf.Timestamp start_time = 3;
   google.protobuf.Timestamp end_time = 4;
-  
+
   // Accumulated log lines for this phase
   repeated string log_lines = 5;
-  
+
   // Error message if status = FAILED
   string error_message = 6;
 }
@@ -475,7 +391,7 @@ message PhaseStatus {
 message TargetBuildInfo {
   // The bazel target (e.g., "//bundles/user:all")
   string target = 1;
-  
+
   enum Status {
     PENDING = 0;      // Discovered but not started
     BUILDING = 1;     // Currently building
@@ -484,22 +400,22 @@ message TargetBuildInfo {
     FAILED = 4;       // Build or publish failed
     SKIPPED = 5;      // Skipped due to upstream failure
   }
-  
+
   Status status = 2;
-  
+
   // Version string for this build (e.g., "1.0.0-feature-x")
   string version = 3;
-  
+
   google.protobuf.Timestamp start_time = 4;
   google.protobuf.Timestamp end_time = 5;
-  
+
   // Raw output from bazel build command for this target
   repeated string build_logs = 6;
-  
+
   // Artifacts produced by this target
   // Key: language name (e.g., "JAVA", "PYTHON")
   map<string, Artifact> artifacts = 7;
-  
+
   // High-level error summary from our system (not raw logs)
   // e.g., "Proto compilation failed: undefined symbol 'UserStatus'"
   // This provides a quick error summary without parsing logs
@@ -510,22 +426,23 @@ message TargetBuildInfo {
 message Artifact {
   // Language this artifact is for
   Language language = 1;
-  
-  // Local path where artifact was published
+
+  // Output path where artifact was produced
   // e.g., "~/.m2/repository/com/company/proto/my-bundle/1.0.0-feature-x/"
-  string local_path = 2;
-  
+  string output_path = 2;
+
   // Artifact checksum for verification
   string sha256 = 3;
-  
+
   // Size in bytes
   int64 size_bytes = 4;
-  
-  // Package-specific metadata
-  oneof package_coordinate {
+
+  // Package-specific coordinates
+  oneof coordinates {
     MavenCoordinates maven = 5;
     PythonCoordinates python = 6;
     NpmCoordinates npm = 7;
+    GoCoordinates go = 8;
   }
 }
 
@@ -559,7 +476,7 @@ message GoCoordinates {
 message BuildResponse {
   // The complete metadata at end of build
   BuildOperationMetadata metadata = 1;
-  
+
   // Overall status derived from phases and target builds
   enum OverallStatus {
     SUCCEEDED = 0;          // All phases and targets succeeded
@@ -567,12 +484,12 @@ message BuildResponse {
     FAILED = 2;             // Critical phase failed or all targets failed
     CANCELLED = 3;          // User cancelled the operation
   }
-  
+
   OverallStatus status = 2;
-  
+
   // Operation completion time
   google.protobuf.Timestamp completion_time = 3;
-  
+
   // Quick summary for UI/API consumers
   BuildSummary summary = 4;
 }
@@ -582,11 +499,11 @@ message BuildSummary {
   int32 successful_targets = 2;
   int32 failed_targets = 3;
   int32 skipped_targets = 4;
-  
+
   // Quick list of successfully published artifacts
   // e.g., ["com.company:user-proto:1.0.0-main", "company-user-proto==1.0.0-main"]
   repeated string published_artifacts = 5;
-  
+
   // First error encountered (for quick display)
   string first_error = 6;
 }
@@ -617,22 +534,4 @@ enum OperationPhase {
   COMPLETED = 6;
   FAILED = 7;
   CANCELLED = 8;
-}
-
-// Request/Response for RefreshLakes RPC
-message RefreshLakesRequest {
-  // Optional: specific path to scan for lakes
-  // If empty, scans the entire workspace
-  string path = 1;
-}
-
-message RefreshLakesResponse {
-  // Number of lakes discovered
-  int32 lakes_discovered = 1;
-  
-  // Number of bundles discovered across all lakes
-  int32 bundles_discovered = 2;
-  
-  // List of discovered lake names
-  repeated string lake_names = 3;
 }

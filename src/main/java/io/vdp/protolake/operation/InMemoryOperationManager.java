@@ -310,7 +310,10 @@ public class InMemoryOperationManager {
         if (phases.hasBuild() && phases.getBuild().getStatus() == PhaseStatus.Status.FAILED) {
             return phases.getBuild().getErrorMessage();
         }
-        
+        if (phases.hasPublish() && phases.getPublish().getStatus() == PhaseStatus.Status.FAILED) {
+            return phases.getPublish().getErrorMessage();
+        }
+
         // Check target builds for errors
         for (TargetBuildInfo target : metadata.getTargetBuildsMap().values()) {
             if (target.getStatus() == TargetBuildInfo.Status.FAILED && !target.getErrorMessage().isEmpty()) {
@@ -324,22 +327,10 @@ public class InMemoryOperationManager {
 
     
     private String extractResourceName(BuildOperationMetadata metadata) {
-        // Extract resource name from requested target
-        // For "//...", resource is the lake
-        // For "//bundles/foo:all", resource is the bundle
-        String target = metadata.getRequestedTarget();
-        if (target.equals("//...")) {
-            // Lake-level build - extract from operation name
-            // This is a bit hacky but works for now
-            return "lakes/unknown";
-        } else if (target.startsWith("//bundles/")) {
-            // Bundle-level build
-            String bundlePath = target.substring("//bundles/".length());
-            int colonIndex = bundlePath.indexOf(':');
-            if (colonIndex > 0) {
-                String bundleName = bundlePath.substring(0, colonIndex);
-                return "lakes/unknown/bundles/" + bundleName;
-            }
+        // Resource name is stored directly in the metadata
+        String resourceName = metadata.getResourceName();
+        if (resourceName != null && !resourceName.isEmpty()) {
+            return resourceName;
         }
         return "unknown";
     }

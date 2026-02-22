@@ -39,13 +39,6 @@ service BundleService {
 
   // Get details of a specific build
   rpc GetBuild(GetBuildRequest) returns (Build);
-
-  // Get latest build for current branch (for package manager integration)
-  rpc GetLatestBuild(GetLatestBuildRequest) returns (Build);
-
-  // Refresh bundles from filesystem
-  // Discovers bundles by scanning for bundle.yaml files in the specified lake
-  rpc RefreshBundles(RefreshBundlesRequest) returns (RefreshBundlesResponse);
 }
 
 // A Bundle is a logical grouping of proto files that get built into packages
@@ -86,6 +79,10 @@ message BundleConfig {
   // Language-specific configurations
   // If set, completely replaces lake defaults (not additive)
   LanguageConfig languages = 1;
+
+  // Generate a .pb descriptor set file (FileDescriptorSet) for this bundle.
+  // Used by Envoy gRPC-JSON transcoding, grpcurl, gRPC server reflection, etc.
+  bool generate_descriptor_set = 2;
 }
 
 // Language-specific configuration for the bundle
@@ -129,6 +126,10 @@ message JavaConfig {
   // Proto compilation options
   bool java_multiple_files = 9;
   string java_outer_classname_suffix = 10;
+
+  // Whether to create a fat JAR with all transitive dependencies bundled in.
+  // Overrides lake-level default if set. Default: false (thin JAR).
+  bool fat_jar = 11;
 }
 
 // Python-specific configuration for this bundle
@@ -176,6 +177,10 @@ message JavaScriptConfig {
   // Package type
   bool use_typescript = 7;
   string module_type = 8;     // "commonjs" or "esm"
+
+  // Generate a proto-loader compatible npm package with raw .proto files
+  // for use with @grpc/proto-loader dynamic loading (e.g., excalidraw-room)
+  bool proto_loader = 9;
 }
 
 // Go-specific configuration for this bundle (future)
@@ -190,8 +195,7 @@ message GoConfig {
   string go_version = 3;      // e.g., "1.21"
 }
 
-// DEPRECATED: Build message is being replaced by TargetBuildInfo from lake.proto
-// Only kept for backward compatibility during migration
+// Build record for a bundle
 message Build {
   // Unique build ID
   string id = 1;
@@ -202,11 +206,8 @@ message Build {
   // Version of this build (e.g., "1.0.0-feature-x" for local, "1.0.0" for remote)
   string version = 3;
 
-  // Git branch at build time
-  string branch = 4;
-
   // Git commit SHA
-  string commit_sha = 5;
+  string commit_sha = 4;
 
   // Build status enum
   enum BuildStatus {
@@ -218,21 +219,17 @@ message Build {
   }
 
   // Build status
-  BuildStatus status = 6;
+  BuildStatus status = 5;
 
   // Built artifacts by language
-  map<string, Artifact> artifacts = 7;  // key is Language enum name
+  map<string, Artifact> artifacts = 6;  // key is Language enum name
 
   // Build timestamps
-  google.protobuf.Timestamp start_time = 8;
-  google.protobuf.Timestamp end_time = 9;
-
-  // Build logs (truncated for storage)
-  string logs = 10;
+  google.protobuf.Timestamp start_time = 7;
+  google.protobuf.Timestamp end_time = 8;
 
   // Error details if status = FAILED
-  // This could be set by the build system - not necessarily just logs
-  string error_message = 11;
+  string error_message = 9;
 }
 
 // Request/Response messages
@@ -295,7 +292,7 @@ message DeleteBundleRequest {
 
   // If true, also delete all build history
   bool delete_builds = 2;
-  
+
   // Delete options
   // If true: delete entire bundle directory including proto files
   // If false: delete only bundle.yaml - default
@@ -309,13 +306,11 @@ message BuildBundleRequest {
   // Languages to build (empty = all enabled languages)
   repeated Language languages = 2;
 
-  // Override version for this build (optional)
-  // If not specified, uses bundle version + branch suffix for local builds
-  string version_override = 3;
+  // Install artifacts locally after build
+  bool install_local = 3;
 
-  // Optional: Configure which pipeline steps to run
-  // If not specified, runs all steps
-  BuildPipelineConfig pipeline_config = 4;
+  // Skip proto validation (buf lint/breaking)
+  bool skip_validation = 4;
 }
 
 // Response returned in Operation.response when build completes
@@ -329,9 +324,6 @@ message ListBuildsRequest {
   string parent = 1;
 
   // Filter expression
-  // Examples:
-  //   "branch='main' AND status=SUCCEEDED"
-  //   "language='JAVA' AND start_time>'2024-01-01'"
   string filter = 2;
 
   // Pagination
@@ -353,29 +345,4 @@ message ListBuildsResponse {
 message GetBuildRequest {
   // Build resource name (e.g., "lakes/main/bundles/user-service/builds/12345")
   string name = 1;
-}
-
-message GetLatestBuildRequest {
-  // Parent bundle
-  string parent = 1;
-
-  // Branch to get latest build for (defaults to current git branch)
-  string branch = 2;
-
-  // Language to filter by (optional)
-  Language language = 3;
-}
-
-// Request/Response for RefreshBundles RPC
-message RefreshBundlesRequest {
-  // Parent lake to refresh bundles for (e.g., "lakes/main")
-  string parent = 1;
-}
-
-message RefreshBundlesResponse {
-  // Number of bundles discovered
-  int32 bundles_discovered = 1;
-  
-  // List of discovered bundle names
-  repeated string bundle_names = 2;
 }

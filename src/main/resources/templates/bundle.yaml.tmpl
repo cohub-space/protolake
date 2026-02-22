@@ -16,7 +16,7 @@ config:
     java:
       enabled: {javaEnabled}
       {#if javaArtifactId ne ""}artifact_id: "{javaArtifactId}"{#else}# artifact_id: <bundle-specific-artifact-id>{/if}
-      # group_id: <inherited-from-lake>
+      {#if javaGroupId ne ""}group_id: "{javaGroupId}"{#else}# group_id: <inherited-from-lake>{/if}
       # source_version: "11"
       # target_version: "8"
       # protobuf_java_version: "4.27.0"
