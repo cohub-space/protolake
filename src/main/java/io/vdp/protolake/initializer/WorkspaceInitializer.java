@@ -56,6 +56,9 @@ public class WorkspaceInitializer {
         // Create Buf configuration
         createBufConfiguration(lake);
 
+        // Regenerate protolakew wrapper script (keeps it in sync with template changes)
+        generateProtolakew(lake);
+
         LOG.infof("Bazel workspace initialized for lake: %s", lakeName);
     }
 
@@ -281,6 +284,31 @@ public class WorkspaceInitializer {
         context.putIfAbsent("rules_python_version", "1.8.4");
 
         return context;
+    }
+
+    /**
+     * Generates the protolakew wrapper script in the lake root.
+     * Uses simple string replacement instead of Qute to avoid conflicts
+     * with bash brace syntax.
+     */
+    private void generateProtolakew(Lake lake) throws IOException {
+        String lakeId = LakeUtil.extractLakeId(lake.getName());
+        Path lakePath = LakeUtil.getLocalPath(lake, basePath);
+
+        try (var is = getClass().getResourceAsStream("/protolakew.sh.tmpl")) {
+            if (is == null) {
+                throw new IOException("protolakew.sh.tmpl template not found on classpath");
+            }
+            String template = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+            String rendered = template
+                    .replace("{lakeName}", lakeId)
+                    .replace("{lakePrefix}", lake.getLakePrefix() != null ? lake.getLakePrefix() : "");
+
+            Path protolakewPath = lakePath.resolve("protolakew");
+            Files.writeString(protolakewPath, rendered, java.nio.charset.StandardCharsets.UTF_8);
+            makeExecutable(protolakewPath);
+            LOG.infof("Generated protolakew wrapper at %s", protolakewPath);
+        }
     }
 
     /**

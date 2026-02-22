@@ -101,11 +101,8 @@ public class LakeInitializer {
             // Generate lake.yaml configuration
             generateLakeYaml(lake);
 
-            // Initialize Bazel workspace
+            // Initialize Bazel workspace (also generates protolakew)
             workspaceInitializer.initializeWorkspace(lake);
-
-            // Generate protolakew wrapper script
-            generateProtolakew(lake, lakePath);
 
             // Create initial directory structure
             createDirectoryStructure(lakePath);
@@ -126,30 +123,6 @@ public class LakeInitializer {
                 LOG.errorf(ex, "Failed to cleanup after initialization failure");
             }
             throw new IOException("Failed to initialize lake: " + e.getMessage(), e);
-        }
-    }
-
-    /**
-     * Generates the protolakew wrapper script in the lake root.
-     * Uses simple string replacement instead of Qute to avoid conflicts
-     * with bash brace syntax.
-     */
-    private void generateProtolakew(Lake lake, Path lakePath) throws IOException {
-        String lakeId = LakeUtil.extractLakeId(lake.getName());
-
-        try (var is = getClass().getResourceAsStream("/protolakew.sh.tmpl")) {
-            if (is == null) {
-                throw new IOException("protolakew.sh.tmpl template not found on classpath");
-            }
-            String template = new String(is.readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
-            String rendered = template
-                    .replace("{lakeName}", lakeId)
-                    .replace("{lakePrefix}", lake.getLakePrefix() != null ? lake.getLakePrefix() : "");
-
-            Path protolakewPath = lakePath.resolve("protolakew");
-            Files.writeString(protolakewPath, rendered, java.nio.charset.StandardCharsets.UTF_8);
-            protolakewPath.toFile().setExecutable(true, false);
-            LOG.infof("Generated protolakew wrapper at %s", protolakewPath);
         }
     }
 
