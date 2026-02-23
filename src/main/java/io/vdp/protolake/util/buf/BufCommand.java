@@ -196,11 +196,13 @@ public class BufCommand {
             }
             
             int exitCode = process.exitValue();
-            if (exitCode > 1) {
-                // Exit code 1 is often used for "found issues" which is expected
-                // Exit code > 1 indicates actual command failure
+            if (exitCode != 0 && exitCode != 1 && exitCode != 100) {
+                // Exit code 0: success
+                // Exit code 1: found issues (buf v1)
+                // Exit code 100: found issues (buf v2 lint/breaking)
+                // Other exit codes indicate actual command failure
                 String errorMsg = String.join("\n", errors);
-                throw new IOException("Buf command failed with exit code " + exitCode + 
+                throw new IOException("Buf command failed with exit code " + exitCode +
                     ": " + errorMsg);
             }
             
