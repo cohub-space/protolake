@@ -124,11 +124,12 @@ public class WorkspaceInitializer {
     /**
      * Creates .bazelrc with build configuration.
      * This is a static file with no template variables.
+     * Only created on first init — user may customize after creation.
      */
     private void createBazelrc(Lake lake) throws IOException {
         Path lakePath = LakeUtil.getLocalPath(lake, basePath);
         Path bazelrcPath = lakePath.resolve(".bazelrc");
-        templateEngine.copyResource("bazel/bazelrc", bazelrcPath);
+        copyIfNotExists("bazel/bazelrc", bazelrcPath);
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.debugf("Created .bazelrc for lake: %s", lakeName);
     }
@@ -192,14 +193,12 @@ public class WorkspaceInitializer {
         context.put("buf_lint_use", bufLintUse);
         context.put("buf_lint_except", bufLintExcept);
 
-        // buf.yaml - template file
+        // buf.yaml - only created on first init, user may customize after creation
         Path lakePath = LakeUtil.getLocalPath(lake, basePath);
-        templateEngine.renderToFile("buf/buf.yaml.tmpl", context,
-                lakePath.resolve("buf.yaml"));
+        writeIfNotExists("buf/buf.yaml.tmpl", context, lakePath.resolve("buf.yaml"));
 
-        // buf.gen.yaml - template file
-        templateEngine.renderToFile("buf/buf.gen.yaml.tmpl", context,
-                lakePath.resolve("buf.gen.yaml"));
+        // buf.gen.yaml - only created on first init, user may customize after creation
+        writeIfNotExists("buf/buf.gen.yaml.tmpl", context, lakePath.resolve("buf.gen.yaml"));
 
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.debugf("Created Buf configuration for lake: %s", lakeName);
@@ -309,6 +308,32 @@ public class WorkspaceInitializer {
             makeExecutable(protolakewPath);
             LOG.infof("Generated protolakew wrapper at %s", protolakewPath);
         }
+    }
+
+    /**
+     * Renders a template to the target path only if the file does not already exist.
+     * Used for user-configurable files that should not be overwritten on subsequent builds.
+     */
+    private boolean writeIfNotExists(String templateName, Map<String, Object> context, Path target) throws IOException {
+        if (Files.exists(target)) {
+            LOG.debugf("Skipping %s (already exists, user-configurable)", target);
+            return false;
+        }
+        templateEngine.renderToFile(templateName, context, target);
+        return true;
+    }
+
+    /**
+     * Copies a resource to the target path only if the file does not already exist.
+     * Used for user-configurable files that should not be overwritten on subsequent builds.
+     */
+    private boolean copyIfNotExists(String resourcePath, Path target) throws IOException {
+        if (Files.exists(target)) {
+            LOG.debugf("Skipping %s (already exists, user-configurable)", target);
+            return false;
+        }
+        templateEngine.copyResource(resourcePath, target);
+        return true;
     }
 
     /**
