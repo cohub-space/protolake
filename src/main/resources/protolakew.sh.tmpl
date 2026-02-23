@@ -6,6 +6,9 @@
 # Usage: ./protolakew <command> [options]
 #   Commands: build, validate, create-bundle
 #
+#   Docker flags:
+#     --pull MODE              Docker pull policy: missing (default), always, never
+#
 #   Remote publishing flags (override env vars):
 #     --maven-repo URL         Maven registry URL (sets MAVEN_REPO)
 #     --pypi-repo URL          PyPI registry URL (sets PYPI_REPO)
@@ -17,6 +20,7 @@ set -euo pipefail
 LAKE_NAME="{lakeName}"
 LAKE_PREFIX="{lakePrefix}"
 PROTOLAKE_IMAGE="${PROTOLAKE_IMAGE:-ghcr.io/cohub-space/protolake:latest}"
+DOCKER_PULL="missing"
 
 # Compute the Docker mount target to match LakeUtil.getLocalPath()
 if [ -n "$LAKE_PREFIX" ]; then
@@ -73,6 +77,10 @@ while [ $# -gt 0 ]; do
             REGISTRY_TOKEN="$2"
             shift 2
             ;;
+        --pull)
+            DOCKER_PULL="$2"
+            shift 2
+            ;;
         *)
             PASSTHROUGH_ARGS+=("$1")
             shift
@@ -120,4 +128,4 @@ fi
 # Pass through Bazel timeout (default: 1200s for cold builds with gRPC C++ compilation)
 DOCKER_ARGS+=(-e "PROTOLAKE_BAZEL_TIMEOUT_SECONDS=${PROTOLAKE_BAZEL_TIMEOUT_SECONDS:-1200}")
 
-exec docker run "${DOCKER_ARGS[@]}" "${PROTOLAKE_IMAGE}" "${PASSTHROUGH_ARGS[@]}"
+exec docker run --pull "${DOCKER_PULL}" "${DOCKER_ARGS[@]}" "${PROTOLAKE_IMAGE}" "${PASSTHROUGH_ARGS[@]}"
