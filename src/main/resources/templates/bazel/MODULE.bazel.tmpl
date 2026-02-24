@@ -28,15 +28,21 @@ bazel_dep(name = "aspect_rules_js", version = "2.9.2")
 bazel_dep(name = "protolake_gazelle", version = "0.0.1")
 
 # Configure protolake-gazelle source
-# Option 1: Use git repository (recommended for production)
 {#if protolake_gazelle_git_url}
+{#if protolake_gazelle_git_commit}
 git_override(
     module_name = "protolake_gazelle",
     remote = "{protolake_gazelle_git_url}",
     commit = "{protolake_gazelle_git_commit}",
 )
 {#else}
-# Option 2: Use local path (for development)
+git_override(
+    module_name = "protolake_gazelle",
+    remote = "{protolake_gazelle_git_url}",
+    tag = "{protolake_gazelle_git_tag}",
+)
+{/if}
+{#else}
 local_path_override(
     module_name = "protolake_gazelle",
     path = "{protolake_gazelle_path}",

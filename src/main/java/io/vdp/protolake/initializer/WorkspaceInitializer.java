@@ -76,31 +76,40 @@ public class WorkspaceInitializer {
         Map<String, Object> context = buildTemplateContext(lake);
         
         // Configure protolake-gazelle source
-        // Check for git repository configuration first
+        // Priority: explicit commit > explicit tag > local path > default tag
         String gitUrl = System.getenv("PROTOLAKE_GAZELLE_GIT_URL");
         String gitCommit = System.getenv("PROTOLAKE_GAZELLE_GIT_COMMIT");
-        
+        String gitTag = System.getenv("PROTOLAKE_GAZELLE_GIT_TAG");
+
         if (gitUrl != null && !gitUrl.isEmpty() && gitCommit != null && !gitCommit.isEmpty()) {
-            // Use git repository (explicit env vars)
+            // Explicit commit pin (highest priority)
             context.put("protolake_gazelle_git_url", gitUrl);
             context.put("protolake_gazelle_git_commit", gitCommit);
+            context.put("protolake_gazelle_git_tag", "");
             context.put("protolake_gazelle_path", "");
             LOG.debugf("Using git repository for protolake-gazelle: %s@%s", gitUrl, gitCommit);
+        } else if (gitUrl != null && !gitUrl.isEmpty() && gitTag != null && !gitTag.isEmpty()) {
+            // Explicit tag pin
+            context.put("protolake_gazelle_git_url", gitUrl);
+            context.put("protolake_gazelle_git_commit", "");
+            context.put("protolake_gazelle_git_tag", gitTag);
+            context.put("protolake_gazelle_path", "");
+            LOG.debugf("Using git repository for protolake-gazelle: %s tag %s", gitUrl, gitTag);
         } else {
-            // Check for explicit local path override
             String protolakeGazellePath = System.getenv("PROTOLAKE_GAZELLE_SOURCE_PATH");
             if (protolakeGazellePath != null && !protolakeGazellePath.isEmpty()) {
-                // Running inside Docker or with explicit path
+                // Local path override
                 context.put("protolake_gazelle_path", protolakeGazellePath);
                 context.put("protolake_gazelle_git_url", "");
                 context.put("protolake_gazelle_git_commit", "");
+                context.put("protolake_gazelle_git_tag", "");
                 LOG.debugf("Using local path for protolake-gazelle: %s", protolakeGazellePath);
             } else {
-                // Default: fetch from public GitHub repository
+                // Default: fetch from public GitHub via tag
                 context.put("protolake_gazelle_git_url",
                         "https://github.com/cohub-space/protolake-gazelle.git");
-                context.put("protolake_gazelle_git_commit",
-                        "a1e97eb1a8a1a0e36bab285ac4d7c0f8ba47f9d1");
+                context.put("protolake_gazelle_git_commit", "");
+                context.put("protolake_gazelle_git_tag", "v0.2.0");
                 context.put("protolake_gazelle_path", "");
                 LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }

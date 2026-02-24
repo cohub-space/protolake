@@ -75,7 +75,7 @@ By default, Proto Lake is configured to use the protolake-gazelle extension from
 ```yaml
 environment:
   - PROTOLAKE_GAZELLE_GIT_URL=https://github.com/cohub-space/protolake-gazelle.git
-  - PROTOLAKE_GAZELLE_GIT_COMMIT=main  # Use specific commit SHA for stability
+  - PROTOLAKE_GAZELLE_GIT_TAG=v0.2.0  # Use a release tag (or PROTOLAKE_GAZELLE_GIT_COMMIT for exact pinning)
 ```
 
 ### Local Development Mode
@@ -86,7 +86,7 @@ For local development of protolake-gazelle, you can switch to using a local path
 ```yaml
 environment:
   # - PROTOLAKE_GAZELLE_GIT_URL=https://github.com/cohub-space/protolake-gazelle.git
-  # - PROTOLAKE_GAZELLE_GIT_COMMIT=main
+  # - PROTOLAKE_GAZELLE_GIT_TAG=v0.2.0
   - PROTOLAKE_GAZELLE_SOURCE_PATH=../../../protolake-gazelle
 ```
 

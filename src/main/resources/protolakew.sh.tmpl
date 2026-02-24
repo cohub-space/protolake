@@ -118,6 +118,9 @@ elif [ -n "${PROTOLAKE_GAZELLE_GIT_URL:-}" ]; then
     if [ -n "${PROTOLAKE_GAZELLE_GIT_COMMIT:-}" ]; then
         DOCKER_ARGS+=(-e "PROTOLAKE_GAZELLE_GIT_COMMIT=${PROTOLAKE_GAZELLE_GIT_COMMIT}")
     fi
+    if [ -n "${PROTOLAKE_GAZELLE_GIT_TAG:-}" ]; then
+        DOCKER_ARGS+=(-e "PROTOLAKE_GAZELLE_GIT_TAG=${PROTOLAKE_GAZELLE_GIT_TAG}")
+    fi
 fi
 
 # Pass through VERSION if set
