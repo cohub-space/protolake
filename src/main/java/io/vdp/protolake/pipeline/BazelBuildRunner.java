@@ -13,6 +13,7 @@ import java.util.HashMap;
 import java.util.Map;
 
 import java.io.IOException;
+import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
@@ -307,7 +308,7 @@ public class BazelBuildRunner {
      * Tolerates partial build success when --keep_going is used.
      */
     private String runBazelBuild(Path lakeRoot, String bazelTarget) throws IOException {
-        List<String> args = buildBazelArgs("build", bazelTarget);
+        List<String> args = buildBazelArgs("build", bazelTarget, lakeRoot);
 
         BazelCommand.CommandResult result = bazelCommand.runWithResult(lakeRoot, args.toArray(new String[0]));
 
@@ -336,7 +337,7 @@ public class BazelBuildRunner {
     /**
      * Builds bazel command arguments.
      */
-    private List<String> buildBazelArgs(String command, String target) {
+    private List<String> buildBazelArgs(String command, String target, Path lakeRoot) {
         List<String> args = new ArrayList<>();
         args.add(command);
 
@@ -363,8 +364,9 @@ public class BazelBuildRunner {
         args.add("--");
         args.add(target);
 
-        // If building all targets, exclude .aspect_rules_js
-        if ("//...".equals(target)) {
+        // If building all targets, exclude .aspect_rules_js when it exists
+        // (the exclusion pattern causes Bazel to error if the directory is absent)
+        if ("//...".equals(target) && Files.isDirectory(lakeRoot.resolve(".aspect_rules_js"))) {
             args.add("-//.aspect_rules_js/...");
         }
 
