@@ -100,7 +100,7 @@ public class WorkspaceInitializer {
                 context.put("protolake_gazelle_git_url",
                         "https://github.com/cohub-space/protolake-gazelle.git");
                 context.put("protolake_gazelle_git_commit",
-                        "e410d803132163dfb5bb9dc78fced2da9f343bfa");
+                        "a1e97eb1a8a1a0e36bab285ac4d7c0f8ba47f9d1");
                 context.put("protolake_gazelle_path", "");
                 LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }
