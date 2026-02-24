@@ -205,14 +205,14 @@ py_proto_bundle = rule(
 )
 
 def _js_proto_bundle_impl(ctx):
-    """Create a JavaScript/TypeScript NPM package with all proto files and generated code"""
+    """Create a JavaScript/TypeScript NPM package with Connect-ES generated code"""
     output_tgz = ctx.actions.declare_file("{}_bundle.tgz".format(ctx.label.name))
 
-    # Collect all JS files from both grpc and grpc_web deps
-    js_files = []
-    for dep in ctx.attr.js_deps + ctx.attr.js_grpc_web_deps:
+    # Collect all generated ES files from es_proto_compile targets
+    es_files = []
+    for dep in ctx.attr.es_deps:
         if hasattr(dep, "files"):
-            js_files.extend(dep.files.to_list())
+            es_files.extend(dep.files.to_list())
 
     # Collect proto sources
     proto_sources = depset(
@@ -223,19 +223,17 @@ def _js_proto_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_tgz)
     args.add("--package-name", ctx.attr.package_name)
-    
+
     # Read version from environment with default - hybrid approach
     args.add("--version", "${VERSION:-1.0.0}")
-    
-    args.add("--typescript")  # Always include TypeScript definitions
-    args.add("--module-format", "dual")  # Support both CommonJS and ESM
-    args.add_all("--js-files", js_files)
+
+    args.add_all("--es-files", es_files)
     args.add_all("--proto-sources", proto_sources,
                  map_each = _proto_source_mapper)
 
     ctx.actions.run(
         outputs = [output_tgz],
-        inputs = depset(direct = js_files, transitive = [proto_sources]),
+        inputs = depset(direct = es_files, transitive = [proto_sources]),
         executable = ctx.executable._npm_bundler,
         arguments = [args],
         mnemonic = "JsProtoBundle",
@@ -266,12 +264,8 @@ js_proto_bundle = rule(
             providers = [ProtoInfo],
             doc = "Proto library dependencies",
         ),
-        "js_deps": attr.label_list(
-            doc = "JavaScript gRPC-js library dependencies (Node.js)",
-        ),
-        "js_grpc_web_deps": attr.label_list(
-            default = [],
-            doc = "JavaScript gRPC-web library dependencies (Browser)",
+        "es_deps": attr.label_list(
+            doc = "es_proto_compile targets (Connect-ES generated _pb.js + _pb.d.ts)",
         ),
         "package_name": attr.string(
             mandatory = True,
@@ -284,7 +278,7 @@ js_proto_bundle = rule(
             cfg = "exec",
         ),
     },
-    doc = "Creates a JavaScript/TypeScript NPM package containing all proto files and generated code",
+    doc = "Creates a JavaScript/TypeScript NPM package with Connect-ES generated code",
 )
 
 # Descriptor set rule - merges transitive FileDescriptorSets into a single .pb file
@@ -368,7 +362,7 @@ js_proto_loader_bundle = rule(
         ),
         "package_name": attr.string(
             mandatory = True,
-            doc = "NPM package name (e.g., '@cohub/iam-proto-loader')",
+            doc = "NPM package name (e.g., '@example/service-proto-loader')",
         ),
         "_proto_loader_publisher": attr.label(
             default = "//tools:proto_loader_publisher",

@@ -105,7 +105,7 @@ public class LakeInitializer {
             workspaceInitializer.initializeWorkspace(lake);
 
             // Create initial directory structure
-            createDirectoryStructure(lakePath);
+            createDirectoryStructure(lakePath, name);
 
             // Initial git commit
             gitCommand.addAll(lakePath);
@@ -189,8 +189,9 @@ public class LakeInitializer {
                 context.put("javascriptEnabled", js.getEnabled());
                 context.put("javascriptPackageScope", js.getPackageScope());
                 context.put("javascriptNodeVersion", js.getNodeVersion());
-                context.put("javascriptProtobufVersion", js.getGoogleProtobufVersion());
-                context.put("javascriptGrpcWebVersion", js.getGrpcWebVersion());
+                context.put("bufbuildProtobufVersion", js.getBufbuildProtobufVersion());
+                context.put("protocGenEsVersion", js.getProtocGenEsVersion());
+                context.put("connectrpcConnectVersion", js.getConnectrpcConnectVersion());
                 context.put("javascriptUseTypescript", js.getUseTypescript());
                 context.put("javascriptModuleType", js.getModuleType());
             } else {
@@ -250,10 +251,11 @@ public class LakeInitializer {
         context.put("javascriptEnabled", true);
         context.put("javascriptPackageScope", "@example");
         context.put("javascriptNodeVersion", ">=18");
-        context.put("javascriptProtobufVersion", "3.21.2");
-        context.put("javascriptGrpcWebVersion", "1.5.0");
+        context.put("bufbuildProtobufVersion", "2.11.0");
+        context.put("protocGenEsVersion", "2.11.0");
+        context.put("connectrpcConnectVersion", "2.1.0");
         context.put("javascriptUseTypescript", true);
-        context.put("javascriptModuleType", "commonjs");
+        context.put("javascriptModuleType", "esm");
     }
 
     private void setDefaultGoConfig(Map<String, Object> context) {
@@ -265,7 +267,7 @@ public class LakeInitializer {
     /**
      * Creates the initial directory structure for a lake.
      */
-    private void createDirectoryStructure(Path lakePath) throws IOException {
+    private void createDirectoryStructure(Path lakePath, String lakeName) throws IOException {
         // Create bundles directory
         Path bundlesPath = lakePath.resolve("bundles");
         Files.createDirectories(bundlesPath);
@@ -274,8 +276,10 @@ public class LakeInitializer {
         Path commonPath = lakePath.resolve("common");
         Files.createDirectories(commonPath);
 
-        // Create README using template
-        templateEngine.renderToFile("lake-readme.md.tmpl", new HashMap<>(),
+        // Create README using template with lake context
+        Map<String, Object> readmeContext = new HashMap<>();
+        readmeContext.put("lakeName", lakeName);
+        templateEngine.renderToFile("lake-readme.md.tmpl", readmeContext,
                 lakePath.resolve("README.md"));
     }
 

@@ -53,6 +53,12 @@ public class WorkspaceInitializer {
         // Create proto bundle rules
         createProtoBundleRules(lake);
 
+        // Create Connect-ES codegen rule
+        createEsProtoRules(lake);
+
+        // Create npm workspace (package.json + pnpm-lock.yaml for protoc-gen-es)
+        createNpmWorkspace(lake);
+
         // Create Buf configuration
         createBufConfiguration(lake);
 
@@ -170,6 +176,82 @@ public class WorkspaceInitializer {
                 toolsPath.resolve("proto_bundle.bzl"));
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.debugf("Created proto bundle rules for lake: %s", lakeName);
+    }
+
+    /**
+     * Creates Connect-ES proto compilation rule (es_proto.bzl).
+     * This is a static Bazel rule file with no template variables.
+     */
+    private void createEsProtoRules(Lake lake) throws IOException {
+        Path lakePath = LakeUtil.getLocalPath(lake, basePath);
+        Path toolsPath = lakePath.resolve("tools");
+        templateEngine.copyResource("tools/es_proto.bzl",
+                toolsPath.resolve("es_proto.bzl"));
+        // Copy the wrapper script that delegates to globally-installed protoc-gen-es
+        templateEngine.copyResource("tools/protoc-gen-es-wrapper.sh",
+                toolsPath.resolve("protoc-gen-es-wrapper.sh"));
+        toolsPath.resolve("protoc-gen-es-wrapper.sh").toFile().setExecutable(true);
+        String lakeName = LakeUtil.extractLakeId(lake.getName());
+        LOG.debugf("Created es_proto.bzl rules for lake: %s", lakeName);
+    }
+
+    /**
+     * Creates npm workspace files (package.json + pnpm-lock.yaml) for protoc-gen-es.
+     * These are needed by npm_translate_lock in MODULE.bazel.
+     */
+    private void createNpmWorkspace(Lake lake) throws IOException {
+        Path lakePath = LakeUtil.getLocalPath(lake, basePath);
+
+        // Determine protoc-gen-es version from lake config, fallback to default
+        String protocGenEsVersion = "2.11.0";
+        if (lake.getConfig() != null && lake.getConfig().hasLanguageDefaults()
+                && lake.getConfig().getLanguageDefaults().hasJavascript()) {
+            String configVersion = lake.getConfig().getLanguageDefaults().getJavascript().getProtocGenEsVersion();
+            if (configVersion != null && !configVersion.isEmpty()) {
+                protocGenEsVersion = configVersion;
+            }
+        }
+
+        // Create package.json
+        // pnpm.onlyBuiltDependencies is required by aspect_rules_js npm_translate_lock with pnpm v9+
+        String packageJson = String.format("""
+                {
+                  "private": true,
+                  "devDependencies": {
+                    "@bufbuild/protoc-gen-es": "%s"
+                  },
+                  "pnpm": {
+                    "onlyBuiltDependencies": []
+                  }
+                }
+                """, protocGenEsVersion);
+        Files.writeString(lakePath.resolve("package.json"), packageJson);
+
+        // Generate pnpm-lock.yaml via pnpm install
+        try {
+            ProcessBuilder pb = new ProcessBuilder("pnpm", "install", "--lockfile-only")
+                    .directory(lakePath.toFile())
+                    .redirectErrorStream(true);
+            Process process = pb.start();
+            String output = new String(process.getInputStream().readAllBytes());
+            int exitCode = process.waitFor();
+            if (exitCode != 0) {
+                LOG.warnf("pnpm install --lockfile-only failed (exit %d): %s. " +
+                        "Falling back to empty pnpm-lock.yaml", exitCode, output);
+                // Write a minimal pnpm-lock.yaml so Bazel doesn't fail
+                Files.writeString(lakePath.resolve("pnpm-lock.yaml"),
+                        "lockfileVersion: '9.0'\n");
+            } else {
+                LOG.debugf("Generated pnpm-lock.yaml for lake: %s", LakeUtil.extractLakeId(lake.getName()));
+            }
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new IOException("Interrupted while running pnpm install", e);
+        } catch (Exception e) {
+            LOG.warnf("Failed to run pnpm: %s. Writing minimal pnpm-lock.yaml", e.getMessage());
+            Files.writeString(lakePath.resolve("pnpm-lock.yaml"),
+                    "lockfileVersion: '9.0'\n");
+        }
     }
 
     /**

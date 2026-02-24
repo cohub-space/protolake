@@ -1,21 +1,193 @@
-# ProtoLake Repository
+# {lakeName}
 
-This is a ProtoLake repository containing protocol buffer definitions.
+A [Proto Lake](https://github.com/cohub-space/protolake) repository containing protocol buffer definitions and multi-language build targets.
 
-## Structure
+## Quick Start
 
-- `bundles/` - Contains proto bundles that get built into packages
-- `common/` - Shared proto definitions used across bundles
-- `tools/` - Build and publishing tools (auto-generated)
+```bash
+# Build all bundles (installs artifacts locally by default)
+./protolakew build --install-local
+```
+
+That's it. The wrapper pulls a Docker image, runs Gazelle + Bazel inside the container, and publishes artifacts to your local Maven/PyPI/npm caches.
+
+## Prerequisites
+
+- **Docker** — the only host dependency. All build tools (Bazel, Buf, Gazelle) run inside the container.
+
+## Project Structure
+
+```
+{lakeName}/
+├── protolakew              # CLI wrapper (run builds via Docker)
+├── lake.yaml               # Lake-level configuration
+├── MODULE.bazel            # Bazel module definition
+├── buf.yaml                # Buf lint / breaking configuration
+├── bundles/                # One subdirectory per bundle
+│   └── <service>/
+│       ├── bundle.yaml     # Bundle configuration
+│       ├── v1/             # Proto files (versioned)
+│       │   └── *.proto
+│       └── README.md
+├── common/                 # Shared proto definitions
+└── tools/                  # Build & publish tooling (auto-generated)
+```
 
 ## Building
 
-To build all bundles:
+### Build all bundles
+
 ```bash
-bazel build //...
+./protolakew build --install-local
 ```
 
-To build a specific bundle:
+### Build specific bundles
+
 ```bash
-bazel build //bundles/my-bundle:all
+./protolakew build --install-local --bundle my-service --bundle another-service
 ```
+
+### Skip validation
+
+```bash
+./protolakew build --install-local --skip-validation
+```
+
+### Validate only (no build)
+
+```bash
+./protolakew validate
+```
+
+### Set a version
+
+```bash
+VERSION=2.0.0 ./protolakew build --install-local
+```
+
+## Publishing
+
+By default, `--install-local` publishes artifacts to local caches:
+
+| Language   | Local destination                        |
+|------------|------------------------------------------|
+| Java (JAR) | `~/.m2/repository/`                     |
+| Python (wheel) | `~/.cache/pip/simple/`              |
+| npm        | `~/.proto-lake/npm-packages/`            |
+
+### Remote publishing
+
+Pass registry URLs and a token via CLI flags or environment variables:
+
+```bash
+./protolakew build --install-local \
+  --maven-repo  https://maven.example.com/repository/releases \
+  --pypi-repo   https://pypi.example.com/simple \
+  --npm-registry-url https://npm.example.com/ \
+  --registry-token "$REGISTRY_TOKEN"
+```
+
+Or export the equivalent environment variables (`MAVEN_REPO`, `PYPI_REPO`, `NPM_REGISTRY_URL`, `REGISTRY_TOKEN`).
+
+## Configuration
+
+### lake.yaml
+
+Lake-wide settings: dependency versions, language defaults, and validation options.
+Edit this file to change the Maven group ID, Python package prefix, npm scope, etc.
+
+### bundle.yaml
+
+Per-bundle settings inside each `bundles/<name>/bundle.yaml`:
+language toggles, artifact IDs, package names, and gRPC code generation flags.
+
+## Adding a New Bundle
+
+```bash
+./protolakew create-bundle \
+  --name my-service \
+  --bundle-prefix com.example \
+  --display-name "My Service"
+```
+
+Then add `.proto` files under `bundles/my-service/v1/` and rebuild.
+
+## CI/CD
+
+Example GitHub Actions workflow:
+
+```yaml
+jobs:
+  build-protos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build and publish
+        env:
+          VERSION: $\{github.ref_name\}
+          MAVEN_REPO: $\{secrets.MAVEN_REPO\}
+          PYPI_REPO: $\{secrets.PYPI_REPO\}
+          NPM_REGISTRY_URL: $\{secrets.NPM_REGISTRY_URL\}
+          REGISTRY_TOKEN: $\{secrets.REGISTRY_TOKEN\}
+        run: ./protolakew build --install-local
+```
+
+## Environment Variables
+
+| Variable | Description | Default |
+|----------|-------------|---------|
+| `VERSION` | Artifact version for all bundles | `1.0.0` |
+| `PROTOLAKE_IMAGE` | Docker image to use | `ghcr.io/cohub-space/protolake:latest` |
+| `MAVEN_REPO` | Maven repository URL or local path | `~/.m2/repository` |
+| `PYPI_REPO` | PyPI repository URL or local path | `~/.cache/pip/simple` |
+| `NPM_PUBLISH_MODE` | npm publish mode: `file`, `link`, or `registry` | `file` |
+| `NPM_REGISTRY_URL` | npm registry URL (when mode=registry) | — |
+| `REGISTRY_TOKEN` | Bearer token for remote registries | — |
+| `PROTOLAKE_GAZELLE_SOURCE_PATH` | Local path to protolake-gazelle (dev override) | — |
+| `PROTOLAKE_GAZELLE_GIT_URL` | Git URL for protolake-gazelle | — |
+| `PROTOLAKE_GAZELLE_GIT_COMMIT` | Git commit for protolake-gazelle | — |
+| `PROTOLAKE_BAZEL_TIMEOUT_SECONDS` | Bazel build timeout | `1200` |
+
+## protolakew CLI Reference
+
+```
+./protolakew <command> [options]
+```
+
+| Command | Description |
+|---------|-------------|
+| `build` | Run the full pipeline: Gazelle → Validation → Bazel → Publish |
+| `validate` | Run buf lint/breaking checks only |
+| `create-bundle` | Scaffold a new bundle directory |
+
+### build options
+
+| Flag | Description |
+|------|-------------|
+| `--install-local` | Install artifacts locally after build |
+| `--skip-validation` | Skip buf lint/breaking checks |
+| `--bundle NAME` | Build only the named bundle (repeatable) |
+| `--lake-path PATH` | Explicit path to the lake directory |
+
+### create-bundle options
+
+| Flag | Description |
+|------|-------------|
+| `--name NAME` | Bundle name (required) |
+| `--bundle-prefix PREFIX` | Dot-separated prefix (e.g. `com.example`) |
+| `--display-name NAME` | Human-readable display name |
+| `--description TEXT` | Bundle description |
+| `--java-artifact-id ID` | Java artifact ID override |
+| `--python-package-name NAME` | Python package name override |
+| `--js-package-name NAME` | JavaScript/npm package name override |
+
+### Docker flags
+
+| Flag | Description |
+|------|-------------|
+| `--pull MODE` | Docker pull policy: `missing` (default), `always`, `never` |
+| `--maven-repo URL` | Maven registry URL |
+| `--pypi-repo URL` | PyPI registry URL |
+| `--npm-registry-url URL` | npm registry URL (sets mode=registry) |
+| `--registry-token TOKEN` | Bearer token for registry auth |

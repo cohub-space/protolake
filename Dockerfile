@@ -63,6 +63,10 @@ COPY --from=tools /usr/local/bin/buf /usr/local/bin/buf
 # Install twine for remote PyPI publishing
 RUN pip3 install twine --break-system-packages
 
+# Install pnpm (needed for generating pnpm-lock.yaml at workspace init)
+# Install protoc-gen-es globally (used by es_proto_compile rule for Connect-ES codegen)
+RUN npm install -g pnpm @bufbuild/protoc-gen-es@2.11.0
+
 # Create proto-lake user
 RUN groupadd -g 1001 protolake && \
     useradd -r -u 1001 -g protolake protolake && \

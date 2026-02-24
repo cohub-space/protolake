@@ -21,7 +21,7 @@ def create_proto_loader_package(output_path, package_name, version, proto_source
 
     Args:
         output_path: Path to write the output .tgz file
-        package_name: NPM package name (e.g., '@cohub/iam-proto-loader')
+        package_name: NPM package name (e.g., '@example/service-proto-loader')
         version: Package version
         proto_sources: List of 'src=dest' pairs for proto files
     """
@@ -74,7 +74,7 @@ const path = require("path");
  *
  * @example
  * const {{ PROTO_ROOT }} = require("{package_name}");
- * const packageDef = protoLoader.loadSync("cohub/iam/v1/authz.proto", {{
+ * const packageDef = protoLoader.loadSync("example/service/v1/messages.proto", {{
  *   includeDirs: [PROTO_ROOT],
  * }});
  */
@@ -88,7 +88,7 @@ const PROTO_ROOT = path.join(__dirname, "proto");
  *
  * @example
  * const {{ getProtoPath }} = require("{package_name}");
- * const protoPath = getProtoPath("cohub", "iam", "v1", "authz.proto");
+ * const protoPath = getProtoPath("example", "service", "v1", "messages.proto");
  */
 function getProtoPath(...paths) {{
   return path.join(PROTO_ROOT, ...paths);

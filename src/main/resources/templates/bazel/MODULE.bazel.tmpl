@@ -14,7 +14,7 @@ bazel_dep(name = "platforms", version = "1.0.0")
 bazel_dep(name = "rules_proto_grpc", version = "{rules_proto_grpc_version}")
 bazel_dep(name = "rules_proto_grpc_java", version = "{rules_proto_grpc_version}")
 bazel_dep(name = "rules_proto_grpc_python", version = "{rules_proto_grpc_version}")
-bazel_dep(name = "rules_proto_grpc_js", version = "{rules_proto_grpc_version}")
+# Note: rules_proto_grpc_js removed — JS codegen uses Connect-ES (protoc-gen-es) via npm
 
 # Pin grpc-java module to match protoc-gen-grpc-java plugin version
 # Without this, MVS may resolve an older grpc-java (e.g. 1.66.0) via transitive deps,
@@ -91,8 +91,12 @@ maven.install(
 )
 use_repo(maven, "maven")
 
-# Configure npm for rules_proto_grpc_js internal dependencies
+# Configure npm via pnpm-lock.yaml (provides protoc-gen-es for Connect-ES codegen)
 npm = use_extension("@aspect_rules_js//npm:extensions.bzl", "npm")
-use_repo(npm, "rules_proto_grpc_js_npm")
+npm.npm_translate_lock(
+    name = "npm",
+    pnpm_lock = "//:pnpm-lock.yaml",
+)
+use_repo(npm, "npm")
 
 # Proto toolchains are configured automatically by the protobuf module

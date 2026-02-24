@@ -34,6 +34,11 @@ build --incompatible_strict_action_env
 # Publish genrules need filesystem access for local install
 build --strategy=Genrule=local
 
+# Proto compilation with protoc-gen-es needs host filesystem access
+# (protoc-gen-es is globally installed, not hermetically managed by Bazel)
+build --strategy=ProtoCompile=local
+build --action_env=PATH
+
 # Pass publishing env vars through to Bazel actions
 build --action_env=HOME
 build --action_env=MAVEN_REPO

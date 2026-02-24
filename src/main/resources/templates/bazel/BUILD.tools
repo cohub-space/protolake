@@ -1,11 +1,28 @@
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
+load("@rules_proto_grpc//:defs.bzl", "proto_plugin")
 
 package(default_visibility = ["//visibility:public"])
 
 # Export bundle rules for use in service BUILD files
 exports_files([
     "proto_bundle.bzl",
+    "es_proto.bzl",
 ])
+
+# Connect-ES protoc plugin wrapper (delegates to globally-installed protoc-gen-es)
+sh_binary(
+    name = "protoc_gen_es_wrapper",
+    srcs = ["protoc-gen-es-wrapper.sh"],
+)
+
+proto_plugin(
+    name = "protoc_gen_es_plugin",
+    protoc_plugin_name = "es",
+    outputs = ["{protopath}_pb.js", "{protopath}_pb.d.ts"],
+    tool = "//tools:protoc_gen_es_wrapper",
+    options = ["target=js+dts", "keep_empty_files=true"],
+    visibility = ["//visibility:public"],
+)
 
 # Gazelle wrapper that runs standard and protolake passes
 py_binary(

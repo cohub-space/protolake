@@ -1,7 +1,7 @@
 load("@bazel_gazelle//:def.bzl", "gazelle", "gazelle_binary")
-load("@rules_proto_grpc_js_npm//:defs.bzl", "npm_link_all_packages")
+load("@npm//:defs.bzl", "npm_link_all_packages")
 
-# Link npm packages for JavaScript proto support
+# Link npm packages (kept for future extensibility)
 npm_link_all_packages(name = "node_modules")
 
 # Standard gazelle binary for proto generation

@@ -410,11 +410,14 @@ public class YamlConfigParser {
         if (node.has("node_version")) {
             builder.setNodeVersion(node.get("node_version").asText());
         }
-        if (node.has("google_protobuf_version")) {
-            builder.setGoogleProtobufVersion(node.get("google_protobuf_version").asText());
+        if (node.has("bufbuild_protobuf_version")) {
+            builder.setBufbuildProtobufVersion(node.get("bufbuild_protobuf_version").asText());
         }
-        if (node.has("grpc_web_version")) {
-            builder.setGrpcWebVersion(node.get("grpc_web_version").asText());
+        if (node.has("protoc_gen_es_version")) {
+            builder.setProtocGenEsVersion(node.get("protoc_gen_es_version").asText());
+        }
+        if (node.has("connectrpc_connect_version")) {
+            builder.setConnectrpcConnectVersion(node.get("connectrpc_connect_version").asText());
         }
         if (node.has("use_typescript")) {
             builder.setUseTypescript(node.get("use_typescript").asBoolean());
@@ -447,11 +450,14 @@ public class YamlConfigParser {
         if (node.has("node_version")) {
             builder.setNodeVersion(node.get("node_version").asText());
         }
-        if (node.has("google_protobuf_version")) {
-            builder.setGoogleProtobufVersion(node.get("google_protobuf_version").asText());
+        if (node.has("bufbuild_protobuf_version")) {
+            builder.setBufbuildProtobufVersion(node.get("bufbuild_protobuf_version").asText());
         }
-        if (node.has("grpc_web_version")) {
-            builder.setGrpcWebVersion(node.get("grpc_web_version").asText());
+        if (node.has("protoc_gen_es_version")) {
+            builder.setProtocGenEsVersion(node.get("protoc_gen_es_version").asText());
+        }
+        if (node.has("connectrpc_connect_version")) {
+            builder.setConnectrpcConnectVersion(node.get("connectrpc_connect_version").asText());
         }
         if (node.has("use_typescript")) {
             builder.setUseTypescript(node.get("use_typescript").asBoolean());
@@ -692,8 +698,15 @@ public class YamlConfigParser {
         node.put("enabled", defaults.getEnabled());
         node.put("package_scope", defaults.getPackageScope());
         node.put("node_version", defaults.getNodeVersion());
-        node.put("google_protobuf_version", defaults.getGoogleProtobufVersion());
-        node.put("grpc_web_version", defaults.getGrpcWebVersion());
+        if (!defaults.getBufbuildProtobufVersion().isEmpty()) {
+            node.put("bufbuild_protobuf_version", defaults.getBufbuildProtobufVersion());
+        }
+        if (!defaults.getProtocGenEsVersion().isEmpty()) {
+            node.put("protoc_gen_es_version", defaults.getProtocGenEsVersion());
+        }
+        if (!defaults.getConnectrpcConnectVersion().isEmpty()) {
+            node.put("connectrpc_connect_version", defaults.getConnectrpcConnectVersion());
+        }
         node.put("use_typescript", defaults.getUseTypescript());
         node.put("module_type", defaults.getModuleType());
         if (defaults.getProtoLoader()) {
@@ -709,6 +722,24 @@ public class YamlConfigParser {
         node.put("enabled", config.getEnabled());
         if (!config.getPackageName().isEmpty()) {
             node.put("package_name", config.getPackageName());
+        }
+        if (!config.getNodeVersion().isEmpty()) {
+            node.put("node_version", config.getNodeVersion());
+        }
+        if (!config.getBufbuildProtobufVersion().isEmpty()) {
+            node.put("bufbuild_protobuf_version", config.getBufbuildProtobufVersion());
+        }
+        if (!config.getProtocGenEsVersion().isEmpty()) {
+            node.put("protoc_gen_es_version", config.getProtocGenEsVersion());
+        }
+        if (!config.getConnectrpcConnectVersion().isEmpty()) {
+            node.put("connectrpc_connect_version", config.getConnectrpcConnectVersion());
+        }
+        if (config.getUseTypescript()) {
+            node.put("use_typescript", true);
+        }
+        if (!config.getModuleType().isEmpty()) {
+            node.put("module_type", config.getModuleType());
         }
         if (config.getProtoLoader()) {
             node.put("proto_loader", true);

@@ -167,9 +167,9 @@ message JavaScriptConfig {
   // Node version requirement
   string node_version = 3;    // e.g., ">=18"
 
-  // Runtime library versions
-  string google_protobuf_version = 4;  // e.g., "3.21.2"
-  string grpc_web_version = 5;         // e.g., "1.5.0"
+  // Reserved: was google_protobuf_version, grpc_web_version (legacy JS path)
+  reserved 4, 5;
+  reserved "google_protobuf_version", "grpc_web_version";
 
   // Complete list of dependencies (replaces lake defaults)
   repeated NpmDependency dependencies = 6;
@@ -181,6 +181,11 @@ message JavaScriptConfig {
   // Generate a proto-loader compatible npm package with raw .proto files
   // for use with @grpc/proto-loader dynamic loading (e.g., excalidraw-room)
   bool proto_loader = 9;
+
+  // Connect-ES v2 versions (override lake defaults)
+  string bufbuild_protobuf_version = 10;
+  string protoc_gen_es_version = 11;
+  string connectrpc_connect_version = 12;
 }
 
 // Go-specific configuration for this bundle (future)
