@@ -7,6 +7,9 @@
 {#if remoteCacheEnabled}
 # Remote cache: {remoteCacheProvider}
 build:ci --remote_cache={remoteCacheUrl}
+{#if remoteCacheProvider == "gcs"}
+build:ci --google_default_credentials
+{/if}
 {#if remoteCacheCompression}
 build:ci --remote_cache_compression
 {/if}

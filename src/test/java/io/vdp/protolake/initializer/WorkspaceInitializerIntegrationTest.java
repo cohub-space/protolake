@@ -332,10 +332,11 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertFileContains(lakePath.resolve(".bazelrc"),
             "try-import %workspace%/.bazelrc.remote-cache");
 
-        // Verify .bazelrc.remote-cache was created with GCS URL
+        // Verify .bazelrc.remote-cache was created with GCS URL and ADC
         assertFileExists(lakePath, ".bazelrc.remote-cache");
         assertFileContains(lakePath.resolve(".bazelrc.remote-cache"),
             "build:ci --remote_cache=https://storage.googleapis.com/my-project-bazel-cache",
+            "build:ci --google_default_credentials",
             "build:ci --remote_cache_compression",
             "build:ci --remote_upload_local_results=true"
         );
@@ -362,9 +363,10 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertFileContains(lakePath.resolve(".bazelrc.remote-cache"),
             "build:ci --remote_cache=https://cache.example.com"
         );
-        // Compression not set — should not appear
+        // Compression not set — should not appear; no GCS credentials either
         assertFileDoesNotContain(lakePath.resolve(".bazelrc.remote-cache"),
-            "remote_cache_compression"
+            "remote_cache_compression",
+            "google_default_credentials"
         );
     }
 
