@@ -147,9 +147,13 @@ public class YamlConfigParser {
             builder.setValidation(parseValidationConfig(configNode.get("validation")));
         }
 
+        if (configNode.has("remote_cache")) {
+            builder.setRemoteCache(parseRemoteCacheConfig(configNode.get("remote_cache")));
+        }
+
         return builder.build();
     }
-    
+
     private BundleConfig parseBundleConfig(JsonNode configNode) {
         BundleConfig.Builder builder = BundleConfig.newBuilder();
 
@@ -528,14 +532,30 @@ public class YamlConfigParser {
     
     private ValidationConfig parseValidationConfig(JsonNode node) {
         ValidationConfig.Builder builder = ValidationConfig.newBuilder();
-        
+
         if (node.has("buf_config_path")) {
             builder.setBufConfigPath(node.get("buf_config_path").asText());
         }
-        
+
         return builder.build();
     }
-    
+
+    private RemoteCacheConfig parseRemoteCacheConfig(JsonNode node) {
+        RemoteCacheConfig.Builder builder = RemoteCacheConfig.newBuilder();
+
+        if (node.has("provider")) {
+            builder.setProvider(node.get("provider").asText());
+        }
+        if (node.has("bucket")) {
+            builder.setBucket(node.get("bucket").asText());
+        }
+        if (node.has("compression")) {
+            builder.setCompression(node.get("compression").asBoolean());
+        }
+
+        return builder.build();
+    }
+
     // Serialization methods
     
     private ObjectNode serializeLakeConfig(LakeConfig config) {
@@ -557,9 +577,13 @@ public class YamlConfigParser {
             node.set("validation", serializeValidationConfig(config.getValidation()));
         }
 
+        if (config.hasRemoteCache()) {
+            node.set("remote_cache", serializeRemoteCacheConfig(config.getRemoteCache()));
+        }
+
         return node;
     }
-    
+
     private ObjectNode serializeBundleConfig(BundleConfig config) {
         ObjectNode node = yamlMapper.createObjectNode();
 
@@ -771,11 +795,27 @@ public class YamlConfigParser {
     
     private ObjectNode serializeValidationConfig(ValidationConfig config) {
         ObjectNode node = yamlMapper.createObjectNode();
-        
+
         if (!config.getBufConfigPath().isEmpty()) {
             node.put("buf_config_path", config.getBufConfigPath());
         }
-        
+
+        return node;
+    }
+
+    private ObjectNode serializeRemoteCacheConfig(RemoteCacheConfig config) {
+        ObjectNode node = yamlMapper.createObjectNode();
+
+        if (!config.getProvider().isEmpty()) {
+            node.put("provider", config.getProvider());
+        }
+        if (!config.getBucket().isEmpty()) {
+            node.put("bucket", config.getBucket());
+        }
+        if (config.getCompression()) {
+            node.put("compression", true);
+        }
+
         return node;
     }
 }

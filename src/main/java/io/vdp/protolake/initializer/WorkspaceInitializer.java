@@ -8,6 +8,7 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import protolake.v1.LakeConfig;
+import protolake.v1.RemoteCacheConfig;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -46,6 +47,7 @@ public class WorkspaceInitializer {
         createModuleBazel(lake);
         createRootBuildBazel(lake);
         createBazelrc(lake);
+        createBazelrcRemoteCache(lake);
 
         // Create tools directory structure
         createToolsDirectory(lake);
@@ -147,6 +149,52 @@ public class WorkspaceInitializer {
         copyIfNotExists("bazel/bazelrc", bazelrcPath);
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.debugf("Created .bazelrc for lake: %s", lakeName);
+    }
+
+    /**
+     * Creates .bazelrc.remote-cache with remote cache configuration.
+     * This is a Qute template that is regenerated on every workspace init
+     * so it stays in sync with lake.yaml remote_cache settings.
+     */
+    private void createBazelrcRemoteCache(Lake lake) throws IOException {
+        Map<String, Object> context = new HashMap<>();
+        LakeConfig config = lake.getConfig();
+        boolean enabled = config != null && config.hasRemoteCache()
+                && !config.getRemoteCache().getProvider().isEmpty()
+                && !config.getRemoteCache().getBucket().isEmpty();
+
+        context.put("remoteCacheEnabled", enabled);
+
+        if (enabled) {
+            RemoteCacheConfig rc = config.getRemoteCache();
+            String provider = rc.getProvider().toLowerCase(java.util.Locale.ROOT);
+            context.put("remoteCacheProvider", provider);
+            context.put("remoteCacheCompression", rc.getCompression());
+
+            String url;
+            switch (provider) {
+                case "gcs":
+                    url = "https://storage.googleapis.com/" + rc.getBucket();
+                    break;
+                case "s3":
+                    url = "https://s3.amazonaws.com/" + rc.getBucket();
+                    break;
+                case "http":
+                    url = rc.getBucket();
+                    break;
+                default:
+                    LOG.warnf("Unknown remote cache provider '%s', treating bucket as literal URL", provider);
+                    url = rc.getBucket();
+                    break;
+            }
+            context.put("remoteCacheUrl", url);
+        }
+
+        Path lakePath = LakeUtil.getLocalPath(lake, basePath);
+        Path rcPath = lakePath.resolve(".bazelrc.remote-cache");
+        templateEngine.renderToFile("bazel/bazelrc-remote-cache.tmpl", context, rcPath);
+        String lakeName = LakeUtil.extractLakeId(lake.getName());
+        LOG.debugf("Created .bazelrc.remote-cache for lake: %s (enabled=%s)", lakeName, enabled);
     }
 
     /**

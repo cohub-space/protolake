@@ -17,7 +17,8 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.Optional;
+import java.util.Locale;
+import java.util.Set;
 
 /**
  * Executes Bazel build commands.
@@ -47,11 +48,10 @@ public class BazelBuildRunner {
     @ConfigProperty(name = "protolake.build.bazel-options", defaultValue = "--jobs=4")
     String defaultBazelOptions;
 
-    @ConfigProperty(name = "protolake.build.enable-remote-cache", defaultValue = "false")
-    boolean enableRemoteCache;
-
-    @ConfigProperty(name = "protolake.build.remote-cache-url")
-    Optional<String> remoteCacheUrl;
+    // Allowed values for PROTOLAKE_BAZEL_CONFIG env var.
+    // Each value maps to a --config=<name> flag in Bazel, which selects
+    // a named config profile from .bazelrc / .bazelrc.remote-cache.
+    private static final Set<String> ALLOWED_BAZEL_CONFIGS = Set.of("ci", "remote", "local");
 
     /**
      * Cleans bazel cache for a lake.
@@ -350,10 +350,17 @@ public class BazelBuildRunner {
             }
         }
 
-        // Add remote cache if enabled
-        if (enableRemoteCache && remoteCacheUrl.isPresent() && !remoteCacheUrl.get().isEmpty()) {
-            args.add("--remote_cache=" + remoteCacheUrl.get());
-            args.add("--remote_upload_local_results=true");
+        // Add --config flag from PROTOLAKE_BAZEL_CONFIG env var (e.g., "ci")
+        // This activates named config profiles in .bazelrc / .bazelrc.remote-cache
+        String bazelConfig = System.getenv("PROTOLAKE_BAZEL_CONFIG");
+        if (bazelConfig != null && !bazelConfig.isEmpty()) {
+            String normalized = bazelConfig.toLowerCase(Locale.ROOT);
+            if (ALLOWED_BAZEL_CONFIGS.contains(normalized)) {
+                args.add("--config=" + normalized);
+            } else {
+                LOG.warnf("Ignoring unknown PROTOLAKE_BAZEL_CONFIG value '%s'. Allowed: %s",
+                        bazelConfig, ALLOWED_BAZEL_CONFIGS);
+            }
         }
 
         args.add("--keep_going");

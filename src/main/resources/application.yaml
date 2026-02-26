@@ -58,8 +58,6 @@ protolake:
   build:
     bazel-build-options: ${PROTO_LAKE_BAZEL_OPTIONS:--jobs=4 --keep_going}
     command-timeout-seconds: ${PROTO_LAKE_TIMEOUT:300}
-    enable-remote-cache: ${PROTO_LAKE_REMOTE_CACHE_ENABLED:false}
-    remote-cache-url: ${PROTO_LAKE_REMOTE_CACHE_URL:grpc://localhost:9090}
 
   publish:
     maven-repo: ${MAVEN_LOCAL_REPO:${user.home}/.m2/repository}

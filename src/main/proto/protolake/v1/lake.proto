@@ -77,6 +77,25 @@ message LakeConfig {
 
   // Validation configuration using buf
   ValidationConfig validation = 4;
+
+  // Remote cache configuration for Bazel builds
+  RemoteCacheConfig remote_cache = 5;
+}
+
+// Remote cache configuration for Bazel builds
+// Generates a .bazelrc.remote-cache file that is try-imported by .bazelrc
+message RemoteCacheConfig {
+  // Cache provider: "gcs", "http", or "s3"
+  string provider = 1;
+
+  // Provider-specific bucket or URL
+  // For gcs: the bucket name (e.g., "my-project-bazel-cache")
+  // For http: the full URL (e.g., "https://cache.example.com")
+  // For s3: the bucket name (e.g., "my-bazel-cache")
+  string bucket = 2;
+
+  // Whether to enable compression for cached blobs (default: false)
+  bool compression = 3;
 }
 
 // Controls MODULE.bazel generation for the entire protolake

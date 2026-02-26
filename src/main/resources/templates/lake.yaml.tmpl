@@ -59,6 +59,14 @@ config:
   validation:
     buf_config_path: "{bufConfigPath}"
 
+  # Remote cache configuration (maps to RemoteCacheConfig proto)
+  # Uncomment to enable Bazel remote caching for faster CI builds.
+  # Activate at runtime with: PROTOLAKE_BAZEL_CONFIG=ci
+  # remote_cache:
+  #   provider: "gcs"           # "gcs", "http", or "s3"
+  #   bucket: "my-bazel-cache"  # GCS/S3 bucket name, or full URL for http
+  #   compression: true
+
 # Note: Repository URLs are configured via environment variables:
 # MAVEN_REPO_URL - Maven repository URL (default: file://<user-home>/.m2/repository)
 # PYPI_URL - PyPI repository URL (default: file://<user-home>/.cache/pip/simple)

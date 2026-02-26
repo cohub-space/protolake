@@ -55,7 +55,6 @@ build --disk_cache=/home/protolake/.cache/bazel-disk-cache
 # Optional: convenience symlinks
 build --experimental_convenience_symlinks=normal
 
-# Remote cache configuration (optional)
-# build --remote_cache=grpc://localhost:9090
-# build --remote_cache_compression
-# build --remote_download_minimal
+# Remote cache configuration (generated from lake.yaml remote_cache settings)
+# Activate with: --config=ci (or set PROTOLAKE_BAZEL_CONFIG=ci)
+try-import %workspace%/.bazelrc.remote-cache

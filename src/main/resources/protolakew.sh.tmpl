@@ -128,6 +128,19 @@ if [ -n "${VERSION:-}" ]; then
     DOCKER_ARGS+=(-e "VERSION=${VERSION}")
 fi
 
+# Pass through Bazel config profile (e.g., "ci" to activate remote cache)
+if [ -n "${PROTOLAKE_BAZEL_CONFIG:-}" ]; then
+    DOCKER_ARGS+=(-e "PROTOLAKE_BAZEL_CONFIG=${PROTOLAKE_BAZEL_CONFIG}")
+fi
+
+# Pass through GCP credentials for GCS remote cache
+if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ]; then
+    DOCKER_ARGS+=(
+        -v "${GOOGLE_APPLICATION_CREDENTIALS}:/tmp/gcloud-credentials.json:ro"
+        -e "GOOGLE_APPLICATION_CREDENTIALS=/tmp/gcloud-credentials.json"
+    )
+fi
+
 # Pass through Bazel timeout (default: 1200s for cold builds with gRPC C++ compilation)
 DOCKER_ARGS+=(-e "PROTOLAKE_BAZEL_TIMEOUT_SECONDS=${PROTOLAKE_BAZEL_TIMEOUT_SECONDS:-1200}")
 

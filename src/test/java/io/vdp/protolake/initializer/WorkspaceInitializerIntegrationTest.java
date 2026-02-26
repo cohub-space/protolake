@@ -10,6 +10,7 @@ import org.junit.jupiter.api.Test;
 import protolake.v1.Lake;
 import protolake.v1.LakeConfig;
 import protolake.v1.ModuleBazelConfig;
+import protolake.v1.RemoteCacheConfig;
 import protolake.v1.JavaDefaults;
 import protolake.v1.PythonDefaults;
 import protolake.v1.LanguageDefaults;
@@ -309,6 +310,106 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertThat(moduleBazel).contains("context-lake");
     }
     
+    @Test
+    void testInitializeWorkspaceWithGcsRemoteCache() throws IOException {
+        Lake lake = createTestLake("gcs-cache-lake")
+            .toBuilder()
+            .setConfig(LakeConfig.newBuilder()
+                .setRemoteCache(RemoteCacheConfig.newBuilder()
+                    .setProvider("gcs")
+                    .setBucket("my-project-bazel-cache")
+                    .setCompression(true)
+                    .build())
+                .build())
+            .build();
+
+        Path lakePath = basePath.resolve("gcs-cache-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // Verify .bazelrc has try-import
+        assertFileContains(lakePath.resolve(".bazelrc"),
+            "try-import %workspace%/.bazelrc.remote-cache");
+
+        // Verify .bazelrc.remote-cache was created with GCS URL
+        assertFileExists(lakePath, ".bazelrc.remote-cache");
+        assertFileContains(lakePath.resolve(".bazelrc.remote-cache"),
+            "build:ci --remote_cache=https://storage.googleapis.com/my-project-bazel-cache",
+            "build:ci --remote_cache_compression",
+            "build:ci --remote_upload_local_results=true"
+        );
+    }
+
+    @Test
+    void testInitializeWorkspaceWithHttpRemoteCache() throws IOException {
+        Lake lake = createTestLake("http-cache-lake")
+            .toBuilder()
+            .setConfig(LakeConfig.newBuilder()
+                .setRemoteCache(RemoteCacheConfig.newBuilder()
+                    .setProvider("http")
+                    .setBucket("https://cache.example.com")
+                    .build())
+                .build())
+            .build();
+
+        Path lakePath = basePath.resolve("http-cache-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        assertFileExists(lakePath, ".bazelrc.remote-cache");
+        assertFileContains(lakePath.resolve(".bazelrc.remote-cache"),
+            "build:ci --remote_cache=https://cache.example.com"
+        );
+        // Compression not set — should not appear
+        assertFileDoesNotContain(lakePath.resolve(".bazelrc.remote-cache"),
+            "remote_cache_compression"
+        );
+    }
+
+    @Test
+    void testInitializeWorkspaceWithNoRemoteCache() throws IOException {
+        Lake lake = createTestLake("no-cache-lake");
+        Path lakePath = basePath.resolve("no-cache-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // File should still be generated (disabled template)
+        assertFileExists(lakePath, ".bazelrc.remote-cache");
+        assertFileDoesNotContain(lakePath.resolve(".bazelrc.remote-cache"),
+            "--remote_cache="
+        );
+        assertFileContains(lakePath.resolve(".bazelrc.remote-cache"),
+            "Remote cache is not configured"
+        );
+    }
+
+    @Test
+    void testInitializeWorkspaceWithEmptyBucketRemoteCache() throws IOException {
+        Lake lake = createTestLake("empty-bucket-lake")
+            .toBuilder()
+            .setConfig(LakeConfig.newBuilder()
+                .setRemoteCache(RemoteCacheConfig.newBuilder()
+                    .setProvider("gcs")
+                    // bucket left empty
+                    .build())
+                .build())
+            .build();
+
+        Path lakePath = basePath.resolve("empty-bucket-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // Empty bucket should disable cache
+        assertFileExists(lakePath, ".bazelrc.remote-cache");
+        assertFileDoesNotContain(lakePath.resolve(".bazelrc.remote-cache"),
+            "--remote_cache="
+        );
+    }
+
     // Helper method to create a test lake
     private Lake createTestLake(String name) {
         return Lake.newBuilder()
