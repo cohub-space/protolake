@@ -154,7 +154,11 @@ def publish_proto_loader_package(bundle_path, coordinates_path):
 
         publish_mode = os.environ.get('NPM_PUBLISH_MODE', 'file')
 
-        if publish_mode == 'file':
+        if publish_mode == 'skip':
+            print(f"JS publishing skipped for proto-loader package {package_name}")
+            return True
+
+        elif publish_mode == 'file':
             packages_dir = Path.home() / '.proto-lake' / 'npm-packages'
             dest = packages_dir / package_name.replace('/', '-') / version
             dest.parent.mkdir(parents=True, exist_ok=True)
@@ -174,6 +178,26 @@ def publish_proto_loader_package(bundle_path, coordinates_path):
                 print(f"Failed to link: {result.stderr}")
                 return False
             print(f"Proto-loader package linked: {package_name}")
+        elif publish_mode == 'workspace':
+            import pkg_editor
+
+            js_targets_str = os.environ.get('JS_TARGETS', '')
+            if not js_targets_str.strip():
+                print("Warning: workspace mode but JS_TARGETS not set", file=sys.stderr)
+                return True
+
+            js_targets = [t.strip() for t in js_targets_str.replace('\n', ',').split(',') if t.strip()]
+            all_ok = True
+            for target_dir in js_targets:
+                if not os.path.exists(os.path.join(target_dir, 'package.json')):
+                    print(f"Warning: no package.json at {target_dir}, skipping", file=sys.stderr)
+                    continue
+                ok = pkg_editor.install_package_to_workspace(str(pkg_dir), package_name, target_dir)
+                if ok:
+                    print(f"\u2713 Installed proto-loader {package_name} to {target_dir}/protolake/")
+                else:
+                    all_ok = False
+            return all_ok
         elif publish_mode == 'registry':
             # Publish to a remote npm registry (e.g., GCP Artifact Registry)
             registry_url = os.environ.get('NPM_REGISTRY_URL', '')
@@ -211,6 +235,7 @@ def publish_proto_loader_package(bundle_path, coordinates_path):
                 return False
         else:
             print(f"Unknown publish mode: {publish_mode}")
+            print("Supported modes: skip, file, link, workspace, registry")
             return False
 
     return True

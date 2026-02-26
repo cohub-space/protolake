@@ -61,7 +61,13 @@ def publish_npm_package(bundle_path, coordinates_path):
         # Determine publishing mode from environment
         publish_mode = os.environ.get('NPM_PUBLISH_MODE', 'link')
 
-        if publish_mode == 'link':
+        if publish_mode == 'skip':
+            print(f"JS publishing skipped for {package_name}")
+            print(f"  Use --js-target=<path> for local workspace install")
+            print(f"  Use --npm-registry-url=<url> for remote registry publish")
+            return True  # Success — skipping is intentional
+
+        elif publish_mode == 'link':
             # npm link for local development
             print(f"Linking package: {package_name}")
             result = subprocess.run(
@@ -127,6 +133,48 @@ def publish_npm_package(bundle_path, coordinates_path):
             print(f"✓ Package saved to: {dest}")
             print(f"  Install with: npm install {dest}")
 
+        elif publish_mode == 'workspace':
+            import pkg_editor
+
+            js_targets_str = os.environ.get('JS_TARGETS', '')
+            if not js_targets_str.strip():
+                print("Warning: NPM_PUBLISH_MODE=workspace but JS_TARGETS not set", file=sys.stderr)
+                print("  Use --js-target=<path> in protolakew", file=sys.stderr)
+                return True  # Non-fatal
+
+            # Accept both comma and newline separators
+            js_targets = [t.strip() for t in js_targets_str.replace('\n', ',').split(',') if t.strip()]
+
+            all_ok = True
+            for target_dir in js_targets:
+                target_pkg = os.path.join(target_dir, 'package.json')
+                if not os.path.exists(target_pkg):
+                    print(f"Warning: no package.json at {target_dir}, skipping", file=sys.stderr)
+                    continue
+
+                ok = pkg_editor.install_package_to_workspace(str(pkg_dir), package_name, target_dir)
+                if ok:
+                    flat_name = package_name.replace('@', '').replace('/', '-')
+                    print(f"\u2713 Installed {package_name} to {target_dir}/protolake/")
+                    print(f"  Next: run 'npm install' in {target_dir}")
+                    print()
+                    print(f"  \u26a0 Lockfile notice:")
+                    print(f"    npm install will modify package-lock.json with local workspace entries.")
+                    print(f"    These changes are local-only \u2014 do not commit them.")
+                    print(f"    Before committing, restore the clean lockfile:")
+                    print()
+                    print(f"      git restore package-lock.json")
+                    print(f"      # or: git checkout -- package-lock.json")
+                    print()
+                    print(f"    Or add the lockfile guard to CI:")
+                    print()
+                    print(f"      python tools/check_lockfile.py --target .")
+                else:
+                    print(f"\u2717 Failed to install to: {target_dir}", file=sys.stderr)
+                    all_ok = False
+
+            return all_ok
+
         elif publish_mode == 'registry':
             # Publish to a remote npm registry (e.g., GCP Artifact Registry)
             registry_url = os.environ.get('NPM_REGISTRY_URL', '')
@@ -166,7 +214,7 @@ def publish_npm_package(bundle_path, coordinates_path):
 
         else:
             print(f"Unknown publish mode: {publish_mode}")
-            print("Supported modes: link, local-registry, file, pack, registry")
+            print("Supported modes: skip, link, local-registry, file, pack, workspace, registry")
             return False
 
         return True
@@ -179,26 +227,32 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Environment variables:
-  NPM_PUBLISH_MODE    Publishing mode (default: link)
+  NPM_PUBLISH_MODE    Publishing mode (default: skip)
+                      - skip: skip JS publishing (default without --js-target)
                       - link: npm link for local development
                       - local-registry: publish to local registry
                       - file: copy to ~/.proto-lake/npm-packages
                       - pack: save tarball to ~/.proto-lake/npm-packs
+                      - workspace: install to JS/TS project workspace (via --js-target)
                       - registry: publish to remote npm registry
 
+  JS_TARGETS          Comma-separated target project paths (for workspace mode)
   NPM_REGISTRY        Registry URL for local-registry mode
                       (default: http://localhost:4873)
   NPM_REGISTRY_URL    Registry URL for registry mode (e.g., GCP Artifact Registry)
   NPM_REGISTRY_TOKEN  Auth token for registry mode (falls back to REGISTRY_TOKEN)
 
 Examples:
-  # Default npm link mode
+  # Default: skip JS publishing
   bazel run //path/to:publish_to_npm
 
-  # Publish to local registry
-  NPM_PUBLISH_MODE=local-registry bazel run //path/to:publish_to_npm
+  # Workspace install to a JS/TS project
+  NPM_PUBLISH_MODE=workspace JS_TARGETS=/path/to/app bazel run //path/to:publish_to_npm
 
-  # Save to file system
+  # npm link for local development
+  NPM_PUBLISH_MODE=link bazel run //path/to:publish_to_npm
+
+  # Save to file system (legacy default)
   NPM_PUBLISH_MODE=file bazel run //path/to:publish_to_npm
 
   # Publish to remote registry

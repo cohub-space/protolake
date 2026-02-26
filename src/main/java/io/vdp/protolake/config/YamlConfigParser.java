@@ -11,6 +11,8 @@ import protolake.v1.*;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import com.fasterxml.jackson.databind.node.ArrayNode;
+
 import java.util.ArrayList;
 import java.util.List;
 
@@ -151,6 +153,20 @@ public class YamlConfigParser {
             builder.setRemoteCache(parseRemoteCacheConfig(configNode.get("remote_cache")));
         }
 
+        if (configNode.has("install_local_defaults")) {
+            builder.setInstallLocalDefaults(parseInstallLocalConfig(configNode.get("install_local_defaults")));
+        }
+
+        return builder.build();
+    }
+
+    private InstallLocalConfig parseInstallLocalConfig(JsonNode node) {
+        InstallLocalConfig.Builder builder = InstallLocalConfig.newBuilder();
+        if (node.has("js_targets")) {
+            for (JsonNode target : node.get("js_targets")) {
+                builder.addJsTargets(target.asText());
+            }
+        }
         return builder.build();
     }
 
@@ -581,6 +597,21 @@ public class YamlConfigParser {
             node.set("remote_cache", serializeRemoteCacheConfig(config.getRemoteCache()));
         }
 
+        if (config.hasInstallLocalDefaults()) {
+            node.set("install_local_defaults", serializeInstallLocalConfig(config.getInstallLocalDefaults()));
+        }
+
+        return node;
+    }
+
+    private ObjectNode serializeInstallLocalConfig(InstallLocalConfig config) {
+        ObjectNode node = yamlMapper.createObjectNode();
+        if (config.getJsTargetsCount() > 0) {
+            ArrayNode targets = node.putArray("js_targets");
+            for (String target : config.getJsTargetsList()) {
+                targets.add(target);
+            }
+        }
         return node;
     }
 

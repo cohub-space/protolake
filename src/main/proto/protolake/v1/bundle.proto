@@ -312,7 +312,7 @@ message BuildBundleRequest {
   repeated Language languages = 2;
 
   // Install artifacts locally after build
-  bool install_local = 3;
+  InstallLocalConfig install_local = 3;
 
   // Skip proto validation (buf lint/breaking)
   bool skip_validation = 4;

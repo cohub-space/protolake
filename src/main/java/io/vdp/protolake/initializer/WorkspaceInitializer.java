@@ -381,6 +381,10 @@ public class WorkspaceInitializer {
         // Copy utility module (not executable)
         templateEngine.copyResource("tools/publish/publisher_utils.py",
                 publishPath.resolve("publisher_utils.py"));
+
+        // Copy pkg_editor to tools/ level (used by publishers via relative import)
+        copyAndMakeExecutable("tools/pkg_editor.py",
+                toolsPath.resolve("pkg_editor.py"));
     }
 
     /**
@@ -390,6 +394,8 @@ public class WorkspaceInitializer {
     private void createUtilityScripts(Path toolsPath) throws IOException {
         copyAndMakeExecutable("tools/gazelle_wrapper.py",
                 toolsPath.resolve("gazelle_wrapper.py"));
+        copyAndMakeExecutable("tools/check_lockfile.py",
+                toolsPath.resolve("check_lockfile.py"));
     }
 
     /**

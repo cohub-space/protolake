@@ -9,6 +9,7 @@ import org.eclipse.microprofile.config.inject.ConfigProperty;
 import picocli.CommandLine;
 import protolake.v1.BuildOperationMetadata;
 import protolake.v1.Bundle;
+import protolake.v1.InstallLocalConfig;
 import protolake.v1.Lake;
 
 import java.nio.file.Path;
@@ -31,6 +32,9 @@ public class BuildCommand implements Runnable {
     @CommandLine.Option(names = "--bundle", description = "Bundle name to build (repeatable, empty = all)")
     List<String> bundleNames = new ArrayList<>();
 
+    @CommandLine.Option(names = "--js-target", description = "Target JS/TS project for workspace install (repeatable)")
+    List<String> jsTargets = new ArrayList<>();
+
     @Inject
     LakeResolver lakeResolver;
 
@@ -50,11 +54,16 @@ public class BuildCommand implements Runnable {
             ConsoleProgressListener listener = new ConsoleProgressListener();
             BuildOperationMetadata metadata = BuildOperationMetadata.getDefaultInstance();
 
+            InstallLocalConfig installLocalConfig = InstallLocalConfig.newBuilder()
+                .setShouldInstall(installLocal)
+                .addAllJsTargets(jsTargets)
+                .build();
+
             if (bundleNames.isEmpty()) {
                 // Build all
                 String target = lakeRelativePath;
                 System.out.printf("[protolake] Building lake: %s%n", LakeUtil.extractLakeId(lake.getName()));
-                buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocal,
+                buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocalConfig,
                         null, listener, metadata);
             } else {
                 // Build specific bundles
@@ -62,7 +71,7 @@ public class BuildCommand implements Runnable {
                     Bundle bundle = lakeResolver.findBundle(resolvedPath, lake, bundleName);
                     String target = BundleUtil.getWorkspaceRelativePath(lake, bundle);
                     System.out.printf("[protolake] Building bundle: %s%n", bundleName);
-                    metadata = buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocal,
+                    metadata = buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocalConfig,
                             null, listener, metadata);
                 }
             }

@@ -105,7 +105,7 @@ def create_index_files(pkg_dir):
     dts_exports = []
 
     for pb_file in pb_files:
-        rel_path = pb_file.relative_to(pkg_dir).with_suffix('')
+        rel_path = pb_file.relative_to(pkg_dir)
         module_path = './' + str(rel_path).replace('\\', '/')
         js_exports.append(f"export * from '{module_path}';")
         dts_exports.append(f"export * from '{module_path}';")

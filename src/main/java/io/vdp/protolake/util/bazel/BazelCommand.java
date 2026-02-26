@@ -51,6 +51,14 @@ public class BazelCommand {
     }
 
     /**
+     * Runs a bazel command with additional environment variables and returns the output.
+     */
+    public String runWithOutput(Path workingDir, Map<String, String> env, String... args) throws IOException {
+        List<String> command = buildCommand(args);
+        return executeCommandWithOutput(workingDir, command, env);
+    }
+
+    /**
      * Result of a command execution, including output and exit code.
      */
     public static class CommandResult {

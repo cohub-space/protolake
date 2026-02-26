@@ -9,6 +9,9 @@
 #   Docker flags:
 #     --pull MODE              Docker pull policy: missing (default), always, never
 #
+#   Local install flags:
+#     --js-target PATH         Target JS/TS project for workspace install (repeatable, sets NPM_PUBLISH_MODE=workspace)
+#
 #   Remote publishing flags (override env vars):
 #     --maven-repo URL         Maven registry URL (sets MAVEN_REPO)
 #     --pypi-repo URL          PyPI registry URL (sets PYPI_REPO)
@@ -30,6 +33,7 @@ else
 fi
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+JS_TARGET_PATHS=()
 
 # Build docker run arguments
 DOCKER_ARGS=(
@@ -81,6 +85,10 @@ while [ $# -gt 0 ]; do
             DOCKER_PULL="$2"
             shift 2
             ;;
+        --js-target)
+            JS_TARGET_PATHS+=("$2")
+            shift 2
+            ;;
         *)
             PASSTHROUGH_ARGS+=("$1")
             shift
@@ -88,10 +96,25 @@ while [ $# -gt 0 ]; do
     esac
 done
 
+# Handle --js-target: resolve paths, set up Docker mounts
+if [ ${#JS_TARGET_PATHS[@]} -gt 0 ]; then
+    NPM_PUBLISH_MODE="workspace"
+    RESOLVED_JS_TARGETS=()
+    for js_path in "${JS_TARGET_PATHS[@]}"; do
+        abs="$(cd "$js_path" 2>/dev/null && pwd)" || {
+            echo "ERROR: --js-target path not found: $js_path" >&2; exit 1
+        }
+        DOCKER_ARGS+=(-v "${abs}:${abs}")
+        RESOLVED_JS_TARGETS+=("${abs}")
+    done
+    JS_TARGETS_JOINED=$(IFS=,; echo "${RESOLVED_JS_TARGETS[*]}")
+    DOCKER_ARGS+=(-e "JS_TARGETS=${JS_TARGETS_JOINED}")
+fi
+
 # Pass through environment variables for publishing
 # Defaults are local paths; CLI flags and env vars override with registry URLs for remote publish
 DOCKER_ARGS+=(
-    -e "NPM_PUBLISH_MODE=${NPM_PUBLISH_MODE:-file}"
+    -e "NPM_PUBLISH_MODE=${NPM_PUBLISH_MODE:-skip}"
     -e "MAVEN_REPO=${MAVEN_REPO:-/home/protolake/.m2/repository}"
     -e "PYPI_REPO=${PYPI_REPO:-/home/protolake/.cache/pip/simple}"
 )

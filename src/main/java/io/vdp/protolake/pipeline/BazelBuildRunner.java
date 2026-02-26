@@ -201,7 +201,8 @@ public class BazelBuildRunner {
      * @param metadata The operation metadata to update
      * @return Updated metadata with publish results
      */
-    public BuildOperationMetadata publishLocal(Path lakeRoot, BuildOperationMetadata metadata) throws IOException {
+    public BuildOperationMetadata publishLocal(Path lakeRoot, BuildOperationMetadata metadata,
+                                               InstallLocalConfig installLocalConfig) throws IOException {
         PhaseStatus.Builder publishStatus = PhaseStatus.newBuilder()
             .setStatus(PhaseStatus.Status.RUNNING)
             .setStartTime(Timestamp.newBuilder()
@@ -213,6 +214,14 @@ public class BazelBuildRunner {
         try {
             List<String> publishTargets = queryPublishTargets(lakeRoot);
             LOG.infof("Found %d publish targets", publishTargets.size());
+
+            // Build env map from config for the gRPC path (JS_TARGETS wouldn't be in process env)
+            Map<String, String> publishEnv = null;
+            if (installLocalConfig.getJsTargetsCount() > 0) {
+                publishEnv = new HashMap<>();
+                publishEnv.put("NPM_PUBLISH_MODE", "workspace");
+                publishEnv.put("JS_TARGETS", String.join(",", installLocalConfig.getJsTargetsList()));
+            }
 
             if (publishTargets.isEmpty()) {
                 publishStatus.setStatus(PhaseStatus.Status.SKIPPED)
@@ -235,7 +244,9 @@ public class BazelBuildRunner {
 
                 LOG.infof("Running publish target: %s", target);
                 try {
-                    String output = bazelCommand.runWithOutput(lakeRoot, "build", target);
+                    String output = publishEnv != null
+                        ? bazelCommand.runWithOutput(lakeRoot, publishEnv, "build", target)
+                        : bazelCommand.runWithOutput(lakeRoot, "build", target);
                     logs.add(String.format("Published: %s", target));
                     LOG.infof("Successfully published: %s", target);
                 } catch (Exception e) {

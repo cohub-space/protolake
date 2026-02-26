@@ -67,6 +67,13 @@ config:
   #   bucket: "my-bazel-cache"  # GCS/S3 bucket name, or full URL for http
   #   compression: true
 
+  # Local install configuration
+  # Uncomment to set default JS targets for --install-local builds.
+  # These paths are relative to the lake root.
+  # install_local_defaults:
+  #   js_targets:
+  #     - ../my-electron-app
+
 # Note: Repository URLs are configured via environment variables:
 # MAVEN_REPO_URL - Maven repository URL (default: file://<user-home>/.m2/repository)
 # PYPI_URL - PyPI repository URL (default: file://<user-home>/.cache/pip/simple)

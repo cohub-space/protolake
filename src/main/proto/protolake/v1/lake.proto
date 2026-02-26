@@ -80,6 +80,9 @@ message LakeConfig {
 
   // Remote cache configuration for Bazel builds
   RemoteCacheConfig remote_cache = 5;
+
+  // Default install-local configuration
+  InstallLocalConfig install_local_defaults = 6;
 }
 
 // Remote cache configuration for Bazel builds
@@ -96,6 +99,15 @@ message RemoteCacheConfig {
 
   // Whether to enable compression for cached blobs (default: false)
   bool compression = 3;
+}
+
+// Configuration for local artifact installation
+message InstallLocalConfig {
+  // Whether to install artifacts locally
+  bool should_install = 1;
+
+  // Target JS/TS project paths for workspace install
+  repeated string js_targets = 2;
 }
 
 // Controls MODULE.bazel generation for the entire protolake
@@ -334,7 +346,7 @@ message BuildLakeRequest {
   repeated string bundle_names = 2;
 
   // Install artifacts locally after build
-  bool install_local = 3;
+  InstallLocalConfig install_local = 3;
 
   // Skip proto validation (buf lint/breaking)
   bool skip_validation = 4;

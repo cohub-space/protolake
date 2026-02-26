@@ -48,6 +48,7 @@ build --action_env=NPM_PUBLISH_MODE
 build --action_env=REGISTRY_TOKEN
 build --action_env=NPM_REGISTRY_URL
 build --action_env=NPM_REGISTRY_TOKEN
+build --action_env=JS_TARGETS
 
 # Disk cache for build artifacts
 build --disk_cache=/home/protolake/.cache/bazel-disk-cache

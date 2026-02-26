@@ -14,6 +14,8 @@ import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
 import protolake.v1.*;
+import java.util.HashMap;
+import java.util.Map;
 import com.google.protobuf.Timestamp;
 
 import java.nio.file.Path;
@@ -67,7 +69,7 @@ public class BuildOrchestrator {
     /**
      * Builds a specific target asynchronously.
      */
-    public void buildTargetAsync(Lake lake, String target, boolean skipValidation, boolean installLocal,
+    public void buildTargetAsync(Lake lake, String target, boolean skipValidation, InstallLocalConfig installLocal,
                                 String operationName, CancellationToken cancellationToken) {
         CompletableFuture.runAsync(() -> {
             try {
@@ -92,7 +94,7 @@ public class BuildOrchestrator {
     /**
      * Unified method to build any Bazel target (gRPC mode with operation tracking).
      */
-    public void buildTarget(Lake lake, String target, boolean skipValidation, boolean installLocal,
+    public void buildTarget(Lake lake, String target, boolean skipValidation, InstallLocalConfig installLocal,
                            String operationId, CancellationToken cancellationToken) throws Exception {
         // Delegate to sync method with an adapter listener that updates operationManager
         buildTargetSync(lake, target, skipValidation, installLocal, cancellationToken,
@@ -131,13 +133,13 @@ public class BuildOrchestrator {
      * @return final BuildOperationMetadata
      */
     public BuildOperationMetadata buildTargetSync(Lake lake, String target,
-                                                   boolean skipValidation, boolean installLocal,
+                                                   boolean skipValidation, InstallLocalConfig installLocal,
                                                    CancellationToken cancellationToken,
                                                    io.vdp.protolake.cli.BuildProgressListener listener,
                                                    BuildOperationMetadata metadata) throws Exception {
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.infof("Starting build for target %s in lake %s (skipValidation=%s, installLocal=%s)",
-            target, lakeName, skipValidation, installLocal);
+            target, lakeName, skipValidation, installLocal.getShouldInstall());
 
         // Regenerate workspace files (MODULE.bazel, etc.) to pick up current env vars
         // This ensures the gazelle source path matches the current container environment
@@ -196,7 +198,7 @@ public class BuildOrchestrator {
         listener.onPhaseComplete("Building", true, null);
 
         // Run publishing (if installLocal is requested)
-        if (installLocal) {
+        if (installLocal.getShouldInstall()) {
             listener.onPhaseStart("Publishing");
             metadata = metadata.toBuilder()
                 .setCurrentPhase(OperationPhase.PUBLISHING)
@@ -205,7 +207,7 @@ public class BuildOrchestrator {
 
             if (cancellationToken != null) cancellationToken.throwIfCancelled();
 
-            metadata = bazelBuildRunner.publishLocal(lakeRoot, metadata);
+            metadata = bazelBuildRunner.publishLocal(lakeRoot, metadata, installLocal);
             listener.onMetadataUpdate(metadata);
             listener.onPhaseComplete("Publishing", true, null);
         }
