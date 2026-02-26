@@ -216,18 +216,18 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
         Path toolsPath = lakePath.resolve("tools");
         
         // Verify all bundler tools
-        assertExecutableFile(toolsPath.resolve("bundler/jar_bundler.py"));
-        assertExecutableFile(toolsPath.resolve("bundler/wheel_builder.py"));
-        assertExecutableFile(toolsPath.resolve("bundler/npm_bundler.py"));
-        
+        assertExecutableFile(toolsPath.resolve("bundler/jar_bundler_generated.py"));
+        assertExecutableFile(toolsPath.resolve("bundler/wheel_builder_generated.py"));
+        assertExecutableFile(toolsPath.resolve("bundler/npm_bundler_generated.py"));
+
         // Verify all publishing tools
-        assertExecutableFile(toolsPath.resolve("publish/maven_publisher.py"));
-        assertExecutableFile(toolsPath.resolve("publish/pypi_publisher.py"));
-        assertExecutableFile(toolsPath.resolve("publish/npm_publisher.py"));
-        assertFileExists(toolsPath, "publish/publisher_utils.py");
-        
+        assertExecutableFile(toolsPath.resolve("publish/maven_publisher_generated.py"));
+        assertExecutableFile(toolsPath.resolve("publish/pypi_publisher_generated.py"));
+        assertExecutableFile(toolsPath.resolve("publish/npm_publisher_generated.py"));
+        assertFileExists(toolsPath, "publish/publisher_utils_generated.py");
+
         // Verify utility scripts
-        assertExecutableFile(toolsPath.resolve("gazelle_wrapper.py"));
+        assertExecutableFile(toolsPath.resolve("gazelle_wrapper_generated.py"));
         
         // Verify proto bundle rules
         assertFileExists(toolsPath, "proto_bundle.bzl");

@@ -1,3 +1,4 @@
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """Connect-ES v2 proto compilation rule using protoc-gen-es.
 
 Generates _pb.js + _pb.d.ts files containing both message types and

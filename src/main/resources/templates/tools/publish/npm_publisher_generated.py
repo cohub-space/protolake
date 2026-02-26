@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """NPM publisher for proto bundles - supports multiple local publishing strategies"""
 
 import argparse
@@ -134,7 +135,7 @@ def publish_npm_package(bundle_path, coordinates_path):
             print(f"  Install with: npm install {dest}")
 
         elif publish_mode == 'workspace':
-            import pkg_editor
+            import pkg_editor_generated as pkg_editor
 
             js_targets_str = os.environ.get('JS_TARGETS', '')
             if not js_targets_str.strip():

@@ -1,3 +1,4 @@
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 load("@rules_python//python:defs.bzl", "py_binary", "py_library")
 load("@rules_proto_grpc//:defs.bzl", "proto_plugin")
 
@@ -12,7 +13,7 @@ exports_files([
 # Connect-ES protoc plugin wrapper (delegates to globally-installed protoc-gen-es)
 sh_binary(
     name = "protoc_gen_es_wrapper",
-    srcs = ["protoc-gen-es-wrapper.sh"],
+    srcs = ["protoc-gen-es-wrapper_generated.sh"],
 )
 
 proto_plugin(
@@ -27,77 +28,78 @@ proto_plugin(
 # Gazelle wrapper that runs standard and protolake passes
 py_binary(
     name = "gazelle_wrapper",
-    srcs = ["gazelle_wrapper.py"],
+    srcs = ["gazelle_wrapper_generated.py"],
+    main = "gazelle_wrapper_generated.py",
 )
 
 # Publisher utilities
 py_library(
     name = "publisher_utils",
-    srcs = ["publish/publisher_utils.py"],
+    srcs = ["publish/publisher_utils_generated.py"],
 )
 
 # Package editor for workspace-based installs
 py_library(
     name = "pkg_editor",
-    srcs = ["pkg_editor.py"],
+    srcs = ["pkg_editor_generated.py"],
     imports = ["."],
 )
 
 # Maven publisher
 py_binary(
     name = "publish_to_maven",
-    srcs = ["publish/maven_publisher.py"],
-    main = "publish/maven_publisher.py",
+    srcs = ["publish/maven_publisher_generated.py"],
+    main = "publish/maven_publisher_generated.py",
     deps = [":publisher_utils"],
 )
 
 # PyPI publisher
 py_binary(
     name = "publish_to_pypi",
-    srcs = ["publish/pypi_publisher.py"],
-    main = "publish/pypi_publisher.py",
+    srcs = ["publish/pypi_publisher_generated.py"],
+    main = "publish/pypi_publisher_generated.py",
     deps = [":publisher_utils"],
 )
 
 # NPM publisher
 py_binary(
     name = "publish_to_npm",
-    srcs = ["publish/npm_publisher.py"],
-    main = "publish/npm_publisher.py",
+    srcs = ["publish/npm_publisher_generated.py"],
+    main = "publish/npm_publisher_generated.py",
     deps = [":publisher_utils", ":pkg_editor"],
 )
 
 # Proto-loader publisher (packages raw .proto files for @grpc/proto-loader)
 py_binary(
     name = "proto_loader_publisher",
-    srcs = ["publish/proto_loader_publisher.py"],
-    main = "publish/proto_loader_publisher.py",
+    srcs = ["publish/proto_loader_publisher_generated.py"],
+    main = "publish/proto_loader_publisher_generated.py",
     deps = [":pkg_editor"],
 )
 
 # Proto-loader npm publisher (genrule tool for publishing proto-loader packages)
 py_binary(
     name = "publish_proto_loader_to_npm",
-    srcs = ["publish/proto_loader_publisher.py"],
-    main = "publish/proto_loader_publisher.py",
+    srcs = ["publish/proto_loader_publisher_generated.py"],
+    main = "publish/proto_loader_publisher_generated.py",
     deps = [":pkg_editor"],
 )
 
 # Bundler tools
 py_binary(
     name = "jar_bundler",
-    srcs = ["bundler/jar_bundler.py"],
-    main = "bundler/jar_bundler.py",
+    srcs = ["bundler/jar_bundler_generated.py"],
+    main = "bundler/jar_bundler_generated.py",
 )
 
 py_binary(
     name = "wheel_builder",
-    srcs = ["bundler/wheel_builder.py"],
-    main = "bundler/wheel_builder.py",
+    srcs = ["bundler/wheel_builder_generated.py"],
+    main = "bundler/wheel_builder_generated.py",
 )
 
 py_binary(
     name = "npm_bundler",
-    srcs = ["bundler/npm_bundler.py"],
-    main = "bundler/npm_bundler.py",
+    srcs = ["bundler/npm_bundler_generated.py"],
+    main = "bundler/npm_bundler_generated.py",
 )

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """Creates NPM packages for Connect-ES v2 proto bundles (ESM with @bufbuild/protobuf)"""
 
 import argparse

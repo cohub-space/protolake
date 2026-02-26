@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """CI/pre-commit guard that detects tainted package-lock.json.
 
 Checks for protolake workspace entries that should not be committed.

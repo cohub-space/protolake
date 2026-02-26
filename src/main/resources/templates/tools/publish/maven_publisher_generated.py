@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """Maven publisher for Proto Lake bundles"""
 
 import argparse

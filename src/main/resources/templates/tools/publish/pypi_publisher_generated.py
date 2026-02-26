@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """PyPI publisher for Proto Lake bundles"""
 
 import argparse
@@ -10,7 +11,7 @@ from pathlib import Path
 
 # Add parent directory to path for utilities
 sys.path.insert(0, str(Path(__file__).parent))
-from publisher_utils import ensure_directory_exists, calculate_checksum
+from publisher_utils_generated import ensure_directory_exists, calculate_checksum
 
 
 def publish_to_local_repo(wheel_path, package_name, version, repo_path):

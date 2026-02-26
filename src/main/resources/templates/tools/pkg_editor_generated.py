@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """Package editor for JS/TS workspace-based local install.
 
 Manages npm workspace entries in package.json and .gitignore entries

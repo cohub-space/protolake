@@ -245,9 +245,9 @@ public class WorkspaceInitializer {
         templateEngine.copyResource("tools/es_proto.bzl",
                 toolsPath.resolve("es_proto.bzl"));
         // Copy the wrapper script that delegates to globally-installed protoc-gen-es
-        templateEngine.copyResource("tools/protoc-gen-es-wrapper.sh",
-                toolsPath.resolve("protoc-gen-es-wrapper.sh"));
-        toolsPath.resolve("protoc-gen-es-wrapper.sh").toFile().setExecutable(true);
+        templateEngine.copyResource("tools/protoc-gen-es-wrapper_generated.sh",
+                toolsPath.resolve("protoc-gen-es-wrapper_generated.sh"));
+        toolsPath.resolve("protoc-gen-es-wrapper_generated.sh").toFile().setExecutable(true);
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.debugf("Created es_proto.bzl rules for lake: %s", lakeName);
     }
@@ -352,12 +352,12 @@ public class WorkspaceInitializer {
         Files.createDirectories(bundlerPath);
 
         // Copy bundler scripts as static resources
-        copyAndMakeExecutable("tools/bundler/jar_bundler.py",
-                bundlerPath.resolve("jar_bundler.py"));
-        copyAndMakeExecutable("tools/bundler/wheel_builder.py",
-                bundlerPath.resolve("wheel_builder.py"));
-        copyAndMakeExecutable("tools/bundler/npm_bundler.py",
-                bundlerPath.resolve("npm_bundler.py"));
+        copyAndMakeExecutable("tools/bundler/jar_bundler_generated.py",
+                bundlerPath.resolve("jar_bundler_generated.py"));
+        copyAndMakeExecutable("tools/bundler/wheel_builder_generated.py",
+                bundlerPath.resolve("wheel_builder_generated.py"));
+        copyAndMakeExecutable("tools/bundler/npm_bundler_generated.py",
+                bundlerPath.resolve("npm_bundler_generated.py"));
     }
 
     /**
@@ -369,22 +369,22 @@ public class WorkspaceInitializer {
         Files.createDirectories(publishPath);
 
         // Copy publisher scripts as static resources
-        copyAndMakeExecutable("tools/publish/maven_publisher.py",
-                publishPath.resolve("maven_publisher.py"));
-        copyAndMakeExecutable("tools/publish/pypi_publisher.py",
-                publishPath.resolve("pypi_publisher.py"));
-        copyAndMakeExecutable("tools/publish/npm_publisher.py",
-                publishPath.resolve("npm_publisher.py"));
-        copyAndMakeExecutable("tools/publish/proto_loader_publisher.py",
-                publishPath.resolve("proto_loader_publisher.py"));
+        copyAndMakeExecutable("tools/publish/maven_publisher_generated.py",
+                publishPath.resolve("maven_publisher_generated.py"));
+        copyAndMakeExecutable("tools/publish/pypi_publisher_generated.py",
+                publishPath.resolve("pypi_publisher_generated.py"));
+        copyAndMakeExecutable("tools/publish/npm_publisher_generated.py",
+                publishPath.resolve("npm_publisher_generated.py"));
+        copyAndMakeExecutable("tools/publish/proto_loader_publisher_generated.py",
+                publishPath.resolve("proto_loader_publisher_generated.py"));
 
         // Copy utility module (not executable)
-        templateEngine.copyResource("tools/publish/publisher_utils.py",
-                publishPath.resolve("publisher_utils.py"));
+        templateEngine.copyResource("tools/publish/publisher_utils_generated.py",
+                publishPath.resolve("publisher_utils_generated.py"));
 
         // Copy pkg_editor to tools/ level (used by publishers via relative import)
-        copyAndMakeExecutable("tools/pkg_editor.py",
-                toolsPath.resolve("pkg_editor.py"));
+        copyAndMakeExecutable("tools/pkg_editor_generated.py",
+                toolsPath.resolve("pkg_editor_generated.py"));
     }
 
     /**
@@ -392,10 +392,10 @@ public class WorkspaceInitializer {
      * These are static scripts with no template variables.
      */
     private void createUtilityScripts(Path toolsPath) throws IOException {
-        copyAndMakeExecutable("tools/gazelle_wrapper.py",
-                toolsPath.resolve("gazelle_wrapper.py"));
-        copyAndMakeExecutable("tools/check_lockfile.py",
-                toolsPath.resolve("check_lockfile.py"));
+        copyAndMakeExecutable("tools/gazelle_wrapper_generated.py",
+                toolsPath.resolve("gazelle_wrapper_generated.py"));
+        copyAndMakeExecutable("tools/check_lockfile_generated.py",
+                toolsPath.resolve("check_lockfile_generated.py"));
     }
 
     /**

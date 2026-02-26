@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """
 Wrapper script that runs Gazelle in two passes:
 1. First pass: Standard Gazelle generates proto_library rules

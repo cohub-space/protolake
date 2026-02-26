@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """Proto-loader publisher - creates npm packages with raw .proto files for @grpc/proto-loader.
 
 Follows the google-proto-files pattern: raw protos + getProtoPath() helper.
@@ -179,7 +180,7 @@ def publish_proto_loader_package(bundle_path, coordinates_path):
                 return False
             print(f"Proto-loader package linked: {package_name}")
         elif publish_mode == 'workspace':
-            import pkg_editor
+            import pkg_editor_generated as pkg_editor
 
             js_targets_str = os.environ.get('JS_TARGETS', '')
             if not js_targets_str.strip():

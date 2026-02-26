@@ -1,3 +1,4 @@
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """Rules for creating multi-language proto bundles with hybrid publishing - Bazel 8 compatible"""
 
 load("@rules_java//java:defs.bzl", "JavaInfo")

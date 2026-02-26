@@ -1,3 +1,4 @@
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 load("@bazel_gazelle//:def.bzl", "gazelle", "gazelle_binary")
 load("@npm//:defs.bzl", "npm_link_all_packages")
 

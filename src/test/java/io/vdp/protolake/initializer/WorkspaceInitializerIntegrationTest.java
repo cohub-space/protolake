@@ -144,31 +144,31 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         );
         
         // Verify bundler tools
-        assertExecutableFile(toolsPath.resolve("bundler/jar_bundler.py"));
-        assertExecutableFile(toolsPath.resolve("bundler/wheel_builder.py"));
-        assertExecutableFile(toolsPath.resolve("bundler/npm_bundler.py"));
-        
+        assertExecutableFile(toolsPath.resolve("bundler/jar_bundler_generated.py"));
+        assertExecutableFile(toolsPath.resolve("bundler/wheel_builder_generated.py"));
+        assertExecutableFile(toolsPath.resolve("bundler/npm_bundler_generated.py"));
+
         // Verify each bundler has expected content
-        assertFileContains(toolsPath.resolve("bundler/jar_bundler.py"),
+        assertFileContains(toolsPath.resolve("bundler/jar_bundler_generated.py"),
             "def main():",
             "def create_manifest(",
             "#!/usr/bin/env python3"
         );
-        
-        assertFileContains(toolsPath.resolve("bundler/wheel_builder.py"),
+
+        assertFileContains(toolsPath.resolve("bundler/wheel_builder_generated.py"),
             "def main():",
             "def create_setup_py(",
             "#!/usr/bin/env python3"
         );
-        
+
         // Verify publishing tools
-        assertExecutableFile(toolsPath.resolve("publish/maven_publisher.py"));
-        assertExecutableFile(toolsPath.resolve("publish/pypi_publisher.py"));
-        assertExecutableFile(toolsPath.resolve("publish/npm_publisher.py"));
-        assertFileExists(toolsPath, "publish/publisher_utils.py");
-        
+        assertExecutableFile(toolsPath.resolve("publish/maven_publisher_generated.py"));
+        assertExecutableFile(toolsPath.resolve("publish/pypi_publisher_generated.py"));
+        assertExecutableFile(toolsPath.resolve("publish/npm_publisher_generated.py"));
+        assertFileExists(toolsPath, "publish/publisher_utils_generated.py");
+
         // Verify publisher content
-        assertFileContains(toolsPath.resolve("publish/maven_publisher.py"),
+        assertFileContains(toolsPath.resolve("publish/maven_publisher_generated.py"),
             "#!/usr/bin/env python3",
             "Maven publisher for Proto Lake bundles",
             "def main():"
@@ -242,8 +242,8 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         Path toolsPath = lakePath.resolve("tools");
         
         // Verify gazelle wrapper
-        assertExecutableFile(toolsPath.resolve("gazelle_wrapper.py"));
-        assertFileContains(toolsPath.resolve("gazelle_wrapper.py"),
+        assertExecutableFile(toolsPath.resolve("gazelle_wrapper_generated.py"));
+        assertFileContains(toolsPath.resolve("gazelle_wrapper_generated.py"),
             "#!/usr/bin/env python3",
             "Wrapper script that runs Gazelle in two passes"
         );
