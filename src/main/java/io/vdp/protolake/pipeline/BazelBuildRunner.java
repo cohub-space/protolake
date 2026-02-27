@@ -111,6 +111,9 @@ public class BazelBuildRunner {
             // Convert path to Bazel target
             String bazelTarget = toBazelTarget(target);
 
+            // Extract dependency versions from lake config for POM generation
+            Map<String, String> actionEnvs = extractVersionActionEnvs(metadata);
+
             LOG.infof("Building target: %s (bazel: %s)", target, bazelTarget);
             buildStatus.setSubPhase(String.format("Building %s", bazelTarget));
 
@@ -131,7 +134,7 @@ public class BazelBuildRunner {
                 .build();
 
             try {
-                String targetLog = runBazelBuild(lakeRoot, bazelTarget);
+                String targetLog = runBazelBuild(lakeRoot, bazelTarget, actionEnvs);
 
                 targetInfo = targetInfo.toBuilder()
                     .setStatus(TargetBuildInfo.Status.BUILT)
@@ -215,10 +218,16 @@ public class BazelBuildRunner {
             List<String> publishTargets = queryPublishTargets(lakeRoot);
             LOG.infof("Found %d publish targets", publishTargets.size());
 
-            // Build env map from config for the gRPC path (JS_TARGETS wouldn't be in process env)
-            Map<String, String> publishEnv = null;
+            // Build env map for publish genrules
+            Map<String, String> publishEnv = new HashMap<>();
+
+            // Pass dependency versions from lake config for POM generation
+            Map<String, String> versionEnvs = extractVersionActionEnvs(metadata);
+            if (versionEnvs != null) {
+                publishEnv.putAll(versionEnvs);
+            }
+
             if (installLocalConfig.getJsTargetsCount() > 0) {
-                publishEnv = new HashMap<>();
                 publishEnv.put("NPM_PUBLISH_MODE", "workspace");
                 publishEnv.put("JS_TARGETS", String.join(",", installLocalConfig.getJsTargetsList()));
             }
@@ -244,9 +253,9 @@ public class BazelBuildRunner {
 
                 LOG.infof("Running publish target: %s", target);
                 try {
-                    String output = publishEnv != null
-                        ? bazelCommand.runWithOutput(lakeRoot, publishEnv, "build", target)
-                        : bazelCommand.runWithOutput(lakeRoot, "build", target);
+                    String output = publishEnv.isEmpty()
+                        ? bazelCommand.runWithOutput(lakeRoot, "build", target)
+                        : bazelCommand.runWithOutput(lakeRoot, publishEnv, "build", target);
                     logs.add(String.format("Published: %s", target));
                     LOG.infof("Successfully published: %s", target);
                 } catch (Exception e) {
@@ -318,8 +327,8 @@ public class BazelBuildRunner {
      * Runs bazel build for a specific target and returns output logs.
      * Tolerates partial build success when --keep_going is used.
      */
-    private String runBazelBuild(Path lakeRoot, String bazelTarget) throws IOException {
-        List<String> args = buildBazelArgs("build", bazelTarget, lakeRoot);
+    private String runBazelBuild(Path lakeRoot, String bazelTarget, Map<String, String> actionEnvs) throws IOException {
+        List<String> args = buildBazelArgs("build", bazelTarget, lakeRoot, actionEnvs);
 
         BazelCommand.CommandResult result = bazelCommand.runWithResult(lakeRoot, args.toArray(new String[0]));
 
@@ -346,9 +355,37 @@ public class BazelBuildRunner {
     }
 
     /**
-     * Builds bazel command arguments.
+     * Extracts protobuf/gRPC versions from lake config and returns them as action_env entries.
+     * These are forwarded to Bazel actions so publish genrules can embed correct POM versions.
      */
-    private List<String> buildBazelArgs(String command, String target, Path lakeRoot) {
+    private Map<String, String> extractVersionActionEnvs(BuildOperationMetadata metadata) {
+        Map<String, String> envs = new HashMap<>();
+        if (metadata.hasLake() && metadata.getLake().hasConfig()
+                && metadata.getLake().getConfig().hasLanguageDefaults()
+                && metadata.getLake().getConfig().getLanguageDefaults().hasJava()) {
+            var javaDefaults = metadata.getLake().getConfig().getLanguageDefaults().getJava();
+            String protobufJavaVersion = javaDefaults.getProtobufJavaVersion();
+            String grpcVersion = javaDefaults.getGrpcJavaVersion();
+            if (protobufJavaVersion != null && !protobufJavaVersion.isEmpty()) {
+                envs.put("PROTOBUF_JAVA_VERSION", protobufJavaVersion);
+            }
+            if (grpcVersion != null && !grpcVersion.isEmpty()) {
+                envs.put("GRPC_VERSION", grpcVersion);
+            }
+        }
+        return envs.isEmpty() ? null : envs;
+    }
+
+    /**
+     * Builds bazel command arguments.
+     *
+     * @param command  The bazel command (e.g., "build")
+     * @param target   The target pattern (e.g., "//...")
+     * @param lakeRoot The lake root directory
+     * @param actionEnvs Optional action_env overrides (key=value pairs forwarded to Bazel actions)
+     */
+    private List<String> buildBazelArgs(String command, String target, Path lakeRoot,
+                                        Map<String, String> actionEnvs) {
         List<String> args = new ArrayList<>();
         args.add(command);
 
@@ -371,6 +408,13 @@ public class BazelBuildRunner {
             } else {
                 LOG.warnf("Ignoring unknown PROTOLAKE_BAZEL_CONFIG value '%s'. Allowed: %s",
                         bazelConfig, ALLOWED_BAZEL_CONFIGS);
+            }
+        }
+
+        // Forward action_env overrides (e.g., PROTOBUF_JAVA_VERSION, GRPC_VERSION)
+        if (actionEnvs != null) {
+            for (var entry : actionEnvs.entrySet()) {
+                args.add("--action_env=" + entry.getKey() + "=" + entry.getValue());
             }
         }
 

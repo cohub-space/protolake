@@ -26,7 +26,8 @@ def parse_jar_name(jar_path):
     return None
 
 
-def generate_pom(group_id, artifact_id, version, description=None):
+def generate_pom(group_id, artifact_id, version, description=None,
+                 protobuf_version="4.33.5", grpc_version="1.78.0"):
     """Generate a minimal POM file"""
     project = ET.Element("project")
     project.set("xmlns", "http://maven.apache.org/POM/4.0.0")
@@ -44,22 +45,22 @@ def generate_pom(group_id, artifact_id, version, description=None):
     if description:
         ET.SubElement(project, "description").text = description
 
-    # Add protobuf dependency
+    # Add protobuf dependency (version from lake config)
     dependencies = ET.SubElement(project, "dependencies")
     protobuf_dep = ET.SubElement(dependencies, "dependency")
     ET.SubElement(protobuf_dep, "groupId").text = "com.google.protobuf"
     ET.SubElement(protobuf_dep, "artifactId").text = "protobuf-java"
-    ET.SubElement(protobuf_dep, "version").text = "3.25.3"  # Fixed version
+    ET.SubElement(protobuf_dep, "version").text = protobuf_version
 
     grpc_dep = ET.SubElement(dependencies, "dependency")
     ET.SubElement(grpc_dep, "groupId").text = "io.grpc"
     ET.SubElement(grpc_dep, "artifactId").text = "grpc-protobuf"
-    ET.SubElement(grpc_dep, "version").text = "1.78.0"
+    ET.SubElement(grpc_dep, "version").text = grpc_version
 
     grpc_stub_dep = ET.SubElement(dependencies, "dependency")
     ET.SubElement(grpc_stub_dep, "groupId").text = "io.grpc"
     ET.SubElement(grpc_stub_dep, "artifactId").text = "grpc-stub"
-    ET.SubElement(grpc_stub_dep, "version").text = "1.78.0"
+    ET.SubElement(grpc_stub_dep, "version").text = grpc_version
 
     return ET.tostring(project, encoding="unicode", method="xml")
 
@@ -80,7 +81,8 @@ def calculate_checksums(file_path):
     }
 
 
-def publish_to_local_repo(jar_path, group_id, artifact_id, version, repo_path):
+def publish_to_local_repo(jar_path, group_id, artifact_id, version, repo_path,
+                          protobuf_version="4.33.5", grpc_version="1.78.0"):
     """Publish JAR to local Maven repository"""
     # Convert group ID to path
     group_path = group_id.replace('.', '/')
@@ -97,7 +99,9 @@ def publish_to_local_repo(jar_path, group_id, artifact_id, version, repo_path):
 
     # Generate POM
     pom_content = generate_pom(group_id, artifact_id, version,
-                               description=f"Proto definitions for {artifact_id}")
+                               description=f"Proto definitions for {artifact_id}",
+                               protobuf_version=protobuf_version,
+                               grpc_version=grpc_version)
     pom_path = artifact_dir / f"{artifact_id}-{version}.pom"
     pom_path.write_text(pom_content)
     print(f"Generated POM at {pom_path}")
@@ -173,14 +177,17 @@ def update_maven_metadata(artifact_dir, artifact_id, version):
     metadata_path.with_suffix('.xml.sha1').write_text(checksums['sha1'])
 
 
-def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registry_url, token):
+def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registry_url, token,
+                               protobuf_version="4.33.5", grpc_version="1.78.0"):
     """Publish JAR and POM to a remote Maven registry (e.g., GCP Artifact Registry) via HTTP PUT"""
     group_path = group_id.replace('.', '/')
     base_url = registry_url.rstrip('/')
 
     # Generate POM
     pom_content = generate_pom(group_id, artifact_id, version,
-                               description=f"Proto definitions for {artifact_id}")
+                               description=f"Proto definitions for {artifact_id}",
+                               protobuf_version=protobuf_version,
+                               grpc_version=grpc_version)
 
     # Files to upload: (local_path_or_bytes, remote_filename)
     uploads = []
@@ -243,6 +250,10 @@ def main():
                         help='Maven repository path (default: ~/.m2/repository)')
     parser.add_argument('--token', default=os.environ.get('REGISTRY_TOKEN', ''),
                         help='Auth token for remote registry (default: REGISTRY_TOKEN env var)')
+    parser.add_argument('--protobuf-version', default='4.33.5',
+                        help='Protobuf Java version for POM dependencies (default: 4.33.5)')
+    parser.add_argument('--grpc-version', default='1.78.0',
+                        help='gRPC version for POM dependencies (default: 1.78.0)')
     parser.add_argument('--skip-checksums', action='store_true',
                         help='Skip generating checksums')
 
@@ -267,7 +278,9 @@ def main():
                 args.artifact_id,
                 args.version,
                 args.repo,
-                args.token
+                args.token,
+                protobuf_version=args.protobuf_version,
+                grpc_version=args.grpc_version,
             )
 
             print(f"\nSuccessfully published to remote Maven registry:")
@@ -282,7 +295,9 @@ def main():
                 args.group_id,
                 args.artifact_id,
                 args.version,
-                args.repo
+                args.repo,
+                protobuf_version=args.protobuf_version,
+                grpc_version=args.grpc_version,
             )
 
             print(f"\nSuccessfully published to Maven repository:")

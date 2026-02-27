@@ -30,6 +30,8 @@ def main():
     parser.add_argument('--group-id', required=True, help='Maven group ID')
     parser.add_argument('--artifact-id', required=True, help='Maven artifact ID')
     parser.add_argument('--version', required=True, help='Version')
+    parser.add_argument('--jandex-jar', default=None,
+                        help='Path to Jandex CLI JAR for generating META-INF/jandex.idx')
 
     args = parser.parse_args()
     
@@ -118,6 +120,15 @@ def main():
                     # Add file to JAR with path relative to tmpdir
                     arcname = os.path.relpath(file_path, tmpdir)
                     jar.write(file_path, arcname)
+
+        # Run Jandex to generate META-INF/jandex.idx (enables Quarkus gRPC service discovery)
+        if args.jandex_jar:
+            print("Generating Jandex index...")
+            subprocess.run(
+                ['java', '-jar', args.jandex_jar, '-m', str(output_path)],
+                check=True,
+            )
+            print("  Added META-INF/jandex.idx")
 
         print(f"Successfully created {args.output}")
         print(f"  Group ID: {args.group_id}")

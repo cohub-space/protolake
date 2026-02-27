@@ -24,16 +24,12 @@ def _java_proto_bundle_impl(ctx):
             transitive = [dep[JavaInfo].transitive_runtime_jars for dep in all_java_deps],
         )
     else:
-        # Thin JAR (default): only include the generated code JARs
-        # Transitive deps (protobuf-java, grpc, etc.) are declared in POM
+        # Thin JAR (default): only generated code. Transitive deps declared in POM.
         direct_jars = []
         for dep in all_java_deps:
             ji = dep[JavaInfo]
             direct_jars.extend(ji.runtime_output_jars)
-        runtime_jars = depset(
-            direct = direct_jars,
-            transitive = [dep[JavaInfo].full_compile_jars for dep in all_java_deps],
-        )
+        runtime_jars = depset(direct = direct_jars)
 
     # Collect all proto sources
     proto_sources = depset(
@@ -55,9 +51,14 @@ def _java_proto_bundle_impl(ctx):
     # Add proto sources
     args.add_all("--proto-sources", proto_sources)
 
+    # Jandex index generation for Quarkus gRPC service discovery
+    jandex_files = ctx.attr._jandex[DefaultInfo].files.to_list()
+    if jandex_files:
+        args.add("--jandex-jar", jandex_files[0])
+
     ctx.actions.run(
         outputs = [output_jar],
-        inputs = depset(transitive = [runtime_jars, proto_sources]),
+        inputs = depset(direct = jandex_files, transitive = [runtime_jars, proto_sources]),
         executable = ctx.executable._jar_bundler,
         arguments = [args],
         mnemonic = "JavaProtoBundle",
@@ -116,6 +117,10 @@ java_proto_bundle = rule(
             executable = True,
             cfg = "exec",
             doc = "JAR bundler tool",
+        ),
+        "_jandex": attr.label(
+            default = "@maven//:io_smallrye_jandex",
+            doc = "Jandex JAR for generating META-INF/jandex.idx (Quarkus service discovery)",
         ),
     },
     doc = "Creates a JAR containing generated Java classes. Use fat_jar=True for all transitive deps.",
