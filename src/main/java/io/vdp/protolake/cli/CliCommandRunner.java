@@ -23,12 +23,22 @@ public class CliCommandRunner {
     @Inject
     ValidateCommand validateCommand;
 
+    @Inject
+    DepCommand depCommand;
+
+    @Inject
+    DepCommand.ShowCommand depShowCommand;
+
     public int execute(String[] args) {
+        CommandLine depCli = new CommandLine(depCommand)
+                .addSubcommand("show", depShowCommand);
+
         CommandLine cli = new CommandLine(new ProtolakeCli())
                 .addSubcommand("init", initCommand)
                 .addSubcommand("create-bundle", createBundleCommand)
                 .addSubcommand("build", buildCommand)
-                .addSubcommand("validate", validateCommand);
+                .addSubcommand("validate", validateCommand)
+                .addSubcommand("dep", depCli);
 
         return cli.execute(args);
     }

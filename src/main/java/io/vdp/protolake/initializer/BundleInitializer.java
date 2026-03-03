@@ -1,5 +1,6 @@
 package io.vdp.protolake.initializer;
 
+import io.vdp.protolake.config.EffectiveConfigResolver;
 import io.vdp.protolake.util.BundleUtil;
 import io.vdp.protolake.util.LakeUtil;
 import io.vdp.protolake.util.git.GitCommand;
@@ -34,6 +35,9 @@ public class BundleInitializer {
     
     @Inject
     TemplateEngine templateEngine;
+
+    @Inject
+    EffectiveConfigResolver effectiveConfigResolver;
 
     @Inject
     GitCommand gitCommand;
@@ -119,56 +123,16 @@ public class BundleInitializer {
         context.put("bundlePrefix", bundle.getBundlePrefix());
         context.put("version", bundle.getVersion());
 
-        // Add language-specific configurations
-        // Extract enabled flags and bundle-specific identifiers that can't be inherited from lake.yaml
-        
-        boolean javaEnabled = true;
-        boolean pythonEnabled = true;
-        boolean jsEnabled = true;
-        String javaArtifactId = "";
-        String pythonPackageName = "";
-        String jsPackageName = "";
-        
-        String javaGroupId = "";
+        // Resolve effective config by merging lake defaults with bundle overrides
+        EffectiveConfigResolver.ResolvedConfig resolved = effectiveConfigResolver.resolve(lake, bundle);
 
-        // Check if bundle has config overrides
-        if (bundle.hasConfig() && bundle.getConfig().hasLanguages()) {
-            if (bundle.getConfig().getLanguages().hasJava()) {
-                javaEnabled = bundle.getConfig().getLanguages().getJava().getEnabled();
-                // Extract artifact_id if provided
-                if (!bundle.getConfig().getLanguages().getJava().getArtifactId().isEmpty()) {
-                    javaArtifactId = bundle.getConfig().getLanguages().getJava().getArtifactId();
-                }
-                // Extract group_id if provided
-                if (!bundle.getConfig().getLanguages().getJava().getGroupId().isEmpty()) {
-                    javaGroupId = bundle.getConfig().getLanguages().getJava().getGroupId();
-                }
-            }
-            if (bundle.getConfig().getLanguages().hasPython()) {
-                pythonEnabled = bundle.getConfig().getLanguages().getPython().getEnabled();
-                // Extract package_name if provided
-                if (!bundle.getConfig().getLanguages().getPython().getPackageName().isEmpty()) {
-                    pythonPackageName = bundle.getConfig().getLanguages().getPython().getPackageName();
-                }
-            }
-            if (bundle.getConfig().getLanguages().hasJavascript()) {
-                jsEnabled = bundle.getConfig().getLanguages().getJavascript().getEnabled();
-                // Extract package_name if provided
-                if (!bundle.getConfig().getLanguages().getJavascript().getPackageName().isEmpty()) {
-                    jsPackageName = bundle.getConfig().getLanguages().getJavascript().getPackageName();
-                }
-            }
-        }
-        
-        context.put("javaEnabled", javaEnabled);
-        context.put("pythonEnabled", pythonEnabled);
-        context.put("jsEnabled", jsEnabled);
-        
-        // Always add bundle-specific identifiers to context for Qute template compatibility
-        context.put("javaGroupId", javaGroupId);
-        context.put("javaArtifactId", javaArtifactId);
-        context.put("pythonPackageName", pythonPackageName);
-        context.put("jsPackageName", jsPackageName);
+        context.put("javaEnabled", resolved.javaEnabled());
+        context.put("pythonEnabled", resolved.pythonEnabled());
+        context.put("jsEnabled", resolved.jsEnabled());
+        context.put("javaGroupId", resolved.javaGroupId());
+        context.put("javaArtifactId", resolved.javaArtifactId());
+        context.put("pythonPackageName", resolved.pythonPackageName());
+        context.put("jsPackageName", resolved.jsPackageName());
 
         // Calculate bundle path
         Path bundlePath = BundleUtil.calculateBundlePath(lake, bundle, basePath);

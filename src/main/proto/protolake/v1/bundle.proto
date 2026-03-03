@@ -39,6 +39,9 @@ service BundleService {
 
   // Get details of a specific build
   rpc GetBuild(GetBuildRequest) returns (Build);
+
+  // Get copy-paste-ready dependency snippets for a bundle
+  rpc GetDependencySnippet(GetDependencySnippetRequest) returns (GetDependencySnippetResponse);
 }
 
 // A Bundle is a logical grouping of proto files that get built into packages
@@ -64,8 +67,7 @@ message Bundle {
   // Overrides lake defaults where specified
   BundleConfig config = 5;
 
-  // Current version of the bundle
-  // This is the base version without branch suffix
+  // Semantic version (e.g., "1.0.0")
   string version = 6;
 
   // Automatically set by the system
@@ -208,7 +210,7 @@ message Build {
   // Bundle that was built (resource name)
   string bundle = 2;
 
-  // Version of this build (e.g., "1.0.0-feature-x" for local, "1.0.0" for remote)
+  // Version from bundle.yaml (e.g., "1.0.0")
   string version = 3;
 
   // Git commit SHA
@@ -350,4 +352,48 @@ message ListBuildsResponse {
 message GetBuildRequest {
   // Build resource name (e.g., "lakes/main/bundles/user-service/builds/12345")
   string name = 1;
+}
+
+// Dependency snippet format for a specific package manager
+enum SnippetFormat {
+  FORMAT_UNSPECIFIED = 0;
+  MAVEN = 1;
+  GRADLE_KOTLIN = 2;
+  GRADLE_GROOVY = 3;
+  NPM = 4;
+  YARN = 5;
+}
+
+message GetDependencySnippetRequest {
+  // Bundle resource name (e.g., "lakes/main/bundles/user-service")
+  string name = 1;
+
+  // Languages to include (empty = all enabled languages)
+  repeated Language languages = 2;
+
+  // Preferred snippet format (e.g., GRADLE_KOTLIN instead of default MAVEN for Java)
+  SnippetFormat format = 3;
+}
+
+message GetDependencySnippetResponse {
+  // Dependency snippets, one per language
+  repeated DependencySnippet snippets = 1;
+
+  // Warnings for skipped languages or format mismatches
+  repeated string warnings = 2;
+}
+
+// A copy-paste-ready dependency snippet for a single language
+message DependencySnippet {
+  // Language this snippet is for
+  Language language = 1;
+
+  // Effective format used (may differ from requested if format doesn't apply)
+  SnippetFormat format = 2;
+
+  // The dependency snippet text (e.g., Maven XML, Gradle DSL, npm entry)
+  string snippet = 3;
+
+  // Install command if applicable (e.g., "npm install @company/user-proto@1.0.0")
+  string install_command = 4;
 }

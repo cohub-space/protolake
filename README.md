@@ -1,6 +1,6 @@
 # Proto Lake
 
-Proto Lake is a centralized protocol buffer management system that provides branch-aware artifact publishing for local development. It acts as the source of truth for all protobuf definitions and automatically builds language-specific packages (JAR, wheel, npm) that services can consume.
+Proto Lake is a centralized protocol buffer management system that acts as the source of truth for all protobuf definitions and automatically builds language-specific packages (JAR, wheel, npm) that services can consume.
 
 ## Overview
 
@@ -9,9 +9,9 @@ Proto Lake solves the challenge of sharing Protocol Buffer definitions across se
 - **Centralized Storage**: Single source of truth for all company protos in dedicated git repositories (lakes)
 - **Automatic Dependency Management**: Using Bazel and Gazelle for build file generation
 - **Multi-Language Support**: Generates packages for Java, Python, and JavaScript/TypeScript
-- **Git-Based Workflow**: Optional branch-aware development for advanced version control
+- **Git-Based Workflow**: Git integration for version control
 - **Automated Publishing**: To local Maven, PyPI, and NPM repositories
-- **Version Management**: Automatic versioning with optional branch suffixes
+- **Explicit Versioning**: Version set in bundle.yaml, used for all published artifacts
 
 ## Quick Start
 

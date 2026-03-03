@@ -387,6 +387,9 @@ message BuildOperationMetadata {
 
   // Lake being built (for use in build pipeline)
   Lake lake = 8;
+
+  // Bundle version by target path (e.g., "com/company/user" -> "1.0.0")
+  map<string, string> bundle_versions = 9;
 }
 
 // Tracks the status of all operation phases
@@ -439,7 +442,7 @@ message TargetBuildInfo {
 
   Status status = 2;
 
-  // Version string for this build (e.g., "1.0.0-feature-x")
+  // Published version from bundle.yaml (e.g., "1.0.0")
   string version = 3;
 
   google.protobuf.Timestamp start_time = 4;
@@ -464,7 +467,7 @@ message Artifact {
   Language language = 1;
 
   // Output path where artifact was produced
-  // e.g., "~/.m2/repository/com/company/proto/my-bundle/1.0.0-feature-x/"
+  // e.g., "~/.m2/repository/com/company/proto/my-bundle/1.0.0/"
   string output_path = 2;
 
   // Artifact checksum for verification

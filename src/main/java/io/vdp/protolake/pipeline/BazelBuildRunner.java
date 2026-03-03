@@ -114,14 +114,21 @@ public class BazelBuildRunner {
             // Extract dependency versions from lake config for POM generation
             Map<String, String> actionEnvs = extractVersionActionEnvs(metadata);
 
-            LOG.infof("Building target: %s (bazel: %s)", target, bazelTarget);
+            // Resolve bundle version from bundle_versions map, falling back to "1.0.0"
+            String bundleVersion = metadata.getBundleVersionsMap()
+                .getOrDefault(target, "1.0.0");
+
+            // Pass VERSION as action env so publish genrules pick it up
+            actionEnvs.put("VERSION", bundleVersion);
+
+            LOG.infof("Building target: %s (bazel: %s, version: %s)", target, bazelTarget, bundleVersion);
             buildStatus.setSubPhase(String.format("Building %s", bazelTarget));
 
             // Create target entry in metadata
             Map<String, TargetBuildInfo> targetBuilds = new HashMap<>(metadata.getTargetBuildsMap());
             TargetBuildInfo targetInfo = TargetBuildInfo.newBuilder()
                 .setTarget(bazelTarget)
-                .setVersion(metadata.getBranch())
+                .setVersion(bundleVersion)
                 .setStatus(TargetBuildInfo.Status.BUILDING)
                 .setStartTime(Timestamp.newBuilder()
                     .setSeconds(Instant.now().getEpochSecond())
@@ -222,10 +229,7 @@ public class BazelBuildRunner {
             Map<String, String> publishEnv = new HashMap<>();
 
             // Pass dependency versions from lake config for POM generation
-            Map<String, String> versionEnvs = extractVersionActionEnvs(metadata);
-            if (versionEnvs != null) {
-                publishEnv.putAll(versionEnvs);
-            }
+            publishEnv.putAll(extractVersionActionEnvs(metadata));
 
             if (installLocalConfig.getJsTargetsCount() > 0) {
                 publishEnv.put("NPM_PUBLISH_MODE", "workspace");
@@ -373,7 +377,7 @@ public class BazelBuildRunner {
                 envs.put("GRPC_VERSION", grpcVersion);
             }
         }
-        return envs.isEmpty() ? null : envs;
+        return envs;
     }
 
     /**

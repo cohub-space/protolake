@@ -10,6 +10,7 @@ import io.vdp.protolake.operation.CancellationToken;
 import io.vdp.protolake.operation.InMemoryOperationManager;
 import io.vdp.protolake.pipeline.BuildOrchestrator;
 import io.vdp.protolake.storage.StorageService;
+import io.vdp.protolake.util.BundleUtil;
 import io.vdp.protolake.util.LakeUtil;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -228,7 +229,8 @@ public class LakeServiceImpl extends LakeServiceGrpc.LakeServiceImplBase {
             
             String targetPath = LakeUtil.getRelativePath(lake.get());
             
-            BuildOperationMetadata metadata = BuildOperationMetadata.newBuilder()
+            // Populate bundle versions for all bundles in the lake
+            BuildOperationMetadata.Builder metadataBuilder = BuildOperationMetadata.newBuilder()
                 .setResourceName(resourceName)
                 .setRequestedTarget(targetPath)
                 .setBranch(buildOrchestrator.getCurrentBranch(lakeId))
@@ -242,8 +244,14 @@ public class LakeServiceImpl extends LakeServiceGrpc.LakeServiceImplBase {
                     .setBuild(PhaseStatus.newBuilder().setStatus(PhaseStatus.Status.NOT_STARTED).build())
                     .setPublish(PhaseStatus.newBuilder().setStatus(PhaseStatus.Status.NOT_STARTED).build())
                     .build())
-                .setLake(lake.get())
-                .build();
+                .setLake(lake.get());
+
+            for (protolake.v1.Bundle bundle : storageService.listBundles(lakeId)) {
+                String bundleTargetPath = BundleUtil.getWorkspaceRelativePath(lake.get(), bundle);
+                metadataBuilder.putBundleVersions(bundleTargetPath, bundle.getVersion());
+            }
+
+            BuildOperationMetadata metadata = metadataBuilder.build();
             
             CancellationToken cancellationToken = new CancellationToken();
             

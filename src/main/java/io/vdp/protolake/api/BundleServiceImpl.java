@@ -9,6 +9,7 @@ import io.vdp.protolake.initializer.BundleInitializer;
 import io.vdp.protolake.operation.CancellationToken;
 import io.vdp.protolake.operation.InMemoryOperationManager;
 import io.vdp.protolake.pipeline.BuildOrchestrator;
+import io.vdp.protolake.snippet.DependencySnippetService;
 import io.vdp.protolake.storage.StorageService;
 import io.vdp.protolake.validator.BundleValidator;
 import io.vdp.protolake.util.BundleUtil;
@@ -51,6 +52,9 @@ public class BundleServiceImpl extends BundleServiceGrpc.BundleServiceImplBase {
 
     @Inject
     BundleValidator bundleValidator;
+
+    @Inject
+    DependencySnippetService dependencySnippetService;
 
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
@@ -289,6 +293,7 @@ public class BundleServiceImpl extends BundleServiceGrpc.BundleServiceImplBase {
                     .setPublish(PhaseStatus.newBuilder().setStatus(PhaseStatus.Status.NOT_STARTED).build())
                     .build())
                 .setLake(lake)
+                .putBundleVersions(targetPath, bundle.get().getVersion())
                 .build();
 
             CancellationToken cancellationToken = new CancellationToken();
@@ -312,6 +317,38 @@ public class BundleServiceImpl extends BundleServiceGrpc.BundleServiceImplBase {
 
         } catch (Exception e) {
             LOG.errorf(e, "Failed to build bundle");
+            responseObserver.onError(e);
+        }
+    }
+
+    @Override
+    public void getDependencySnippet(GetDependencySnippetRequest request,
+            StreamObserver<GetDependencySnippetResponse> responseObserver) {
+        try {
+            String lakeId = BundleUtil.extractLakeIdFromBundle(request.getName());
+            String bundleId = BundleUtil.extractBundleId(request.getName());
+
+            Optional<protolake.v1.Bundle> bundle = storageService.getBundle(lakeId, bundleId);
+            if (bundle.isEmpty()) {
+                throw Status.NOT_FOUND
+                    .withDescription("Bundle not found: " + request.getName())
+                    .asRuntimeException();
+            }
+
+            protolake.v1.Lake lake = storageService.getLake(lakeId)
+                .orElseThrow(() -> Status.NOT_FOUND
+                    .withDescription("Lake not found: " + lakeId)
+                    .asRuntimeException());
+
+            GetDependencySnippetResponse response = dependencySnippetService.generateSnippets(
+                lake, bundle.get(),
+                request.getLanguagesList(), request.getFormat());
+
+            responseObserver.onNext(response);
+            responseObserver.onCompleted();
+
+        } catch (Exception e) {
+            LOG.errorf(e, "Failed to get dependency snippet: %s", request.getName());
             responseObserver.onError(e);
         }
     }
