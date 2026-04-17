@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package company_a.platform.service_a.types.v1;
+
+option java_package = "com.company_a.platform.service_a.types.v1";
+option java_multiple_files = true;
+
+// Common types used across services
+message Address {
+  string street = 1;
+  string city = 2;
+  string state = 3;
+  string zip_code = 4;
+  string country = 5;
+}
+
+message Money {
+  int64 amount = 1;  // Amount in cents
+  string currency = 2;  // ISO 4217 currency code
+}
+
+enum UserStatus {
+  USER_STATUS_UNSPECIFIED = 0;
+  USER_STATUS_ACTIVE = 1;
+  USER_STATUS_INACTIVE = 2;
+  USER_STATUS_SUSPENDED = 3;
+}
