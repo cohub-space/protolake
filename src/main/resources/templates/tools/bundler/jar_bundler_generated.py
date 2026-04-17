@@ -32,6 +32,10 @@ def main():
     parser.add_argument('--version', required=True, help='Version')
     parser.add_argument('--jandex-jar', default=None,
                         help='Path to Jandex CLI JAR for generating META-INF/jandex.idx')
+    parser.add_argument('--descriptor-pb', default=None,
+                        help='Optional proto descriptor (.pb) to pack as META-INF/proto-descriptors/<bundle>.pb')
+    parser.add_argument('--bundle-name', default=None,
+                        help='Bundle name used as descriptor filename in META-INF (defaults to artifact_id)')
 
     args = parser.parse_args()
     
@@ -106,6 +110,17 @@ def main():
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest_path)
                 print(f"  Copied {src} -> {dest}")
+
+        # Pack proto descriptor under META-INF/proto-descriptors/<bundle>.pb
+        if args.descriptor_pb:
+            if os.path.exists(args.descriptor_pb):
+                pb_name = (args.bundle_name or args.artifact_id) + '.pb'
+                dest_path = meta_inf / 'proto-descriptors' / pb_name
+                dest_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(args.descriptor_pb, dest_path)
+                print(f"  Packed descriptor {args.descriptor_pb} -> META-INF/proto-descriptors/{pb_name}")
+            else:
+                print(f"Warning: --descriptor-pb '{args.descriptor_pb}' does not exist; skipping")
 
         # Create the fat JAR
         print("Creating JAR file...")

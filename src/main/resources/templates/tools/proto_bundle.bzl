@@ -56,9 +56,18 @@ def _java_proto_bundle_impl(ctx):
     if jandex_files:
         args.add("--jandex-jar", jandex_files[0])
 
+    # Optional proto descriptor set — packed into META-INF/proto-descriptors/<bundle>.pb
+    # so Envoy gRPC-JSON transcoding (and other FileDescriptorSet consumers) can pull
+    # it from the published Maven artifact.
+    descriptor_files = []
+    if ctx.attr.descriptor_pb:
+        descriptor_files = [ctx.file.descriptor_pb]
+        args.add("--descriptor-pb", ctx.file.descriptor_pb)
+        args.add("--bundle-name", ctx.attr.bundle_name or ctx.attr.artifact_id)
+
     ctx.actions.run(
         outputs = [output_jar],
-        inputs = depset(direct = jandex_files, transitive = [runtime_jars, proto_sources]),
+        inputs = depset(direct = jandex_files + descriptor_files, transitive = [runtime_jars, proto_sources]),
         executable = ctx.executable._jar_bundler,
         arguments = [args],
         mnemonic = "JavaProtoBundle",
@@ -110,6 +119,17 @@ java_proto_bundle = rule(
             default = False,
             doc = "If True, creates a fat JAR with all transitive dependencies. " +
                   "If False (default), creates a thin JAR with only generated code.",
+        ),
+        "descriptor_pb": attr.label(
+            allow_single_file = [".pb"],
+            doc = "Optional proto descriptor set (.pb output of proto_descriptor_set) " +
+                  "to include as META-INF/proto-descriptors/<bundle>.pb. Consumed by " +
+                  "Envoy gRPC-JSON transcoding and other FileDescriptorSet tools.",
+        ),
+        "bundle_name": attr.string(
+            default = "",
+            doc = "Bundle name used as the descriptor filename inside META-INF. " +
+                  "Defaults to artifact_id if empty. Only used when descriptor_pb is set.",
         ),
         # NO version attribute - version comes from environment variable
         "_jar_bundler": attr.label(

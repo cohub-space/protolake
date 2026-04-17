@@ -1,0 +1,4 @@
+test-lake-output/
+test-cli-output/
+test-remote-output/
+*.log
