@@ -44,6 +44,8 @@ gazelle_binary(
 # gazelle:resolve proto google/api/field_behavior.proto @googleapis//google/api:field_behavior_proto
 # gazelle:resolve proto google/api/http.proto @googleapis//google/api:http_proto
 # gazelle:resolve proto google/api/resource.proto @googleapis//google/api:resource_proto
+# googleapis (google/longrunning/*)
+# gazelle:resolve proto google/longrunning/operations.proto @googleapis//google/longrunning:operations_proto
 # protovalidate (buf/validate/*)
 # gazelle:resolve proto buf/validate/validate.proto @protovalidate//proto/protovalidate/buf/validate:validate_proto
 
