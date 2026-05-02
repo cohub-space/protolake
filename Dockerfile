@@ -60,8 +60,10 @@ RUN apt-get update && apt-get install -y \
 COPY --from=tools /usr/local/bin/bazel /usr/local/bin/bazel
 COPY --from=tools /usr/local/bin/buf /usr/local/bin/buf
 
-# Install twine for remote PyPI publishing
-RUN pip3 install twine --break-system-packages
+# Install twine for remote PyPI publishing + requests for the maven publisher
+# (used by tools/publish/maven_publisher_generated.py to PUT to AR with retries
+# + proper HTTP error reporting, replacing the prior urllib/curl approach).
+RUN pip3 install twine requests --break-system-packages
 
 # Install pnpm (needed for generating pnpm-lock.yaml at workspace init)
 # Install protoc-gen-es globally (used by es_proto_compile rule for Connect-ES codegen)
