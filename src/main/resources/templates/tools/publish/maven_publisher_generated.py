@@ -4,15 +4,16 @@
 
 import argparse
 import hashlib
+import http.client
 import os
 import shutil
+import socket
+import ssl
 import sys
+import time
+import urllib.parse
 import xml.etree.ElementTree as ET
 from pathlib import Path
-
-import requests
-from requests.adapters import HTTPAdapter
-from urllib3.util.retry import Retry
 
 
 def parse_jar_name(jar_path):
@@ -178,37 +179,96 @@ def update_maven_metadata(artifact_dir, artifact_id, version):
     metadata_path.with_suffix('.xml.sha1').write_text(checksums['sha1'])
 
 
-def _make_session(token):
-    """Build a requests Session with bearer auth + retries.
+_RETRY_STATUSES = {429, 500, 502, 503, 504}
+_TRANSIENT_NETWORK_EXC = (
+    ConnectionResetError,
+    ConnectionAbortedError,
+    BrokenPipeError,
+    socket.timeout,
+)
 
-    Retries handle transient AR errors (5xx, 429) with exponential backoff.
-    Connection-level failures (broken pipe, reset) bubble up as
-    requests.ConnectionError with full context — unlike urllib, which
-    masked them as opaque "Broken pipe" with no HTTP status.
+
+def _http_put(url, data, content_type, token, timeout=300):
+    """PUT data to url with bearer auth using http.client (stdlib only).
+
+    Returns (status: int, reason: str, body: str). status is 0 if no
+    response was received. body is empty if the server didn't send one.
+
+    Why http.client instead of urllib.request: when AR rejects mid-upload
+    (e.g. content-type / coordinate / auth issue), it sends a 4xx + closes
+    the TCP connection. urllib.request.urlopen sees the closed socket as
+    a write failure and raises URLError("Broken pipe") with no way to
+    recover the response. http.client lets us send the body, catch the
+    EPIPE separately, and still call getresponse() to read whatever the
+    server returned before closing — surfacing the actual HTTP status.
     """
-    session = requests.Session()
-    session.headers.update({"Authorization": f"Bearer {token}"})
-    retry = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-        allowed_methods=["PUT"],
-        raise_on_status=False,
-    )
-    adapter = HTTPAdapter(max_retries=retry)
-    session.mount("https://", adapter)
-    session.mount("http://", adapter)
-    return session
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Unsupported scheme {parsed.scheme!r} in {url}")
+    host = parsed.hostname or ""
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path or "/"
+    if parsed.query:
+        path = f"{path}?{parsed.query}"
+
+    if parsed.scheme == "https":
+        conn = http.client.HTTPSConnection(host, port,
+                                           context=ssl.create_default_context(),
+                                           timeout=timeout)
+    else:
+        conn = http.client.HTTPConnection(host, port, timeout=timeout)
+
+    try:
+        conn.putrequest("PUT", path, skip_host=False, skip_accept_encoding=True)
+        conn.putheader("Host", host)
+        conn.putheader("Content-Type", content_type)
+        conn.putheader("Content-Length", str(len(data)))
+        conn.putheader("Authorization", f"Bearer {token}")
+        conn.endheaders()
+        try:
+            conn.send(data)
+        except _TRANSIENT_NETWORK_EXC:
+            # Server closed mid-write — still try to read whatever
+            # response it sent before closing.
+            pass
+        resp = conn.getresponse()
+        body = resp.read().decode("utf-8", errors="replace")
+        return resp.status, resp.reason, body
+    except _TRANSIENT_NETWORK_EXC as e:
+        return 0, type(e).__name__, str(e)
+    finally:
+        conn.close()
+
+
+def _put_with_retries(url, data, content_type, token, attempts=3,
+                      backoff_seconds=1.0, timeout=300):
+    """PUT with retries on transient network errors and 429/5xx responses.
+
+    Returns the final (status, reason, body) tuple.
+    """
+    last = (0, "no-attempts", "")
+    for attempt in range(1, attempts + 1):
+        status, reason, body = _http_put(url, data, content_type, token,
+                                         timeout=timeout)
+        last = (status, reason, body)
+        if status and status not in _RETRY_STATUSES and status < 400:
+            return last
+        if status and status not in _RETRY_STATUSES:
+            return last  # permanent 4xx — don't retry
+        if attempt < attempts:
+            sleep_for = backoff_seconds * (2 ** (attempt - 1))
+            print(f"  Retry {attempt}/{attempts - 1} after {sleep_for}s "
+                  f"(status={status} reason={reason})", file=sys.stderr)
+            time.sleep(sleep_for)
+    return last
 
 
 def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registry_url, token,
                                protobuf_version="4.33.5", grpc_version="1.78.0"):
     """Publish JAR + POM (+ checksums) to a remote Maven registry via HTTP PUT.
 
-    Uses requests with built-in retry for transient failures. On any
-    permanent error (4xx, connection broken, etc.) prints URL + HTTP
-    code + response body and exits non-zero so the calling bazel
-    genrule fails visibly instead of swallowing the cause.
+    On any permanent error prints URL + HTTP code + response body and
+    exits non-zero so the calling bazel genrule fails visibly.
     """
     group_path = group_id.replace('.', '/')
     base_url = registry_url.rstrip('/')
@@ -238,26 +298,18 @@ def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registr
                         filename + '.sha1', 'text/plain'))
 
     artifact_url = f"{base_url}/{group_path}/{artifact_id}/{version}"
-    session = _make_session(token)
 
     for data, filename, content_type in uploads:
         url = f"{artifact_url}/{filename}"
-        try:
-            resp = session.put(url, data=data,
-                               headers={"Content-Type": content_type},
-                               timeout=300)
-        except requests.RequestException as e:
-            print(f"Network error uploading {filename}: {type(e).__name__}: {e}",
-                  file=sys.stderr)
-            print(f"  URL: {url}", file=sys.stderr)
-            sys.exit(1)
-        if resp.status_code >= 400:
-            print(f"Error uploading {filename}: HTTP {resp.status_code}",
+        status, reason, body = _put_with_retries(url, data, content_type, token)
+        if not status or status >= 400:
+            print(f"Error uploading {filename}: HTTP {status} {reason}",
                   file=sys.stderr)
             print(f"  URL:      {url}", file=sys.stderr)
-            print(f"  Response: {resp.text[:1000]}", file=sys.stderr)
+            if body:
+                print(f"  Response: {body[:1000]}", file=sys.stderr)
             sys.exit(1)
-        print(f"Uploaded {filename} -> {url} (HTTP {resp.status_code})")
+        print(f"Uploaded {filename} -> {url} (HTTP {status})")
 
     return artifact_url
 
