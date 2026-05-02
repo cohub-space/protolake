@@ -6,12 +6,13 @@ import argparse
 import hashlib
 import os
 import shutil
-import subprocess
 import sys
-import urllib.request
-import urllib.error
 import xml.etree.ElementTree as ET
 from pathlib import Path
+
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 
 
 def parse_jar_name(jar_path):
@@ -177,9 +178,38 @@ def update_maven_metadata(artifact_dir, artifact_id, version):
     metadata_path.with_suffix('.xml.sha1').write_text(checksums['sha1'])
 
 
+def _make_session(token):
+    """Build a requests Session with bearer auth + retries.
+
+    Retries handle transient AR errors (5xx, 429) with exponential backoff.
+    Connection-level failures (broken pipe, reset) bubble up as
+    requests.ConnectionError with full context — unlike urllib, which
+    masked them as opaque "Broken pipe" with no HTTP status.
+    """
+    session = requests.Session()
+    session.headers.update({"Authorization": f"Bearer {token}"})
+    retry = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+        allowed_methods=["PUT"],
+        raise_on_status=False,
+    )
+    adapter = HTTPAdapter(max_retries=retry)
+    session.mount("https://", adapter)
+    session.mount("http://", adapter)
+    return session
+
+
 def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registry_url, token,
                                protobuf_version="4.33.5", grpc_version="1.78.0"):
-    """Publish JAR and POM to a remote Maven registry (e.g., GCP Artifact Registry) via HTTP PUT"""
+    """Publish JAR + POM (+ checksums) to a remote Maven registry via HTTP PUT.
+
+    Uses requests with built-in retry for transient failures. On any
+    permanent error (4xx, connection broken, etc.) prints URL + HTTP
+    code + response body and exits non-zero so the calling bazel
+    genrule fails visibly instead of swallowing the cause.
+    """
     group_path = group_id.replace('.', '/')
     base_url = registry_url.rstrip('/')
 
@@ -189,50 +219,45 @@ def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registr
                                protobuf_version=protobuf_version,
                                grpc_version=grpc_version)
 
-    # Files to upload: (local_path_or_bytes, remote_filename)
-    uploads = []
-
     jar_name = f"{artifact_id}-{version}.jar"
     pom_name = f"{artifact_id}-{version}.pom"
 
-    # Read JAR bytes
     with open(jar_path, 'rb') as f:
         jar_bytes = f.read()
-
     pom_bytes = pom_content.encode('utf-8')
 
-    uploads.append((jar_bytes, jar_name, 'application/java-archive'))
-    uploads.append((pom_bytes, pom_name, 'application/xml'))
-
-    # Add checksums for each file
+    # (data, remote_filename, content_type) — order matters: jar/pom first, then checksums
+    uploads = [
+        (jar_bytes, jar_name, 'application/java-archive'),
+        (pom_bytes, pom_name, 'application/xml'),
+    ]
     for data, filename, _ in list(uploads):
-        md5 = hashlib.md5(data).hexdigest()
-        sha1 = hashlib.sha1(data).hexdigest()
-        uploads.append((md5.encode('utf-8'), filename + '.md5', 'text/plain'))
-        uploads.append((sha1.encode('utf-8'), filename + '.sha1', 'text/plain'))
+        uploads.append((hashlib.md5(data).hexdigest().encode('utf-8'),
+                        filename + '.md5', 'text/plain'))
+        uploads.append((hashlib.sha1(data).hexdigest().encode('utf-8'),
+                        filename + '.sha1', 'text/plain'))
 
     artifact_url = f"{base_url}/{group_path}/{artifact_id}/{version}"
+    session = _make_session(token)
 
     for data, filename, content_type in uploads:
         url = f"{artifact_url}/{filename}"
-        req = urllib.request.Request(
-            url,
-            data=data,
-            method='PUT',
-            headers={
-                'Content-Type': content_type,
-                'Authorization': f'Bearer {token}',
-            },
-        )
         try:
-            with urllib.request.urlopen(req) as resp:
-                print(f"Uploaded {filename} -> {url} ({resp.status})")
-        except urllib.error.HTTPError as e:
-            print(f"Error uploading {filename}: {e.code} {e.reason}", file=sys.stderr)
-            body = e.read().decode('utf-8', errors='replace')
-            if body:
-                print(f"  Response: {body[:500]}", file=sys.stderr)
+            resp = session.put(url, data=data,
+                               headers={"Content-Type": content_type},
+                               timeout=300)
+        except requests.RequestException as e:
+            print(f"Network error uploading {filename}: {type(e).__name__}: {e}",
+                  file=sys.stderr)
+            print(f"  URL: {url}", file=sys.stderr)
             sys.exit(1)
+        if resp.status_code >= 400:
+            print(f"Error uploading {filename}: HTTP {resp.status_code}",
+                  file=sys.stderr)
+            print(f"  URL:      {url}", file=sys.stderr)
+            print(f"  Response: {resp.text[:1000]}", file=sys.stderr)
+            sys.exit(1)
+        print(f"Uploaded {filename} -> {url} (HTTP {resp.status_code})")
 
     return artifact_url
 
