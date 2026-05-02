@@ -5,11 +5,11 @@
 import argparse
 import hashlib
 import os
+import re
 import shutil
 import subprocess
 import sys
-import urllib.request
-import urllib.error
+import tempfile
 import xml.etree.ElementTree as ET
 from pathlib import Path
 
@@ -177,6 +177,52 @@ def update_maven_metadata(artifact_dir, artifact_id, version):
     metadata_path.with_suffix('.xml.sha1').write_text(checksums['sha1'])
 
 
+_STATUS_SENTINEL = "__CURL_HTTP_STATUS__"
+
+
+def _curl_put(url, data_bytes, content_type, token):
+    """PUT data_bytes to url with bearer auth via curl.
+
+    We use curl (not urllib) because urllib's exception model masks the
+    cause of partial-upload failures: when AR rejects mid-stream and
+    closes the TCP connection, urllib raises URLError("Broken pipe")
+    with no HTTP status, no response body, no actionable signal. curl
+    reads whatever response the server sent before EPIPE and exposes it
+    via -w '%{http_code}' + stdout body, so we can surface the real
+    error (auth, version-exists, content-type mismatch, etc.) to CI.
+
+    Returns (http_status: int, response_body: str, curl_exit_code: int).
+    http_status is 0 if curl never received any response headers.
+    """
+    with tempfile.NamedTemporaryFile(delete=False) as tmp:
+        tmp.write(data_bytes)
+        tmp_path = tmp.name
+    try:
+        result = subprocess.run(
+            [
+                "curl", "--silent", "--show-error",
+                "--max-time", "300",
+                "-X", "PUT",
+                "-H", f"Content-Type: {content_type}",
+                "-H", f"Authorization: Bearer {token}",
+                "--data-binary", f"@{tmp_path}",
+                "-w", f"\n{_STATUS_SENTINEL}%{{http_code}}",
+                url,
+            ],
+            capture_output=True, text=True, check=False,
+        )
+    finally:
+        os.unlink(tmp_path)
+
+    stdout = result.stdout or ""
+    match = re.search(rf"{_STATUS_SENTINEL}(\d+)\s*$", stdout)
+    status = int(match.group(1)) if match else 0
+    body = re.sub(rf"\n?{_STATUS_SENTINEL}\d+\s*$", "", stdout)
+    if result.stderr:
+        body = (body + "\n" + result.stderr.strip()).strip()
+    return status, body, result.returncode
+
+
 def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registry_url, token,
                                protobuf_version="4.33.5", grpc_version="1.78.0"):
     """Publish JAR and POM to a remote Maven registry (e.g., GCP Artifact Registry) via HTTP PUT"""
@@ -215,24 +261,16 @@ def publish_to_remote_registry(jar_path, group_id, artifact_id, version, registr
 
     for data, filename, content_type in uploads:
         url = f"{artifact_url}/{filename}"
-        req = urllib.request.Request(
-            url,
-            data=data,
-            method='PUT',
-            headers={
-                'Content-Type': content_type,
-                'Authorization': f'Bearer {token}',
-            },
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                print(f"Uploaded {filename} -> {url} ({resp.status})")
-        except urllib.error.HTTPError as e:
-            print(f"Error uploading {filename}: {e.code} {e.reason}", file=sys.stderr)
-            body = e.read().decode('utf-8', errors='replace')
+        status, body, retcode = _curl_put(url, data, content_type, token)
+        if retcode != 0 or status >= 400 or status == 0:
+            print(f"Error uploading {filename}", file=sys.stderr)
+            print(f"  URL:        {url}", file=sys.stderr)
+            print(f"  HTTP code:  {status}", file=sys.stderr)
+            print(f"  curl exit:  {retcode}", file=sys.stderr)
             if body:
-                print(f"  Response: {body[:500]}", file=sys.stderr)
+                print(f"  Response:   {body[:1000]}", file=sys.stderr)
             sys.exit(1)
+        print(f"Uploaded {filename} -> {url} (HTTP {status})")
 
     return artifact_url
 
