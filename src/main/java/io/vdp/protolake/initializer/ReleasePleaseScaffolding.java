@@ -30,9 +30,11 @@ import java.util.stream.Stream;
  *   <li>{@code .github/workflows/release-please.yml} — opens release PRs on merges to main</li>
  *   <li>{@code .github/workflows/publish.yml} — runs {@code protolakew publish --bundle &lt;path&gt;}
  *       on tag push</li>
+ *   <li>{@code .github/workflows/pr-title-lint.yml} — enforces Conventional Commit
+ *       PR titles so release-please can parse the squash-merged commit message</li>
  * </ul>
  *
- * All four use {@code writeIfNotExists} semantics: protolake seeds the defaults,
+ * All five use {@code writeIfNotExists} semantics: protolake seeds the defaults,
  * users own them after that. Adding a bundle does NOT automatically update an
  * existing config.json — users either edit it directly or delete it and re-run
  * {@code protolake build} to get a fresh skeleton.
@@ -51,6 +53,7 @@ public class ReleasePleaseScaffolding {
     private static final String MANIFEST_FILE = ".release-please-manifest.json";
     private static final String RELEASE_WORKFLOW = ".github/workflows/release-please.yml";
     private static final String PUBLISH_WORKFLOW = ".github/workflows/publish.yml";
+    private static final String PR_TITLE_LINT_WORKFLOW = ".github/workflows/pr-title-lint.yml";
 
     private static final String CONFIG_SCHEMA =
             "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json";
@@ -88,6 +91,8 @@ public class ReleasePleaseScaffolding {
                 lakePath.resolve(RELEASE_WORKFLOW));
         copyResourceIfNotExists("release-please/publish.yml",
                 lakePath.resolve(PUBLISH_WORKFLOW));
+        copyResourceIfNotExists("release-please/pr-title-lint.yml",
+                lakePath.resolve(PR_TITLE_LINT_WORKFLOW));
     }
 
     /**
