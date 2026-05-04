@@ -1,177 +1,171 @@
 # Proto Lake
 
-Proto Lake is a centralized protocol buffer management system that acts as the source of truth for all protobuf definitions and automatically builds language-specific packages (JAR, wheel, npm) that services can consume.
+Proto Lake is a centralized protocol buffer management system. It takes
+a git repository of `.proto` files organized into **bundles** and produces
+language-specific packages (JAR, Python wheel, npm tarball) that
+services consume via standard package managers — solving the
+share-protos-across-services problem without each service running its
+own codegen.
 
-## Overview
+For deeper architecture and design rationale see the
+[cohub-knowledge protolake docs](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/knowledge/protolake/protolake.md).
 
-Proto Lake solves the challenge of sharing Protocol Buffer definitions across services by providing:
+## Quick start
 
-- **Centralized Storage**: Single source of truth for all company protos in dedicated git repositories (lakes)
-- **Automatic Dependency Management**: Using Bazel and Gazelle for build file generation
-- **Multi-Language Support**: Generates packages for Java, Python, and JavaScript/TypeScript
-- **Git-Based Workflow**: Git integration for version control
-- **Automated Publishing**: To local Maven, PyPI, and NPM repositories
-- **Explicit Versioning**: Version set in bundle.yaml, used for all published artifacts
+Prereqs: Docker, git.
 
-## Quick Start
-
-### Prerequisites
-
-- Docker and Docker Compose
-- Git
-- Access to the protolake-gazelle repository (public)
-
-### Using the Desktop UI (Optional)
-
-Proto Lake includes a desktop application for easier management. See [protolake-ui](../protolake-ui/) for installation and usage instructions.
-
-### Running Proto Lake
-
-1. Clone this repository:
 ```bash
-git clone https://github.com/Cohub-Space/Protolake.git
-cd Protolake
+# 1. Initialize a new lake (docker-direct, since `protolakew` doesn't exist yet).
+mkdir my-lake && cd my-lake
+docker run --rm -v "$(pwd):/proto-lake" \
+  -e PROTO_LAKE_BASE_PATH=/proto-lake \
+  ghcr.io/cohub-space/protolake:latest \
+  init --name my-lake \
+       --java-group-id com.example.proto \
+       --python-package-prefix example_proto \
+       --js-package-scope @example
+
+# 2. Create a bundle inside the lake.
+./protolakew create-bundle --name my-service \
+  --java-artifact-id my-service-proto \
+  --python-package-name example_my_service_proto \
+  --js-package-name @example/my-service-proto
+
+# 3. Add your protos under my-service/v1/, then build.
+./protolakew build
+
+# 4. Install to local registries (~/.m2, ~/.cache/pip, npm link).
+./protolakew publish
 ```
 
-2. Build and start the service:
+After step 4, the published artifacts are usable by local builds:
+- Java: `~/.m2/repository/com/example/proto/my-service-proto/<version>/`
+- Python: `~/.cache/pip/simple/example_my_service_proto/`
+- JavaScript/TypeScript: `~/.proto-lake/npm-packages/` (or `npm link`ed
+  if you passed `--js-target <project>`)
+
+## Daily commands
+
+The `protolakew` wrapper script (generated into your lake by
+`init`) is the main entry point — it runs the protolake docker image
+with the right mounts and env. Common commands:
+
+| Command | What it does |
+|---|---|
+| `protolakew build` | Run gazelle → buf validation → bazel build. No publish. |
+| `protolakew build --install-local` | Build + publish to local registries. |
+| `protolakew publish [--bundle PATH]` | Build + publish for one bundle (path-form, e.g. `cohub/vdp`) or the whole lake. Used by tag-driven CI. |
+| `protolakew validate` | Run buf lint / breaking checks without a build. CI gate. |
+| `protolakew create-bundle --name X` | Scaffold a new bundle under the lake. |
+| `protolakew dep show <bundle>` | Print the dependency snippet (Maven/Gradle/npm) for consumers. |
+
+Add `--pull always` for CI to ensure the latest image; `--js-target
+<path>` (repeatable) to npm-workspace-install into a frontend project.
+
+## Publishing to a remote registry
+
+ProtoLake supports two publishing modes — pick one:
+
+**Tag-driven via release-please (recommended).** Lake-init seeds a
+`release-please-config.json`, `.release-please-manifest.json`, and two
+`.github/workflows/` files. Configure repository variables
+(`GCP_PROJECT_ID`, `GCP_REGION`, `WIF_PROVIDER`,
+`CI_SERVICE_ACCOUNT`) and push to `main`. release-please opens a
+release PR; merging it tags `<package-name>-v<version>` per bundle,
+which fires `publish.yml` and runs `protolakew publish --bundle <path>`.
+Bundle versions are bumped automatically based on
+`feat:` / `fix:` commit messages. See the cross-cutting design doc:
+[`internal-lib-versioning.md`](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/designs/cross-cutting/internal-lib-versioning.md).
+
+**Manual flag-based.** For ad-hoc publishes:
+
 ```bash
-docker-compose up -d
+./protolakew publish \
+  --maven-repo https://us-central1-maven.pkg.dev/PROJECT/maven-internal \
+  --pypi-repo  https://us-central1-python.pkg.dev/PROJECT/python-internal/ \
+  --npm-registry-url https://us-central1-npm.pkg.dev/PROJECT/npm-internal/ \
+  --registry-token "$(gcloud auth print-access-token)"
 ```
 
-3. Verify the service is running:
-```bash
-curl http://localhost:8080/q/health
-```
-
-### Creating Your First Lake
-
-1. Create a lake using the gRPC API:
-```bash
-grpcurl -plaintext -d '{
-  "lake": {
-    "name": "my-lake",
-    "display_name": "My Proto Lake",
-    "description": "My first proto lake"
-  }
-}' localhost:9090 protolake.v1.LakeService/CreateLake
-```
-
-2. Navigate to the created lake:
-```bash
-cd test-lake-output/my-lake
-```
-
-3. Add your proto files and run Bazel to build:
-```bash
-bazel build //...
-```
+The bearer token maps internally to `MAVEN_USER=oauth2accesstoken` +
+`MAVEN_PASSWORD=<token>` for `maven_publish` (Google AR convention).
 
 ## Configuration
 
-### Using GitHub Repository (Production)
+Two files live in every lake. See the [knowledge doc's "Configuration
+overview"](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/knowledge/protolake/protolake.md#configuration-overview)
+for the full schema and worked examples.
 
-By default, Proto Lake is configured to use the protolake-gazelle extension from GitHub. This is configured in `docker-compose.yml`:
+- **`lake.yaml`** at the lake root — language defaults (Java group_id,
+  Python package_prefix, JS scope), Bazel module versions, remote-cache
+  config.
+- **`bundle.yaml`** in each bundle directory — bundle name, version, and
+  per-language overrides. The `version` field is the source of truth;
+  `protolake-gazelle` reads it at BUILD-generation time and bakes it
+  into publish coordinates.
 
-```yaml
-environment:
-  - PROTOLAKE_GAZELLE_GIT_URL=https://github.com/cohub-space/protolake-gazelle.git
-  - PROTOLAKE_GAZELLE_GIT_TAG=v0.2.0  # Use a release tag (or PROTOLAKE_GAZELLE_GIT_COMMIT for exact pinning)
-```
-
-### Local Development Mode
-
-For local development of protolake-gazelle, you can switch to using a local path:
-
-1. Comment out the Git configuration and uncomment the local path in `docker-compose.yml`:
-```yaml
-environment:
-  # - PROTOLAKE_GAZELLE_GIT_URL=https://github.com/cohub-space/protolake-gazelle.git
-  # - PROTOLAKE_GAZELLE_GIT_TAG=v0.2.0
-  - PROTOLAKE_GAZELLE_SOURCE_PATH=../../../protolake-gazelle
-```
-
-2. Add the volume mount back:
-```yaml
-volumes:
-  - ../protolake-gazelle:/protolake-gazelle
-```
-
-3. Restart the service:
-```bash
-docker-compose down
-docker-compose up -d
-```
-
-## Architecture
-
-Proto Lake consists of several key components:
-
-- **Lake Service**: Manages lake (repository) lifecycle
-- **Bundle Service**: Manages proto bundles within lakes
-- **Build Orchestrator**: Handles the build pipeline using Bazel
-- **Storage Service**: Manages metadata and filesystem operations
-- **Template Engine**: Generates Bazel and configuration files
-
-## Development
-
-### Building from Source
+## Local dev (working on protolake itself)
 
 ```bash
-./mvnw clean package
+# Build a local image; tag matches what e2e expects.
+./mvnw package -DskipTests
+docker build -t protolake-proto-lake:latest .
+
+# Use that image when running protolakew.
+PROTOLAKE_IMAGE=protolake-proto-lake:latest ./protolakew build
 ```
 
-### Running Tests
+To work on `protolake-gazelle` simultaneously, point at a local
+checkout:
 
 ```bash
-# Unit tests
-./mvnw test
-
-# Integration tests
-./test_protolake.sh
+PROTOLAKE_GAZELLE_SOURCE_PATH=/path/to/protolake-gazelle ./protolakew build
 ```
 
-### Project Structure
+The image's default gazelle ref is `v0.3.0`; override via
+`PROTOLAKE_GAZELLE_GIT_TAG` or `PROTOLAKE_GAZELLE_GIT_COMMIT`.
 
+For the full dev iteration loops (templates, gazelle, both), tests, and
+release process, see
+[`dev-workflow.md`](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/knowledge/protolake/dev-workflow.md).
+
+## Tests
+
+```bash
+./mvnw test                       # Java unit + IT
+./mvnw verify                     # + integration tests
+cd e2e && bash test_protolake.sh  # full end-to-end (~20 min cold)
 ```
-protolake/
-├── src/main/java/          # Java source code
-├── src/main/proto/         # Proto definitions for the service
-├── src/main/resources/     # Templates and resources
-├── test-protos/           # Example proto files for testing
-├── docker-compose.yml     # Docker composition
-├── Dockerfile             # Container definition
-└── pom.xml               # Maven configuration
-```
 
-## API Reference
+The e2e harness expects `../../protolake-gazelle/` as a sibling
+checkout, or override with `PROTOLAKE_GAZELLE_SOURCE_PATH`.
 
-Proto Lake provides gRPC APIs for managing lakes and bundles:
+## Architecture (briefly)
 
-### Lake Service
-- `CreateLake` - Create a new proto lake
-- `GetLake` - Retrieve lake details
-- `ListLakes` - List all lakes
-- `UpdateLake` - Update lake configuration
-- `DeleteLake` - Delete a lake
-- `BuildLake` - Build all bundles in a lake
+Proto Lake consists of several services packaged in a single Docker image:
 
-### Bundle Service
-- `CreateBundle` - Create a new bundle in a lake
-- `GetBundle` - Retrieve bundle details
-- `ListBundles` - List bundles in a lake
-- `UpdateBundle` - Update bundle configuration
-- `DeleteBundle` - Delete a bundle
-- `BuildBundle` - Build a specific bundle
+- **Lake / Bundle services** — gRPC + CLI surface for managing lakes
+  and bundles
+- **Build Orchestrator** — runs the pipeline (gazelle → buf →
+  bazel build → publish)
+- **Workspace Initializer** — generates `MODULE.bazel`, `BUILD.bazel`,
+  `tools/`, `protolakew`, and the release-please scaffolding
+- **Storage** — SQLite at `~/.proto-lake/protolake.db` for lake/bundle
+  metadata and build history
 
-## Contributing
+Full architecture in the cohub-knowledge
+[protolake.md](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/knowledge/protolake/protolake.md)
+and [build-pipeline.md](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/designs/protolake/build-pipeline.md).
 
-This is a private repository. For access or questions, please contact the repository owner.
+## API surface
 
-## License
+The same binary runs as either a CLI (this README) or a gRPC server
+(`docker run … serve`, port 9090) for programmatic integration. The
+gRPC API is documented in
+[`api-design.md`](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/designs/protolake/api-design.md).
+Prefer the CLI for daily use.
 
-Proprietary - All rights reserved.
+## Related projects
 
-## Related Projects
-
-- [protolake-gazelle](https://github.com/cohub-space/protolake-gazelle) - Gazelle extension for Proto Lake
-- [protolake-ui](../protolake-ui/) - Desktop application for managing Proto Lakes with a modern UI
+- [protolake-gazelle](https://github.com/cohub-space/protolake-gazelle) — Gazelle extension that emits BUILD files for proto bundles
+- [protolake-ui](../protolake-ui/) — Optional desktop app for managing lakes via the gRPC API
