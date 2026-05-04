@@ -114,14 +114,15 @@ public class WorkspaceInitializer {
                 context.put("protolake_gazelle_git_tag", "");
                 LOG.debugf("Using local path for protolake-gazelle: %s", protolakeGazellePath);
             } else {
-                // Default: fetch from public GitHub via tag. Bumped to v0.3.0
-                // to match the BUILD.root template's google/longrunning
-                // gazelle:resolve directive — v0.2.0 doesn't know how to
-                // detect google/longrunning/* imports.
+                // Default: fetch from public GitHub via tag. Bumped to v0.4.0
+                // for the bundle.yaml-version-merge fix (cohub-space/protolake-gazelle#16):
+                // earlier tags don't propagate `version` bumps from bundle.yaml
+                // into existing BUILD.bazel rules on regenerate, so release-please
+                // bumps would silently publish under the previous coordinate.
                 context.put("protolake_gazelle_git_url",
                         "https://github.com/cohub-space/protolake-gazelle.git");
                 context.put("protolake_gazelle_git_commit", "");
-                context.put("protolake_gazelle_git_tag", "v0.3.0");
+                context.put("protolake_gazelle_git_tag", "v0.4.0");
                 context.put("protolake_gazelle_path", "");
                 LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }
