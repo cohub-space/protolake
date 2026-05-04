@@ -2,14 +2,16 @@
 # ~250 MB vs ~800 MB for karatelabs/karate-chrome (which we don't need —
 # we don't run UI tests). Generated scaffold-once by CoHub.
 #
-# Why custom: Karate OSS has no built-in gRPC support (gRPC is a
-# commercial Karate Labs add-on). We use the open-source path: shell
+# Why custom: Karate OSS has no built-in gRPC support (gRPC native is a
+# commercial Karate Labs add-on requiring a karate.lic file). The OSS
+# core (MIT) ships karate.exec(), so we use the open-source path: shell
 # out to grpcurl from feature files via karate.exec().
 #
-# Pinned versions:
-#   - Karate OSS 1.5.2 (latest published in karatelabs/karate-chrome)
-#   - grpcurl 1.9.1 (single static binary, multi-arch)
-#   - eclipse-temurin:17-jre-jammy (matches Karate's JVM target)
+# Upstream sources (both MIT, downloaded at docker build time):
+#   - Karate OSS 1.5.2 — https://github.com/karatelabs/karate (MIT)
+#   - grpcurl 1.9.1 — https://github.com/fullstorydev/grpcurl (MIT)
+#   - Base: eclipse-temurin:17-jre-jammy (Eclipse Public License 2.0;
+#           matches Karate's JVM target)
 FROM eclipse-temurin:17-jre-jammy
 
 ARG KARATE_VERSION=1.5.2
