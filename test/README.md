@@ -53,3 +53,20 @@ Smoke: append a `Scenario:` to `smoke.feature` (must run in <5 min total).
 E2E: drop a new `*.feature` under `test/e2e/`, tag scenarios with `@e2e`.
 Service URLs are accessible via `services.proto_lake.httpUrl` /
 `services.proto_lake.grpcTarget` from `karate-config.js`.
+
+For gRPC, `karate-config.js` exposes a `grpc` helper that wraps grpcurl
+and parses JSON responses:
+
+```gherkin
+  Scenario: list services on protolake
+    * def list = grpc.list(services.proto_lake.grpcTarget)
+    * match list contains 'protolake.v1.LakeService'
+
+  Scenario: create a lake via gRPC and assert on response
+    * def resp = grpc.call(services.proto_lake.grpcTarget,
+                           'protolake.v1.LakeService/CreateLake',
+                           { lake: { name: 'test-lake', display_name: 'Test' } })
+    * match resp.name == 'lakes/test-lake'
+```
+
+`grpc.call` accepts `opts.headers` for custom metadata. Unary RPCs only.

@@ -48,7 +48,7 @@ case "$TIER" in
     docker run --rm --network host \
       -v "$SCRIPT_DIR:/test" -w /test \
       "$KARATE_IMAGE" \
-      --tags "@$TIER" .
+      "--tags=@$TIER" .
     ;;
   all)
     echo ">>> karate (no tag filter)"
