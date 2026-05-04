@@ -207,7 +207,7 @@ public class BuildOrchestrator {
 
             if (cancellationToken != null) cancellationToken.throwIfCancelled();
 
-            metadata = bazelBuildRunner.publishLocal(lakeRoot, metadata, installLocal);
+            metadata = bazelBuildRunner.publishLocal(lakeRoot, lakeRelativeTarget, metadata, installLocal);
             listener.onMetadataUpdate(metadata);
             listener.onPhaseComplete("Publishing", true, null);
         }

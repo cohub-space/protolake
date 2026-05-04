@@ -196,7 +196,7 @@ public class BazelBuildRunner {
     }
 
     /**
-     * Publishes built artifacts by running all per-bundle publish targets.
+     * Publishes built artifacts by running per-bundle publish targets.
      *
      * Each bundle has publish targets emitted by gazelle: {@code maven_publish}
      * for Java and {@code py_binary} for npm/pypi/proto-loader. They are
@@ -205,16 +205,28 @@ public class BazelBuildRunner {
      * mask failures (we also pass {@code --nokeep_going} explicitly to be
      * defensive).
      *
+     * <p>The publish scope mirrors the build scope. {@code lakeRelativeTarget}
+     * is what came in from the caller (e.g., {@code cohub/secretsync} for a
+     * single-bundle publish, {@code .} for the whole lake). Without this
+     * scope, the publish phase used to query {@code //...} unconditionally
+     * — so {@code --bundle cohub/secretsync} would build only secretsync but
+     * then attempt to publish every bundle in the lake, immediately tripping
+     * AR's {@code already_exists} on the first bundle whose version was
+     * already in the registry.
+     *
      * <p>Failure semantics: any non-zero exit from a publish target fails the
      * publish phase immediately. There is no continue-on-failure — that was
      * the source of <a href="../../../../tasks/G-7e3b-protolake-keep-going-masking.md">G-7e3b</a>.
      *
      * @param lakeRoot           The lake root directory (where MODULE.bazel exists)
+     * @param lakeRelativeTarget The build target scope ({@code .} = lake-wide,
+     *                           {@code cohub/secretsync} = single bundle)
      * @param metadata           The operation metadata to update
      * @param installLocalConfig Local-install config (e.g., js-target paths)
      * @return Updated metadata with publish results
      */
-    public BuildOperationMetadata publishLocal(Path lakeRoot, BuildOperationMetadata metadata,
+    public BuildOperationMetadata publishLocal(Path lakeRoot, String lakeRelativeTarget,
+                                               BuildOperationMetadata metadata,
                                                InstallLocalConfig installLocalConfig) throws IOException {
         PhaseStatus.Builder publishStatus = PhaseStatus.newBuilder()
             .setStatus(PhaseStatus.Status.RUNNING)
@@ -225,8 +237,9 @@ public class BazelBuildRunner {
         List<String> logs = new ArrayList<>();
 
         try {
-            List<String> publishTargets = queryPublishTargets(lakeRoot);
-            LOG.infof("Found %d publish targets", publishTargets.size());
+            String bazelScope = toBazelTarget(lakeRelativeTarget);
+            List<String> publishTargets = queryPublishTargets(lakeRoot, bazelScope);
+            LOG.infof("Found %d publish targets in scope %s", publishTargets.size(), bazelScope);
 
             // Build env passed to bazel (and through to the bazel run executable).
             Map<String, String> publishEnv = new HashMap<>();
@@ -313,21 +326,27 @@ public class BazelBuildRunner {
     }
 
     /**
-     * Lists per-bundle publish targets that protolake should run.
+     * Lists per-bundle publish targets that protolake should run within the
+     * given scope.
      *
      * Matches both the Java path ({@code maven_publish}) and the Python/JS path
      * ({@code py_binary} named {@code publish_*}). Falls back to a name-only
      * match so any new publish-rule kind we add later automatically participates.
+     *
+     * @param lakeRoot The lake root directory
+     * @param scope    Bazel target pattern to scope the query (e.g., {@code //...}
+     *                 for lake-wide, {@code //cohub/secretsync/...} for a bundle)
      */
-    private List<String> queryPublishTargets(Path lakeRoot) throws IOException {
+    private List<String> queryPublishTargets(Path lakeRoot, String scope) throws IOException {
         try {
             // Use union of two simple kind() queries — bazel's regex-form
             // (`kind("^(...)$", ...)`) silently returns empty when alternation is
             // present at the top level. Filter to per-bundle publish rules in
             // Java; the //tools:* utility py_binaries (gazelle_wrapper,
             // jar_bundler, publish_to_pypi, etc.) are excluded by prefix.
-            String output = bazelCommand.runWithOutput(lakeRoot, "query",
-                "kind(maven_publish, //...) union kind(py_binary, //...)",
+            String query = String.format(
+                "kind(maven_publish, %s) union kind(py_binary, %s)", scope, scope);
+            String output = bazelCommand.runWithOutput(lakeRoot, "query", query,
                 "--output=label");
             List<String> targets = new ArrayList<>();
             for (String line : output.split("\n")) {
