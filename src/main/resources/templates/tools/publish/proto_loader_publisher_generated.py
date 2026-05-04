@@ -128,13 +128,8 @@ export declare function getProtoPath(...paths: string[]): string;
     return True
 
 
-def publish_proto_loader_package(bundle_path, coordinates_path):
+def publish_proto_loader_package(bundle_path, package_name, version):
     """Publish the proto-loader package using the same modes as npm_publisher."""
-
-    # Read coordinates
-    with open(coordinates_path, 'r') as f:
-        coordinates = f.read().strip()
-    package_name, version = coordinates.rsplit('@', 1)
 
     bundle_path = os.path.abspath(bundle_path)
 
@@ -245,31 +240,33 @@ def publish_proto_loader_package(bundle_path, coordinates_path):
 def main():
     parser = argparse.ArgumentParser(description='Build proto-loader npm package')
 
-    # When called as a Bazel tool, args come via the args list
-    parser.add_argument('--output', help='Output .tgz path')
+    # Build mode (used by the bundler) and publish mode (used by per-bundle py_binary).
+    parser.add_argument('--output',
+                        help='Build mode: output .tgz path. When set, builds a '
+                             'proto-loader package from --proto-sources.')
+    parser.add_argument('bundle_path', nargs='?',
+                        help='Publish mode: path to the .tgz bundle file')
     parser.add_argument('--package-name', help='NPM package name')
     parser.add_argument('--version', default='1.0.0', help='Package version')
-    parser.add_argument('--proto-sources', nargs='*', default=[], help='Proto source files (src=dest pairs)')
+    parser.add_argument('--proto-sources', nargs='*', default=[],
+                        help='Proto source files (src=dest pairs). Build mode only.')
 
-    args, remaining = parser.parse_known_args()
+    args = parser.parse_args()
 
     if args.output:
-        # Build mode - create the package
-        version = os.environ.get('VERSION', args.version)
+        if not args.package_name:
+            parser.error("--package-name required in build mode")
         success = create_proto_loader_package(
             args.output,
             args.package_name,
-            version,
+            args.version,
             args.proto_sources,
         )
-    elif remaining:
-        # Publish mode - extract and publish
-        bundle_path = remaining[0]
-        coords_path = remaining[1] if len(remaining) > 1 else None
-        if not coords_path:
-            print("Usage: proto_loader_publisher.py <bundle.tgz> <coords.txt>")
-            sys.exit(1)
-        success = publish_proto_loader_package(bundle_path, coords_path)
+    elif args.bundle_path:
+        if not args.package_name:
+            parser.error("--package-name required in publish mode")
+        success = publish_proto_loader_package(
+            args.bundle_path, args.package_name, args.version)
     else:
         parser.print_help()
         sys.exit(1)

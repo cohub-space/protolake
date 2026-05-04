@@ -11,7 +11,12 @@ def _proto_source_mapper(f):
     return f.path + "=" + f.path
 
 def _java_proto_bundle_impl(ctx):
-    """Create a fat JAR containing all proto classes and source files"""
+    """Create a JAR containing generated Java proto classes.
+
+    The JAR's `MANIFEST.MF` carries the version (passed via the `version`
+    attr, baked at gazelle time from `bundle.yaml`). The maven coordinate
+    used at publish time lives on the sibling `maven_publish` rule.
+    """
 
     output_jar = ctx.actions.declare_file("{}_bundle.jar".format(ctx.label.name))
 
@@ -41,9 +46,7 @@ def _java_proto_bundle_impl(ctx):
     args.add("--output", output_jar)
     args.add("--group-id", ctx.attr.group_id)
     args.add("--artifact-id", ctx.attr.artifact_id)
-    
-    # Read version from environment with default - this is the hybrid approach
-    args.add("--version", "${VERSION:-1.0.0}")
+    args.add("--version", ctx.attr.version)
 
     # Add Java JARs
     args.add_all("--java-jars", runtime_jars)
@@ -72,24 +75,14 @@ def _java_proto_bundle_impl(ctx):
         arguments = [args],
         mnemonic = "JavaProtoBundle",
         progress_message = "Building Java proto bundle %s" % output_jar.short_path,
-        use_default_shell_env = True,  # This allows access to environment variables
+        # Required: jar_bundler shells out to `java -jar <jandex>.jar` for the
+        # Jandex index step, and bazel sandboxes PATH unless the action opts
+        # into the default shell env. Without this, Jandex generation fails
+        # with FileNotFoundError on `java`.
+        use_default_shell_env = True,
     )
 
-    # Create a file containing Maven coordinates (also uses environment version)
-    maven_coords_file = ctx.actions.declare_file("{}_maven_coords.txt".format(ctx.label.name))
-    ctx.actions.write(
-        output = maven_coords_file,
-        content = "{}:{}:${{VERSION:-1.0.0}}".format(ctx.attr.group_id, ctx.attr.artifact_id),
-        is_executable = False,
-    )
-
-    return [
-        DefaultInfo(files = depset([output_jar])),
-        OutputGroupInfo(
-            maven_artifact = depset([output_jar]),
-            maven_coordinates = depset([maven_coords_file])
-        ),
-    ]
+    return [DefaultInfo(files = depset([output_jar]))]
 
 java_proto_bundle = rule(
     implementation = _java_proto_bundle_impl,
@@ -120,6 +113,12 @@ java_proto_bundle = rule(
             doc = "If True, creates a fat JAR with all transitive dependencies. " +
                   "If False (default), creates a thin JAR with only generated code.",
         ),
+        "version": attr.string(
+            default = "1.0.0",
+            doc = "Bundle version. Baked at gazelle time from bundle.yaml; " +
+                  "embedded in MANIFEST.MF. Maven coordinate at publish time " +
+                  "comes from the sibling maven_publish rule's `coordinates` attr.",
+        ),
         "descriptor_pb": attr.label(
             allow_single_file = [".pb"],
             doc = "Optional proto descriptor set (.pb output of proto_descriptor_set) " +
@@ -147,7 +146,11 @@ java_proto_bundle = rule(
 )
 
 def _py_proto_bundle_impl(ctx):
-    """Create a Python wheel containing all proto files and generated Python files"""
+    """Create a Python wheel containing all proto files and generated Python files.
+
+    Version comes from the `version` attr (baked at gazelle time from
+    `bundle.yaml`), not a runtime env var.
+    """
 
     output_whl = ctx.actions.declare_file("{}_bundle.whl".format(ctx.label.name))
 
@@ -167,10 +170,7 @@ def _py_proto_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_whl)
     args.add("--package-name", ctx.attr.package_name)
-    
-    # Read version from environment with default - hybrid approach
-    args.add("--version", "${VERSION:-1.0.0}")
-    
+    args.add("--version", ctx.attr.version)
     args.add_all("--py-files", py_files)
     # Pass proto sources as src=dest pairs using top-level function
     args.add_all("--proto-sources", proto_sources,
@@ -183,24 +183,9 @@ def _py_proto_bundle_impl(ctx):
         arguments = [args],
         mnemonic = "PyProtoBundle",
         progress_message = "Building Python proto bundle %s" % output_whl.short_path,
-        use_default_shell_env = True,  # Enable environment variable access
     )
 
-    # Create a file containing PyPI coordinates (also uses environment version)
-    pypi_coords_file = ctx.actions.declare_file("{}_pypi_coords.txt".format(ctx.label.name))
-    ctx.actions.write(
-        output = pypi_coords_file,
-        content = "{}==${{VERSION:-1.0.0}}".format(ctx.attr.package_name),
-        is_executable = False,
-    )
-
-    return [
-        DefaultInfo(files = depset([output_whl])),
-        OutputGroupInfo(
-            pypi_artifact = depset([output_whl]),
-            pypi_coordinates = depset([pypi_coords_file])
-        ),
-    ]
+    return [DefaultInfo(files = depset([output_whl]))]
 
 py_proto_bundle = rule(
     implementation = _py_proto_bundle_impl,
@@ -220,7 +205,10 @@ py_proto_bundle = rule(
             mandatory = True,
             doc = "PyPI package name",
         ),
-        # NO version attribute - version comes from environment variable
+        "version": attr.string(
+            default = "1.0.0",
+            doc = "Package version. Baked at gazelle time from bundle.yaml.",
+        ),
         "_wheel_builder": attr.label(
             default = "//tools:wheel_builder",
             executable = True,
@@ -231,7 +219,11 @@ py_proto_bundle = rule(
 )
 
 def _js_proto_bundle_impl(ctx):
-    """Create a JavaScript/TypeScript NPM package with Connect-ES generated code"""
+    """Create a JavaScript/TypeScript NPM package with Connect-ES generated code.
+
+    Version comes from the `version` attr, baked at gazelle time from
+    `bundle.yaml`.
+    """
     output_tgz = ctx.actions.declare_file("{}_bundle.tgz".format(ctx.label.name))
 
     # Collect all generated ES files from es_proto_compile targets
@@ -249,10 +241,7 @@ def _js_proto_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_tgz)
     args.add("--package-name", ctx.attr.package_name)
-
-    # Read version from environment with default - hybrid approach
-    args.add("--version", "${VERSION:-1.0.0}")
-
+    args.add("--version", ctx.attr.version)
     args.add_all("--es-files", es_files)
     args.add_all("--proto-sources", proto_sources,
                  map_each = _proto_source_mapper)
@@ -264,24 +253,9 @@ def _js_proto_bundle_impl(ctx):
         arguments = [args],
         mnemonic = "JsProtoBundle",
         progress_message = "Building JavaScript proto bundle %s" % output_tgz.short_path,
-        use_default_shell_env = True,  # Enable environment variable access
     )
 
-    # Create NPM coordinates file (also uses environment version)
-    npm_coords_file = ctx.actions.declare_file("{}_npm_coords.txt".format(ctx.label.name))
-    ctx.actions.write(
-        output = npm_coords_file,
-        content = "{}@${{VERSION:-1.0.0}}".format(ctx.attr.package_name),
-        is_executable = False,
-    )
-
-    return [
-        DefaultInfo(files = depset([output_tgz])),
-        OutputGroupInfo(
-            npm_artifact = depset([output_tgz]),
-            npm_coordinates = depset([npm_coords_file])
-        ),
-    ]
+    return [DefaultInfo(files = depset([output_tgz]))]
 
 js_proto_bundle = rule(
     implementation = _js_proto_bundle_impl,
@@ -297,7 +271,10 @@ js_proto_bundle = rule(
             mandatory = True,
             doc = "NPM package name",
         ),
-        # NO version attribute - version comes from environment variable
+        "version": attr.string(
+            default = "1.0.0",
+            doc = "Package version. Baked at gazelle time from bundle.yaml.",
+        ),
         "_npm_bundler": attr.label(
             default = "//tools:npm_bundler",
             executable = True,
@@ -350,7 +327,7 @@ def _js_proto_loader_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_tgz)
     args.add("--package-name", ctx.attr.package_name)
-    args.add("--version", "${VERSION:-1.0.0}")
+    args.add("--version", ctx.attr.version)
     args.add_all("--proto-sources", proto_sources, map_each = _proto_source_mapper)
 
     ctx.actions.run(
@@ -360,24 +337,9 @@ def _js_proto_loader_bundle_impl(ctx):
         arguments = [args],
         mnemonic = "JsProtoLoaderBundle",
         progress_message = "Building proto-loader bundle %s" % output_tgz.short_path,
-        use_default_shell_env = True,
     )
 
-    # Create NPM coordinates file
-    npm_coords_file = ctx.actions.declare_file("{}_proto_loader_coords.txt".format(ctx.label.name))
-    ctx.actions.write(
-        output = npm_coords_file,
-        content = "{}@${{VERSION:-1.0.0}}".format(ctx.attr.package_name),
-        is_executable = False,
-    )
-
-    return [
-        DefaultInfo(files = depset([output_tgz])),
-        OutputGroupInfo(
-            npm_artifact = depset([output_tgz]),
-            npm_coordinates = depset([npm_coords_file]),
-        ),
-    ]
+    return [DefaultInfo(files = depset([output_tgz]))]
 
 js_proto_loader_bundle = rule(
     implementation = _js_proto_loader_bundle_impl,
@@ -389,6 +351,10 @@ js_proto_loader_bundle = rule(
         "package_name": attr.string(
             mandatory = True,
             doc = "NPM package name (e.g., '@example/service-proto-loader')",
+        ),
+        "version": attr.string(
+            default = "1.0.0",
+            doc = "Package version. Baked at gazelle time from bundle.yaml.",
         ),
         "_proto_loader_publisher": attr.label(
             default = "//tools:proto_loader_publisher",

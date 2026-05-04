@@ -220,8 +220,8 @@ public class LakeInitializerIntegrationTest extends InitializerTestBase {
         assertExecutableFile(toolsPath.resolve("bundler/wheel_builder_generated.py"));
         assertExecutableFile(toolsPath.resolve("bundler/npm_bundler_generated.py"));
 
-        // Verify all publishing tools
-        assertExecutableFile(toolsPath.resolve("publish/maven_publisher_generated.py"));
+        // Verify all publishing tools — maven uses pom_generator (POM only); upload via maven_publish.
+        assertExecutableFile(toolsPath.resolve("publish/pom_generator_generated.py"));
         assertExecutableFile(toolsPath.resolve("publish/pypi_publisher_generated.py"));
         assertExecutableFile(toolsPath.resolve("publish/npm_publisher_generated.py"));
         assertFileExists(toolsPath, "publish/publisher_utils_generated.py");
