@@ -96,14 +96,28 @@ public class ReleasePleaseScaffolding {
     }
 
     /**
-     * Builds the release-please-config.json content. One entry per bundle.
-     * <p>Keys (bundle paths) are sorted for stable output.
+     * Builds the release-please-config.json content. Shape matches the
+     * cross-cutting internal-lib-versioning design (`docs/designs/cross-cutting/
+     * internal-lib-versioning.md`):
+     * <ul>
+     *   <li>{@code include-component-in-tag: true} + {@code tag-separator: "-"}
+     *       → tags of form {@code <package-name>-v<version>}</li>
+     *   <li>{@code bump-minor-pre-major: true} → 0.x bumps default to minor on
+     *       feat, not major</li>
+     *   <li>{@code separate-pull-requests: true} → each bundle gets its own
+     *       release PR</li>
+     *   <li>{@code extra-files} uses the YAML jsonpath updater so release-please
+     *       finds `version:` directly without a marker comment</li>
+     * </ul>
+     * Keys (bundle paths) are sorted for stable output.
      */
     private ObjectNode buildConfigJson(List<Bundle> bundles) {
         ObjectNode root = JSON.createObjectNode();
         root.put("$schema", CONFIG_SCHEMA);
         root.put("release-type", "simple");
         root.put("include-component-in-tag", true);
+        root.put("tag-separator", "-");
+        root.put("bump-minor-pre-major", true);
         root.put("separate-pull-requests", true);
 
         ObjectNode packages = root.putObject("packages");
@@ -112,7 +126,10 @@ public class ReleasePleaseScaffolding {
                 .forEach(b -> {
                     ObjectNode pkg = packages.putObject(bundlePath(b));
                     pkg.put("package-name", releasePackageName(b));
-                    pkg.putArray("extra-files").add("bundle.yaml");
+                    ObjectNode extraFile = pkg.putArray("extra-files").addObject();
+                    extraFile.put("type", "yaml");
+                    extraFile.put("path", "bundle.yaml");
+                    extraFile.put("jsonpath", "$.version");
                 });
         return root;
     }
