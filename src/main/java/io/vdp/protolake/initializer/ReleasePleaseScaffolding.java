@@ -27,17 +27,25 @@ import java.util.stream.Stream;
  * <ul>
  *   <li>{@code release-please-config.json} — monorepo config keyed by bundle path</li>
  *   <li>{@code .release-please-manifest.json} — initial seed (bundle path → version)</li>
- *   <li>{@code .github/workflows/release-please.yml} — opens release PRs on merges to main</li>
- *   <li>{@code .github/workflows/publish.yml} — runs {@code protolakew publish --bundle &lt;path&gt;}
- *       on tag push</li>
+ *   <li>{@code .github/workflows/release.yml} — opens Release PRs on merges to main and,
+ *       when a Release PR merges, runs the publish job per bundle (matrix on
+ *       {@code paths_released})</li>
  *   <li>{@code .github/workflows/pr-title-lint.yml} — enforces Conventional Commit
  *       PR titles so release-please can parse the squash-merged commit message</li>
  * </ul>
  *
- * All five use {@code writeIfNotExists} semantics: protolake seeds the defaults,
+ * All four use {@code writeIfNotExists} semantics: protolake seeds the defaults,
  * users own them after that. Adding a bundle does NOT automatically update an
  * existing config.json — users either edit it directly or delete it and re-run
  * {@code protolake build} to get a fresh skeleton.
+ *
+ * <p>Why one workflow instead of a separate tag-triggered publish: refs (tags,
+ * commits) created by the default {@code GITHUB_TOKEN} do NOT trigger downstream
+ * workflows
+ * (<a href="https://docs.github.com/en/actions/security-for-github-actions/security-guides/automatic-token-authentication#using-the-github_token-in-a-workflow">GitHub
+ * Actions docs</a>). A separate {@code on: push: tags} publish would silently
+ * never fire. Gating the publish job inline on {@code releases_created} bypasses
+ * this entirely.
  *
  * <p>The Java path's {@code package-name} matches the maven {@code artifact_id} so
  * the release-please tag ({@code <package-name>-v<version>}) and the published
@@ -51,8 +59,7 @@ public class ReleasePleaseScaffolding {
 
     private static final String CONFIG_FILE = "release-please-config.json";
     private static final String MANIFEST_FILE = ".release-please-manifest.json";
-    private static final String RELEASE_WORKFLOW = ".github/workflows/release-please.yml";
-    private static final String PUBLISH_WORKFLOW = ".github/workflows/publish.yml";
+    private static final String RELEASE_WORKFLOW = ".github/workflows/release.yml";
     private static final String PR_TITLE_LINT_WORKFLOW = ".github/workflows/pr-title-lint.yml";
 
     private static final String CONFIG_SCHEMA =
@@ -87,23 +94,35 @@ public class ReleasePleaseScaffolding {
         // bash `${...}` and Actions `${{...}}` syntax that conflicts with Qute's
         // expression syntax. Copy raw rather than render.
         Files.createDirectories(lakePath.resolve(".github").resolve("workflows"));
-        copyResourceIfNotExists("release-please/release-please.yml",
+        copyResourceIfNotExists("release-please/release.yml",
                 lakePath.resolve(RELEASE_WORKFLOW));
-        copyResourceIfNotExists("release-please/publish.yml",
-                lakePath.resolve(PUBLISH_WORKFLOW));
         copyResourceIfNotExists("release-please/pr-title-lint.yml",
                 lakePath.resolve(PR_TITLE_LINT_WORKFLOW));
     }
 
     /**
-     * Builds the release-please-config.json content. One entry per bundle.
-     * <p>Keys (bundle paths) are sorted for stable output.
+     * Builds the release-please-config.json content. Shape matches the
+     * cross-cutting internal-lib-versioning design (`docs/designs/cross-cutting/
+     * internal-lib-versioning.md`):
+     * <ul>
+     *   <li>{@code include-component-in-tag: true} + {@code tag-separator: "-"}
+     *       → tags of form {@code <package-name>-v<version>}</li>
+     *   <li>{@code bump-minor-pre-major: true} → 0.x bumps default to minor on
+     *       feat, not major</li>
+     *   <li>{@code separate-pull-requests: true} → each bundle gets its own
+     *       release PR</li>
+     *   <li>{@code extra-files} uses the YAML jsonpath updater so release-please
+     *       finds `version:` directly without a marker comment</li>
+     * </ul>
+     * Keys (bundle paths) are sorted for stable output.
      */
     private ObjectNode buildConfigJson(List<Bundle> bundles) {
         ObjectNode root = JSON.createObjectNode();
         root.put("$schema", CONFIG_SCHEMA);
         root.put("release-type", "simple");
         root.put("include-component-in-tag", true);
+        root.put("tag-separator", "-");
+        root.put("bump-minor-pre-major", true);
         root.put("separate-pull-requests", true);
 
         ObjectNode packages = root.putObject("packages");
@@ -112,7 +131,10 @@ public class ReleasePleaseScaffolding {
                 .forEach(b -> {
                     ObjectNode pkg = packages.putObject(bundlePath(b));
                     pkg.put("package-name", releasePackageName(b));
-                    pkg.putArray("extra-files").add("bundle.yaml");
+                    ObjectNode extraFile = pkg.putArray("extra-files").addObject();
+                    extraFile.put("type", "yaml");
+                    extraFile.put("path", "bundle.yaml");
+                    extraFile.put("jsonpath", "$.version");
                 });
         return root;
     }
