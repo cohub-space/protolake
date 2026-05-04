@@ -122,7 +122,7 @@ checkout:
 PROTOLAKE_GAZELLE_SOURCE_PATH=/path/to/protolake-gazelle ./protolakew build
 ```
 
-The image's default gazelle ref is `v0.3.0`; override via
+The image's default gazelle ref is `v0.4.0`; override via
 `PROTOLAKE_GAZELLE_GIT_TAG` or `PROTOLAKE_GAZELLE_GIT_COMMIT`.
 
 For the full dev iteration loops (templates, gazelle, both), tests, and
