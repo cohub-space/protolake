@@ -321,13 +321,24 @@ public class BazelBuildRunner {
      */
     private List<String> queryPublishTargets(Path lakeRoot) throws IOException {
         try {
+            // Use union of two simple kind() queries — bazel's regex-form
+            // (`kind("^(...)$", ...)`) silently returns empty when alternation is
+            // present at the top level. Filter to per-bundle publish rules in
+            // Java; the //tools:* utility py_binaries (gazelle_wrapper,
+            // jar_bundler, publish_to_pypi, etc.) are excluded by prefix.
             String output = bazelCommand.runWithOutput(lakeRoot, "query",
-                "kind(\"^(maven_publish|py_binary)$\", //...) intersect attr(name, '^publish_.*', //...)",
+                "kind(maven_publish, //...) union kind(py_binary, //...)",
                 "--output=label");
             List<String> targets = new ArrayList<>();
             for (String line : output.split("\n")) {
                 String trimmed = line.trim();
-                if (!trimmed.isEmpty()) {
+                if (!trimmed.startsWith("//")) {
+                    continue; // bazel progress / status lines
+                }
+                if (trimmed.startsWith("//tools:")) {
+                    continue; // utility py_binaries shipped in BUILD.tools
+                }
+                if (trimmed.contains(":publish_")) {
                     targets.add(trimmed);
                 }
             }

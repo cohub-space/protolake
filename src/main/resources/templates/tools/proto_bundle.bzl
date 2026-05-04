@@ -13,9 +13,9 @@ def _proto_source_mapper(f):
 def _java_proto_bundle_impl(ctx):
     """Create a JAR containing generated Java proto classes.
 
-    No version is embedded in the JAR or the rule's outputs. The maven
-    coordinate (group:artifact:version) lives on the sibling `maven_publish`
-    rule, with the version baked into `coordinates` at gazelle time.
+    The JAR's `MANIFEST.MF` carries the version (passed via the `version`
+    attr, baked at gazelle time from `bundle.yaml`). The maven coordinate
+    used at publish time lives on the sibling `maven_publish` rule.
     """
 
     output_jar = ctx.actions.declare_file("{}_bundle.jar".format(ctx.label.name))
@@ -46,6 +46,7 @@ def _java_proto_bundle_impl(ctx):
     args.add("--output", output_jar)
     args.add("--group-id", ctx.attr.group_id)
     args.add("--artifact-id", ctx.attr.artifact_id)
+    args.add("--version", ctx.attr.version)
 
     # Add Java JARs
     args.add_all("--java-jars", runtime_jars)
@@ -74,6 +75,11 @@ def _java_proto_bundle_impl(ctx):
         arguments = [args],
         mnemonic = "JavaProtoBundle",
         progress_message = "Building Java proto bundle %s" % output_jar.short_path,
+        # Required: jar_bundler shells out to `java -jar <jandex>.jar` for the
+        # Jandex index step, and bazel sandboxes PATH unless the action opts
+        # into the default shell env. Without this, Jandex generation fails
+        # with FileNotFoundError on `java`.
+        use_default_shell_env = True,
     )
 
     return [DefaultInfo(files = depset([output_jar]))]
@@ -106,6 +112,12 @@ java_proto_bundle = rule(
             default = False,
             doc = "If True, creates a fat JAR with all transitive dependencies. " +
                   "If False (default), creates a thin JAR with only generated code.",
+        ),
+        "version": attr.string(
+            default = "1.0.0",
+            doc = "Bundle version. Baked at gazelle time from bundle.yaml; " +
+                  "embedded in MANIFEST.MF. Maven coordinate at publish time " +
+                  "comes from the sibling maven_publish rule's `coordinates` attr.",
         ),
         "descriptor_pb": attr.label(
             allow_single_file = [".pb"],

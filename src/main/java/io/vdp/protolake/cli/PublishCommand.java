@@ -81,10 +81,11 @@ public class PublishCommand implements Runnable {
                 buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocalConfig,
                         null, listener, metadata);
             } else {
-                for (String bundleName : bundleNames) {
-                    Bundle bundle = lakeResolver.findBundle(resolvedPath, lake, bundleName);
+                List<Bundle> allBundles = lakeResolver.findBundles(resolvedPath, lake);
+                for (String spec : bundleNames) {
+                    Bundle bundle = resolveBundle(allBundles, lake, resolvedPath, spec);
                     String target = BundleUtil.getWorkspaceRelativePath(lake, bundle);
-                    System.out.printf("[protolake] Publishing bundle: %s%n", bundleName);
+                    System.out.printf("[protolake] Publishing bundle: %s%n", spec);
                     metadata = buildOrchestrator.buildTargetSync(lake, target, skipValidation,
                             installLocalConfig, null, listener, metadata);
                 }
@@ -103,6 +104,25 @@ public class PublishCommand implements Runnable {
             throw new CommandLine.ExecutionException(
                     new CommandLine(this), "Publish failed: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Match a bundle by either its lake-root-relative path (e.g. {@code cohub/vdp})
+     * or its plain bundle id (e.g. {@code vdp}). Path-form is the canonical
+     * identifier used by the release-please tag workflow; id-form is preserved for
+     * compatibility with the existing {@code build --bundle} convention. Path-form
+     * is checked first because it's unambiguous in lakes that have multiple
+     * bundles sharing an id across prefixes.
+     */
+    private Bundle resolveBundle(List<Bundle> bundles, Lake lake, Path lakePath, String spec)
+            throws java.io.IOException {
+        for (Bundle b : bundles) {
+            if (BundleUtil.getLakeRootRelativePath(b).equals(spec)) {
+                return b;
+            }
+        }
+        // Fall back to id-only match (handles `--bundle vdp` for ad-hoc local use).
+        return lakeResolver.findBundle(lakePath, lake, spec);
     }
 
     private Path resolveLakePath() {

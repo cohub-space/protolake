@@ -122,10 +122,12 @@ if [ ${#JS_TARGET_PATHS[@]} -gt 0 ]; then
 fi
 
 # Pass through environment variables for publishing
-# Defaults are local paths; CLI flags and env vars override with registry URLs for remote publish
+# Defaults are local paths with `file:` scheme; CLI flags and env vars override
+# with `https://` registry URLs for remote publish. `maven_publish` from
+# rules_jvm_external requires a URI scheme on MAVEN_REPO; bare paths are rejected.
 DOCKER_ARGS+=(
     -e "NPM_PUBLISH_MODE=${NPM_PUBLISH_MODE:-skip}"
-    -e "MAVEN_REPO=${MAVEN_REPO:-/home/protolake/.m2/repository}"
+    -e "MAVEN_REPO=${MAVEN_REPO:-file:///home/protolake/.m2/repository}"
     -e "PYPI_REPO=${PYPI_REPO:-/home/protolake/.cache/pip/simple}"
 )
 

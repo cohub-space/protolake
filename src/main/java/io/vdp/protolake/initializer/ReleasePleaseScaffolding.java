@@ -4,6 +4,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import io.vdp.protolake.config.YamlConfigParser;
+import io.vdp.protolake.util.BundleUtil;
 import io.vdp.protolake.util.LakeUtil;
 import io.vdp.protolake.util.template.TemplateEngine;
 import jakarta.enterprise.context.ApplicationScoped;
@@ -120,14 +121,11 @@ public class ReleasePleaseScaffolding {
     }
 
     private String bundlePath(Bundle b) {
-        // Bundle resource names look like "lakes/<lake>/bundles/<path>". The
-        // bundle's path under the lake is what release-please keys on.
-        String name = b.getName();
-        int marker = name.indexOf("/bundles/");
-        if (marker < 0) {
-            return name;
-        }
-        return name.substring(marker + "/bundles/".length());
+        // The lake-root-relative directory housing the bundle's bundle.yaml
+        // (e.g. "cohub/vdp" for the cohub-protolake vdp bundle). This is what
+        // release-please keys on — its `extra-files: ["bundle.yaml"]` is
+        // resolved relative to this path.
+        return BundleUtil.getLakeRootRelativePath(b);
     }
 
     private String bundleVersion(Bundle b) {
