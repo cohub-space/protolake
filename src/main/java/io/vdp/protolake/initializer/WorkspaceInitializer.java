@@ -32,6 +32,9 @@ public class WorkspaceInitializer {
 
     @Inject
     TemplateEngine templateEngine;
+
+    @Inject
+    ReleasePleaseScaffolding releasePleaseScaffolding;
     
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
@@ -66,6 +69,10 @@ public class WorkspaceInitializer {
 
         // Regenerate protolakew wrapper script (keeps it in sync with template changes)
         generateProtolakew(lake);
+
+        // Release-please scaffolding: config + manifest + workflows. All
+        // user-configurable; only seeded if absent.
+        releasePleaseScaffolding.generate(lake);
 
         LOG.infof("Bazel workspace initialized for lake: %s", lakeName);
     }
@@ -364,16 +371,19 @@ public class WorkspaceInitializer {
     }
 
     /**
-     * Creates publishing tools (maven_publisher, pypi_publisher, npm_publisher).
-     * These are static Python scripts with no template variables.
+     * Creates publishing tools.
+     *
+     * Maven publishes are handled by `maven_publish` from rules_jvm_external; the
+     * only Python in the maven path is `pom_generator` (writes a POM XML for
+     * `maven_publish` to consume). NPM and PyPI keep their Python publishers
+     * but are invoked as `py_binary` targets, not genrules.
      */
     private void createPublishingTools(Path toolsPath) throws IOException {
         Path publishPath = toolsPath.resolve("publish");
         Files.createDirectories(publishPath);
 
-        // Copy publisher scripts as static resources
-        copyAndMakeExecutable("tools/publish/maven_publisher_generated.py",
-                publishPath.resolve("maven_publisher_generated.py"));
+        copyAndMakeExecutable("tools/publish/pom_generator_generated.py",
+                publishPath.resolve("pom_generator_generated.py"));
         copyAndMakeExecutable("tools/publish/pypi_publisher_generated.py",
                 publishPath.resolve("pypi_publisher_generated.py"));
         copyAndMakeExecutable("tools/publish/npm_publisher_generated.py",

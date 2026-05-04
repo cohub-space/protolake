@@ -11,33 +11,8 @@ import tempfile
 from pathlib import Path
 
 
-def get_bundle_and_coords(args):
-    """Extract bundle and coordinates from command line args"""
-    if len(args) < 2:
-        print("Usage: npm_publisher.py <bundle.tgz> <coords.txt>")
-        sys.exit(1)
-
-    bundle_path = args[0]
-    coords_path = args[1]
-
-    if not os.path.exists(bundle_path):
-        print(f"Bundle not found: {bundle_path}")
-        sys.exit(1)
-
-    if not os.path.exists(coords_path):
-        print(f"Coordinates file not found: {coords_path}")
-        sys.exit(1)
-
-    return bundle_path, coords_path
-
-
-def publish_npm_package(bundle_path, coordinates_path):
+def publish_npm_package(bundle_path, package_name, version):
     """Publish NPM package to local registry or npm link"""
-
-    # Read coordinates
-    with open(coordinates_path, 'r') as f:
-        coordinates = f.read().strip()
-    package_name, version = coordinates.rsplit('@', 1)
 
     # Convert to absolute path before changing cwd for extraction
     bundle_path = os.path.abspath(bundle_path)
@@ -260,21 +235,24 @@ Examples:
   NPM_PUBLISH_MODE=registry NPM_REGISTRY_URL=https://... bazel run //path/to:publish_to_npm
 """
     )
+    parser.add_argument('bundle_path',
+                        help='Path to the .tgz bundle file')
+    parser.add_argument('--package-name', required=True,
+                        help='NPM package name (e.g. @scope/pkg)')
+    parser.add_argument('--version', required=True,
+                        help='Package version')
 
-    # Bazel passes the bundle and coords as remaining args
-    args = parser.parse_known_args()[1]
+    args = parser.parse_args()
 
-    if not args:
-        parser.print_help()
+    if not os.path.exists(args.bundle_path):
+        print(f"Bundle not found: {args.bundle_path}", file=sys.stderr)
         sys.exit(1)
-
-    bundle_path, coords_path = get_bundle_and_coords(args)
 
     # Show current mode
     mode = os.environ.get('NPM_PUBLISH_MODE', 'link')
     print(f"Publishing mode: {mode}")
 
-    success = publish_npm_package(bundle_path, coords_path)
+    success = publish_npm_package(args.bundle_path, args.package_name, args.version)
     sys.exit(0 if success else 1)
 
 

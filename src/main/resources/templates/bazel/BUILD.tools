@@ -4,10 +4,16 @@ load("@rules_proto_grpc//:defs.bzl", "proto_plugin")
 
 package(default_visibility = ["//visibility:public"])
 
-# Export bundle rules for use in service BUILD files
+# Export bundle rules and publisher entry-point scripts for use in bundle BUILD files.
+# Per-bundle `py_binary(publish_<bundle>_to_<lang>)` rules emitted by gazelle reference
+# these scripts via cross-package srcs.
 exports_files([
     "proto_bundle.bzl",
     "es_proto.bzl",
+    "publish/pom_generator_generated.py",
+    "publish/pypi_publisher_generated.py",
+    "publish/npm_publisher_generated.py",
+    "publish/proto_loader_publisher_generated.py",
 ])
 
 # Connect-ES protoc plugin wrapper (delegates to globally-installed protoc-gen-es)
@@ -45,12 +51,14 @@ py_library(
     imports = ["."],
 )
 
-# Maven publisher
+# Maven POM generator
+# Produces a POM XML on stdout (or via --out) for `maven_publish` to consume.
+# The actual maven upload is handled by `maven_publish` from rules_jvm_external,
+# not by a python publisher.
 py_binary(
-    name = "publish_to_maven",
-    srcs = ["publish/maven_publisher_generated.py"],
-    main = "publish/maven_publisher_generated.py",
-    deps = [":publisher_utils"],
+    name = "pom_generator",
+    srcs = ["publish/pom_generator_generated.py"],
+    main = "publish/pom_generator_generated.py",
 )
 
 # PyPI publisher

@@ -161,16 +161,17 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
             "#!/usr/bin/env python3"
         );
 
-        // Verify publishing tools
-        assertExecutableFile(toolsPath.resolve("publish/maven_publisher_generated.py"));
+        // Verify publishing tools — maven path uses pom_generator + maven_publish (rules_jvm_external),
+        // not a python publisher. NPM/PyPI keep their python publishers.
+        assertExecutableFile(toolsPath.resolve("publish/pom_generator_generated.py"));
         assertExecutableFile(toolsPath.resolve("publish/pypi_publisher_generated.py"));
         assertExecutableFile(toolsPath.resolve("publish/npm_publisher_generated.py"));
         assertFileExists(toolsPath, "publish/publisher_utils_generated.py");
 
-        // Verify publisher content
-        assertFileContains(toolsPath.resolve("publish/maven_publisher_generated.py"),
+        // Verify pom_generator content
+        assertFileContains(toolsPath.resolve("publish/pom_generator_generated.py"),
             "#!/usr/bin/env python3",
-            "Maven publisher for Proto Lake bundles",
+            "Generate a Maven POM XML",
             "def main():"
         );
     }

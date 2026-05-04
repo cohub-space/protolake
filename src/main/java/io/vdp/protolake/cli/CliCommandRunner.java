@@ -21,6 +21,9 @@ public class CliCommandRunner {
     BuildCommand buildCommand;
 
     @Inject
+    PublishCommand publishCommand;
+
+    @Inject
     ValidateCommand validateCommand;
 
     @Inject
@@ -37,6 +40,7 @@ public class CliCommandRunner {
                 .addSubcommand("init", initCommand)
                 .addSubcommand("create-bundle", createBundleCommand)
                 .addSubcommand("build", buildCommand)
+                .addSubcommand("publish", publishCommand)
                 .addSubcommand("validate", validateCommand)
                 .addSubcommand("dep", depCli);
 

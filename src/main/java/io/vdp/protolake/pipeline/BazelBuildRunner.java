@@ -111,24 +111,18 @@ public class BazelBuildRunner {
             // Convert path to Bazel target
             String bazelTarget = toBazelTarget(target);
 
-            // Extract dependency versions from lake config for POM generation
+            // PROTOBUF_JAVA_VERSION / GRPC_VERSION action_envs for the POM
+            // generator genrule. Bundle versions are baked into the publish
+            // rules at gazelle time — no VERSION env var threads through here.
             Map<String, String> actionEnvs = extractVersionActionEnvs(metadata);
 
-            // Resolve bundle version from bundle_versions map, falling back to "1.0.0"
-            String bundleVersion = metadata.getBundleVersionsMap()
-                .getOrDefault(target, "1.0.0");
-
-            // Pass VERSION as action env so publish genrules pick it up
-            actionEnvs.put("VERSION", bundleVersion);
-
-            LOG.infof("Building target: %s (bazel: %s, version: %s)", target, bazelTarget, bundleVersion);
+            LOG.infof("Building target: %s (bazel: %s)", target, bazelTarget);
             buildStatus.setSubPhase(String.format("Building %s", bazelTarget));
 
             // Create target entry in metadata
             Map<String, TargetBuildInfo> targetBuilds = new HashMap<>(metadata.getTargetBuildsMap());
             TargetBuildInfo targetInfo = TargetBuildInfo.newBuilder()
                 .setTarget(bazelTarget)
-                .setVersion(bundleVersion)
                 .setStatus(TargetBuildInfo.Status.BUILDING)
                 .setStartTime(Timestamp.newBuilder()
                     .setSeconds(Instant.now().getEpochSecond())
@@ -202,13 +196,22 @@ public class BazelBuildRunner {
     }
 
     /**
-     * Publishes built artifacts locally by running all publish_* targets.
+     * Publishes built artifacts by running all per-bundle publish targets.
      *
-     * Queries Bazel for genrule targets matching "publish_*", then runs each
-     * via {@code bazel run} to install artifacts to local package managers.
+     * Each bundle has publish targets emitted by gazelle: {@code maven_publish}
+     * for Java and {@code py_binary} for npm/pypi/proto-loader. They are
+     * executable rules invoked via {@code bazel run}, so exit codes propagate
+     * cleanly and the {@code .bazelrc}'s {@code build --keep_going} doesn't
+     * mask failures (we also pass {@code --nokeep_going} explicitly to be
+     * defensive).
      *
-     * @param lakeRoot The lake root directory (where MODULE.bazel exists)
-     * @param metadata The operation metadata to update
+     * <p>Failure semantics: any non-zero exit from a publish target fails the
+     * publish phase immediately. There is no continue-on-failure — that was
+     * the source of <a href="../../../../tasks/G-7e3b-protolake-keep-going-masking.md">G-7e3b</a>.
+     *
+     * @param lakeRoot           The lake root directory (where MODULE.bazel exists)
+     * @param metadata           The operation metadata to update
+     * @param installLocalConfig Local-install config (e.g., js-target paths)
      * @return Updated metadata with publish results
      */
     public BuildOperationMetadata publishLocal(Path lakeRoot, BuildOperationMetadata metadata,
@@ -225,11 +228,20 @@ public class BazelBuildRunner {
             List<String> publishTargets = queryPublishTargets(lakeRoot);
             LOG.infof("Found %d publish targets", publishTargets.size());
 
-            // Build env map for publish genrules
+            // Build env passed to bazel (and through to the bazel run executable).
             Map<String, String> publishEnv = new HashMap<>();
 
-            // Pass dependency versions from lake config for POM generation
+            // protobuf/grpc versions for the POM generator.
             publishEnv.putAll(extractVersionActionEnvs(metadata));
+
+            // maven_publish reads MAVEN_USER / MAVEN_PASSWORD. The registry-token
+            // model used everywhere else maps to MAVEN_PASSWORD with a fixed
+            // MAVEN_USER ("oauth2accesstoken" is the convention for GCP AR).
+            String registryToken = System.getenv("REGISTRY_TOKEN");
+            if (registryToken != null && !registryToken.isEmpty()) {
+                publishEnv.putIfAbsent("MAVEN_USER", "oauth2accesstoken");
+                publishEnv.putIfAbsent("MAVEN_PASSWORD", registryToken);
+            }
 
             if (installLocalConfig.getJsTargetsCount() > 0) {
                 publishEnv.put("NPM_PUBLISH_MODE", "workspace");
@@ -256,18 +268,13 @@ public class BazelBuildRunner {
                 publishStatus.setSubPhase(String.format("Publishing %s (%d/%d)", target, i + 1, publishTargets.size()));
 
                 LOG.infof("Running publish target: %s", target);
-                try {
-                    String output = publishEnv.isEmpty()
-                        ? bazelCommand.runWithOutput(lakeRoot, "build", target)
-                        : bazelCommand.runWithOutput(lakeRoot, publishEnv, "build", target);
-                    logs.add(String.format("Published: %s", target));
-                    LOG.infof("Successfully published: %s", target);
-                } catch (Exception e) {
-                    String errorMsg = String.format("Failed to publish %s: %s", target, e.getMessage());
-                    logs.add(errorMsg);
-                    LOG.warnf(e, "Publish target failed: %s", target);
-                    // Continue with other targets even if one fails
-                }
+                // bazel run, with --nokeep_going to override the lake's .bazelrc
+                // (build --keep_going) for the implicit build phase of `run`.
+                String output = publishEnv.isEmpty()
+                    ? bazelCommand.runWithOutput(lakeRoot, "run", "--nokeep_going", target)
+                    : bazelCommand.runWithOutput(lakeRoot, publishEnv, "run", "--nokeep_going", target);
+                logs.add(String.format("Published: %s", target));
+                LOG.infof("Successfully published: %s", target);
             }
 
             publishStatus
@@ -292,22 +299,35 @@ public class BazelBuildRunner {
                 .setErrorMessage("Publishing failed: " + e.getMessage())
                 .addAllLogLines(logs);
 
-            return metadata.toBuilder()
+            BuildOperationMetadata failed = metadata.toBuilder()
                 .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder()
                     .setPublish(publishStatus.build())
                     .build())
                 .build();
+
+            // Re-raise so callers see the failure. Returning a metadata with
+            // FAILED phase status was the previous behavior; combined with the
+            // silent-continue catch above it produced "CI green, AR stale".
+            throw new IOException("Publish phase failed: " + e.getMessage(), e);
         }
     }
 
+    /**
+     * Lists per-bundle publish targets that protolake should run.
+     *
+     * Matches both the Java path ({@code maven_publish}) and the Python/JS path
+     * ({@code py_binary} named {@code publish_*}). Falls back to a name-only
+     * match so any new publish-rule kind we add later automatically participates.
+     */
     private List<String> queryPublishTargets(Path lakeRoot) throws IOException {
         try {
             String output = bazelCommand.runWithOutput(lakeRoot, "query",
-                "kind(\"genrule\", //...)", "--output=label");
+                "kind(\"^(maven_publish|py_binary)$\", //...) intersect attr(name, '^publish_.*', //...)",
+                "--output=label");
             List<String> targets = new ArrayList<>();
             for (String line : output.split("\n")) {
                 String trimmed = line.trim();
-                if (!trimmed.isEmpty() && trimmed.contains("publish_")) {
+                if (!trimmed.isEmpty()) {
                     targets.add(trimmed);
                 }
             }
