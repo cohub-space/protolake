@@ -109,8 +109,13 @@ public class ReleasePleaseScaffolding {
      *       → tags of form {@code <package-name>-v<version>}</li>
      *   <li>{@code bump-minor-pre-major: true} → 0.x bumps default to minor on
      *       feat, not major</li>
-     *   <li>{@code separate-pull-requests: true} → each bundle gets its own
-     *       release PR</li>
+     *   <li>{@code separate-pull-requests: false} → one combined Release PR per
+     *       cycle covering all bundles. Default for protolake because bundles
+     *       in a lake typically release in lockstep (same proto changes, same
+     *       version bump). Per-bundle tags + per-bundle publishes still fan
+     *       out via release.yml's matrix on {@code paths_released}. Flip to
+     *       {@code true} for lakes where bundles have genuinely independent
+     *       release cadence.</li>
      *   <li>{@code extra-files} uses the YAML jsonpath updater so release-please
      *       finds `version:` directly without a marker comment</li>
      * </ul>
@@ -123,7 +128,7 @@ public class ReleasePleaseScaffolding {
         root.put("include-component-in-tag", true);
         root.put("tag-separator", "-");
         root.put("bump-minor-pre-major", true);
-        root.put("separate-pull-requests", true);
+        root.put("separate-pull-requests", false);
 
         ObjectNode packages = root.putObject("packages");
         bundles.stream()
