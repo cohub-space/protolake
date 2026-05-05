@@ -71,15 +71,22 @@ def main() -> int:
     atexit.register(teardown)
 
     # Run the Karate suite for the requested tier.
+    #
+    # Pass smoke.feature + e2e/ explicitly (not "."): generated test
+    # fixtures may land in gitignored test/playground/<board>/ during
+    # dogfood Generate runs; "." would scan those too — picking up
+    # @smoke-tagged features that reference services not in *this* board's
+    # karate-config.js, producing false-negative failures.
     docker_args = [
         "docker", "run", "--rm", "--network", "host",
         "-v", f"{SCRIPT_DIR}:/test", "-w", "/test",
         KARATE_IMAGE,
     ]
+    test_paths = ["smoke.feature", "e2e/"]
     if args.tier in ("smoke", "e2e"):
-        docker_args += [f"--tags=@{args.tier}", "."]
+        docker_args += [f"--tags=@{args.tier}"] + test_paths
     else:  # "all"
-        docker_args.append(".")
+        docker_args += test_paths
 
     return run(docker_args).returncode
 
