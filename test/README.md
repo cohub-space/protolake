@@ -8,21 +8,24 @@ the engine would emit if it were authored as a Board proto.
 ## Run
 
 ```bash
-./test/run.sh smoke    # @smoke — service starts + gRPC reflection works (<1 min)
-./test/run.sh e2e      # @e2e   — full bash pipeline (~20 min cold build)
-./test/run.sh all      # both tags
+./test/run.py smoke    # @smoke — service starts + gRPC reflection works (<1 min)
+./test/run.py e2e      # @e2e   — full bash pipeline (~20 min cold build)
+./test/run.py all      # both tags
 ```
 
 First run builds `cohub-karate-runner:1.5.2` locally (Karate OSS +
 grpcurl on `eclipse-temurin:17-jre-jammy`); subsequent runs use the
-cached image. The protolake stack is brought up + torn down by `run.sh`.
+cached image. The protolake stack is brought up + torn down by `run.py`.
+
+(On Windows or when `chmod +x` doesn't apply, invoke as
+`python test/run.py smoke`.)
 
 ## Layout
 
 ```
 test/
 ├── README.md              this file
-├── run.sh                 entry point
+├── run.py                 entry point (Python, cross-platform)
 ├── docker-compose.yml     protolake stack (proto-lake-service)
 ├── karate-config.js       per-env URLs + ports
 ├── smoke.feature          @smoke probes (HTTP /q/health + gRPC reflection)
@@ -41,7 +44,7 @@ test/
 ## Migration status
 
 The legacy bash scripts are wrapped as @e2e Karate scenarios via
-`karate.exec` so they keep running through `./test/run.sh e2e`. PL-e2c1
+`karate.exec` so they keep running through `./test/run.py e2e`. PL-e2c1
 (CI gate) and PL-e2bc (per-area split) closed as superseded by
 VDP-e8e9. If a follow-up wants native Karate equivalents of the bash
 phases for clearer per-area assertions, open a new task.
