@@ -32,9 +32,14 @@ import java.util.stream.Stream;
  *       {@code paths_released})</li>
  *   <li>{@code .github/workflows/pr-title-lint.yml} — enforces Conventional Commit
  *       PR titles so release-please can parse the squash-merged commit message</li>
+ *   <li>{@code .github/workflows/publish-bundle.yml} — manual {@code workflow_dispatch}
+ *       escape hatch to re-publish a single bundle when the auto-publish in
+ *       {@code release.yml} failed but the tag/manifest entry was already
+ *       created (release-please-action returns {@code releases_created: false}
+ *       on re-run, so the regular path can't recover)</li>
  * </ul>
  *
- * All four use {@code writeIfNotExists} semantics: protolake seeds the defaults,
+ * All five use {@code writeIfNotExists} semantics: protolake seeds the defaults,
  * users own them after that. Adding a bundle does NOT automatically update an
  * existing config.json — users either edit it directly or delete it and re-run
  * {@code protolake build} to get a fresh skeleton.
@@ -61,6 +66,7 @@ public class ReleasePleaseScaffolding {
     private static final String MANIFEST_FILE = ".release-please-manifest.json";
     private static final String RELEASE_WORKFLOW = ".github/workflows/release.yml";
     private static final String PR_TITLE_LINT_WORKFLOW = ".github/workflows/pr-title-lint.yml";
+    private static final String PUBLISH_BUNDLE_WORKFLOW = ".github/workflows/publish-bundle.yml";
 
     private static final String CONFIG_SCHEMA =
             "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json";
@@ -96,6 +102,8 @@ public class ReleasePleaseScaffolding {
         Files.createDirectories(lakePath.resolve(".github").resolve("workflows"));
         copyResourceIfNotExists("release-please/release.yml",
                 lakePath.resolve(RELEASE_WORKFLOW));
+        copyResourceIfNotExists("release-please/publish-bundle.yml",
+                lakePath.resolve(PUBLISH_BUNDLE_WORKFLOW));
         copyResourceIfNotExists("release-please/pr-title-lint.yml",
                 lakePath.resolve(PR_TITLE_LINT_WORKFLOW));
     }
