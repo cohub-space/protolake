@@ -361,10 +361,58 @@ public class BazelBuildRunner {
                     targets.add(trimmed);
                 }
             }
-            return targets;
+            return selectMavenTargetsForMode(targets);
         } catch (Exception e) {
             throw new IOException("Failed to query publish targets: " + e.getMessage(), e);
         }
+    }
+
+    /**
+     * Picks one Maven publish target per bundle by publish mode. Gazelle emits a
+     * pair per bundle: {@code publish_X_to_maven} at the release version and
+     * {@code publish_X_to_maven_local} at {@code <version>-local}. A local
+     * install must never land on the release coordinates — Maven caches a
+     * release version forever, so locally-published bytes silently shadow the
+     * eventual CI release on that machine.
+     *
+     * <p>Mode comes from {@code MAVEN_REPO}: an http(s) URL means a real
+     * registry (release coordinates); anything else (default local path,
+     * {@code file://}) means local install ({@code -local} coordinates).
+     * Lakes generated before the {@code _local} twin existed fall back to the
+     * plain target with a warning rather than publishing nothing.
+     */
+    private List<String> selectMavenTargetsForMode(List<String> targets) {
+        return selectMavenTargetsForMode(targets, System.getenv("MAVEN_REPO"));
+    }
+
+    static List<String> selectMavenTargetsForMode(List<String> targets, String mavenRepo) {
+        boolean remoteRegistry = mavenRepo != null
+            && (mavenRepo.startsWith("https://") || mavenRepo.startsWith("http://"));
+
+        List<String> selected = new ArrayList<>();
+        for (String target : targets) {
+            boolean isMavenLocal = target.endsWith("_to_maven_local");
+            boolean isMavenRelease = target.endsWith("_to_maven");
+            if (!isMavenLocal && !isMavenRelease) {
+                selected.add(target); // pypi / npm / proto-loader — untouched
+                continue;
+            }
+            if (remoteRegistry) {
+                if (isMavenRelease) {
+                    selected.add(target);
+                }
+            } else {
+                if (isMavenLocal) {
+                    selected.add(target);
+                } else if (!targets.contains(target + "_local")) {
+                    LOG.warnf("Lake predates the -local publish twin for %s — local install "
+                        + "will land on the RELEASE coordinates. Regenerate with a newer "
+                        + "protolake-gazelle to get squat-proof local publishes.", target);
+                    selected.add(target);
+                }
+            }
+        }
+        return selected;
     }
 
     /**
