@@ -114,15 +114,15 @@ public class WorkspaceInitializer {
                 context.put("protolake_gazelle_git_tag", "");
                 LOG.debugf("Using local path for protolake-gazelle: %s", protolakeGazellePath);
             } else {
-                // Default: fetch from public GitHub via tag. Bumped to v0.4.0
-                // for the bundle.yaml-version-merge fix (cohub-space/protolake-gazelle#16):
-                // earlier tags don't propagate `version` bumps from bundle.yaml
-                // into existing BUILD.bazel rules on regenerate, so release-please
-                // bumps would silently publish under the previous coordinate.
+                // Default: fetch from public GitHub via tag. Bumped to v0.5.0
+                // for the -local publish twin (cohub-space/protolake-gazelle#18):
+                // earlier tags publish local installs at the RELEASE coordinates,
+                // which Maven caches forever — a stale local jar then silently
+                // shadows the eventual CI release on that machine.
                 context.put("protolake_gazelle_git_url",
                         "https://github.com/cohub-space/protolake-gazelle.git");
                 context.put("protolake_gazelle_git_commit", "");
-                context.put("protolake_gazelle_git_tag", "v0.4.0");
+                context.put("protolake_gazelle_git_tag", "v0.5.0");
                 context.put("protolake_gazelle_path", "");
                 LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }
