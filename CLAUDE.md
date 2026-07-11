@@ -40,7 +40,7 @@ with `PROTOLAKE_GAZELLE_SOURCE_PATH`.
 - `Dockerfile` — multi-stage; produces `ghcr.io/cohub-space/protolake:latest`
 
 The repo defaults to fetching `protolake-gazelle` at the tag pinned in
-`WorkspaceInitializer.createModuleBazel` (currently `v0.4.0`). For local
+`WorkspaceInitializer.createModuleBazel` (currently `v0.5.0`). For local
 development of both, use `PROTOLAKE_GAZELLE_SOURCE_PATH=/path/to/protolake-gazelle`.
 
 ## Knowledge
