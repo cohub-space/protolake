@@ -179,11 +179,13 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertFileExists(toolsPath, "publish/publisher_utils_generated.py");
 
         // Verify pom_generator content — accepts --bundle-yaml (single-sourced
-        // version) alongside the explicit --version escape hatch.
+        // version) alongside the explicit --version escape hatch, plus the
+        // --expected-version stale-BUILD guard gazelle bakes into pom genrules.
         assertFileContains(toolsPath.resolve("publish/pom_generator_generated.py"),
             "#!/usr/bin/env python3",
             "Generate a Maven POM XML",
             "--bundle-yaml",
+            "--expected-version",
             "def main():"
         );
     }

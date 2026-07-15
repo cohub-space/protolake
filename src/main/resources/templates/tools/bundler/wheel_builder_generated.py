@@ -16,16 +16,30 @@ def read_bundle_version(bundle_yaml_path):
     """Read the top-level `version:` from a bundle.yaml.
 
     Minimal line parser on purpose — this tool runs under bazel py runtimes
-    with stdlib only, so no yaml library. Fails loudly if no version found.
+    with stdlib only, so no yaml library. Fails loudly when the file is
+    unreadable, no version line is found, or the version is malformed.
     """
-    with open(bundle_yaml_path, encoding='utf-8') as f:
-        for line in f:
-            match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
-            if match:
-                return match.group(1)
-    print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
-          file=sys.stderr)
-    sys.exit(1)
+    version = None
+    try:
+        with open(bundle_yaml_path, encoding='utf-8') as f:
+            for line in f:
+                match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+                if match:
+                    version = match.group(1)
+                    break
+    except OSError as e:
+        print(f"Error: cannot read bundle.yaml at {bundle_yaml_path}: {e}",
+              file=sys.stderr)
+        sys.exit(1)
+    if version is None:
+        print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not re.fullmatch(r'[0-9A-Za-z.+~-]+', version):
+        print(f"Error: malformed version {version!r} in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    return version
 
 
 def create_setup_py(package_name, version):

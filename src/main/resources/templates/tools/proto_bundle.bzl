@@ -117,7 +117,7 @@ java_proto_bundle = rule(
                   "If False (default), creates a thin JAR with only generated code.",
         ),
         "bundle_yaml": attr.label(
-            allow_single_file = True,
+            allow_single_file = [".yaml"],
             mandatory = True,
             doc = "The bundle's bundle.yaml; the version is read from it at " +
                   "build time and embedded in MANIFEST.MF. The sibling " +
@@ -211,7 +211,7 @@ py_proto_bundle = rule(
             doc = "PyPI package name",
         ),
         "bundle_yaml": attr.label(
-            allow_single_file = True,
+            allow_single_file = [".yaml"],
             mandatory = True,
             doc = "The bundle's bundle.yaml; the version is read from it at build time",
         ),
@@ -278,7 +278,7 @@ js_proto_bundle = rule(
             doc = "NPM package name",
         ),
         "bundle_yaml": attr.label(
-            allow_single_file = True,
+            allow_single_file = [".yaml"],
             mandatory = True,
             doc = "The bundle's bundle.yaml; the version is read from it at build time",
         ),
@@ -360,7 +360,7 @@ js_proto_loader_bundle = rule(
             doc = "NPM package name (e.g., '@example/service-proto-loader')",
         ),
         "bundle_yaml": attr.label(
-            allow_single_file = True,
+            allow_single_file = [".yaml"],
             mandatory = True,
             doc = "The bundle's bundle.yaml; the version is read from it at build time",
         ),

@@ -16,16 +16,30 @@ def read_bundle_version(bundle_yaml_path):
     """Read the top-level `version:` from a bundle.yaml.
 
     Minimal line parser on purpose — this tool runs under bazel py runtimes
-    with stdlib only, so no yaml library. Fails loudly if no version found.
+    with stdlib only, so no yaml library. Fails loudly when the file is
+    unreadable, no version line is found, or the version is malformed.
     """
-    with open(bundle_yaml_path, encoding='utf-8') as f:
-        for line in f:
-            match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
-            if match:
-                return match.group(1)
-    print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
-          file=sys.stderr)
-    sys.exit(1)
+    version = None
+    try:
+        with open(bundle_yaml_path, encoding='utf-8') as f:
+            for line in f:
+                match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+                if match:
+                    version = match.group(1)
+                    break
+    except OSError as e:
+        print(f"Error: cannot read bundle.yaml at {bundle_yaml_path}: {e}",
+              file=sys.stderr)
+        sys.exit(1)
+    if version is None:
+        print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not re.fullmatch(r'[0-9A-Za-z.+~-]+', version):
+        print(f"Error: malformed version {version!r} in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    return version
 
 
 def publish_npm_package(bundle_path, package_name, version):
@@ -257,8 +271,12 @@ Examples:
     parser.add_argument('--package-name', required=True,
                         help='NPM package name (e.g. @scope/pkg)')
     parser.add_argument('--version', default=None,
-                        help='Package version (for logging/paths only — the '
-                             'bundle tarball is already version-stamped)')
+                        help='Package version. Not just informational: '
+                             'file/pack/workspace modes key install '
+                             'directories and the .tgz filename on it, so it '
+                             'must match the version stamped in the bundle '
+                             'tarball — resolve via --bundle-yaml to stay in '
+                             'sync.')
     parser.add_argument('--bundle-yaml', default=None,
                         help="Path to the bundle's bundle.yaml; used to resolve "
                              'the version when --version is absent')
