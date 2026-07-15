@@ -112,8 +112,9 @@ public class BazelBuildRunner {
             String bazelTarget = toBazelTarget(target);
 
             // PROTOBUF_JAVA_VERSION / GRPC_VERSION action_envs for the POM
-            // generator genrule. Bundle versions are baked into the publish
-            // rules at gazelle time — no VERSION env var threads through here.
+            // generator genrule. Bundle versions are read from each bundle's
+            // bundle.yaml at build time (action input of the bundle rules) —
+            // no VERSION env var threads through here.
             Map<String, String> actionEnvs = extractVersionActionEnvs(metadata);
 
             LOG.infof("Building target: %s (bazel: %s)", target, bazelTarget);
@@ -217,6 +218,15 @@ public class BazelBuildRunner {
      * <p>Failure semantics: any non-zero exit from a publish target fails the
      * publish phase immediately. There is no continue-on-failure — that was
      * the source of <a href="../../../../tasks/G-7e3b-protolake-keep-going-masking.md">G-7e3b</a>.
+     *
+     * <p>Version note: {@code maven_publish.coordinates} are the one
+     * intentional analysis-time version literal — gazelle bakes them from
+     * bundle.yaml (release + {@code -local} twin). rules_jvm_external 6.10
+     * expands coordinates only via {@code ctx.expand_make_variables} at
+     * analysis time, so a make-variable placeholder would hard-fail plain
+     * {@code bazel build //...} unless a default define were always wired in.
+     * Everything else (JAR manifest, POM, wheel, npm tarball) reads the
+     * version from bundle.yaml at build time.
      *
      * @param lakeRoot           The lake root directory (where MODULE.bazel exists)
      * @param lakeRelativeTarget The build target scope ({@code .} = lake-wide,

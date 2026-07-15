@@ -13,9 +13,12 @@ def _proto_source_mapper(f):
 def _java_proto_bundle_impl(ctx):
     """Create a JAR containing generated Java proto classes.
 
-    The JAR's `MANIFEST.MF` carries the version (passed via the `version`
-    attr, baked at gazelle time from `bundle.yaml`). The maven coordinate
-    used at publish time lives on the sibling `maven_publish` rule.
+    The JAR's `MANIFEST.MF` carries the version, read at build time from the
+    bundle's `bundle.yaml` (the `bundle_yaml` attr) — bundle.yaml is the
+    single source of truth. The one intentional exception is the sibling
+    `maven_publish` rule's `coordinates`: rules_jvm_external expands them at
+    analysis time only, so gazelle bakes the version literal there (from
+    bundle.yaml) instead of a make-variable placeholder.
     """
 
     output_jar = ctx.actions.declare_file("{}_bundle.jar".format(ctx.label.name))
@@ -46,7 +49,7 @@ def _java_proto_bundle_impl(ctx):
     args.add("--output", output_jar)
     args.add("--group-id", ctx.attr.group_id)
     args.add("--artifact-id", ctx.attr.artifact_id)
-    args.add("--version", ctx.attr.version)
+    args.add("--bundle-yaml", ctx.file.bundle_yaml.path)
 
     # Add Java JARs
     args.add_all("--java-jars", runtime_jars)
@@ -70,7 +73,7 @@ def _java_proto_bundle_impl(ctx):
 
     ctx.actions.run(
         outputs = [output_jar],
-        inputs = depset(direct = jandex_files + descriptor_files, transitive = [runtime_jars, proto_sources]),
+        inputs = depset(direct = jandex_files + descriptor_files + [ctx.file.bundle_yaml], transitive = [runtime_jars, proto_sources]),
         executable = ctx.executable._jar_bundler,
         arguments = [args],
         mnemonic = "JavaProtoBundle",
@@ -113,11 +116,14 @@ java_proto_bundle = rule(
             doc = "If True, creates a fat JAR with all transitive dependencies. " +
                   "If False (default), creates a thin JAR with only generated code.",
         ),
-        "version": attr.string(
-            default = "1.0.0",
-            doc = "Bundle version. Baked at gazelle time from bundle.yaml; " +
-                  "embedded in MANIFEST.MF. Maven coordinate at publish time " +
-                  "comes from the sibling maven_publish rule's `coordinates` attr.",
+        "bundle_yaml": attr.label(
+            allow_single_file = [".yaml"],
+            mandatory = True,
+            doc = "The bundle's bundle.yaml; the version is read from it at " +
+                  "build time and embedded in MANIFEST.MF. The sibling " +
+                  "maven_publish rule's `coordinates` keep a gazelle-baked " +
+                  "version literal (analysis-time expansion only in " +
+                  "rules_jvm_external).",
         ),
         "descriptor_pb": attr.label(
             allow_single_file = [".pb"],
@@ -130,7 +136,6 @@ java_proto_bundle = rule(
             doc = "Bundle name used as the descriptor filename inside META-INF. " +
                   "Defaults to artifact_id if empty. Only used when descriptor_pb is set.",
         ),
-        # NO version attribute - version comes from environment variable
         "_jar_bundler": attr.label(
             default = "//tools:jar_bundler",
             executable = True,
@@ -148,8 +153,8 @@ java_proto_bundle = rule(
 def _py_proto_bundle_impl(ctx):
     """Create a Python wheel containing all proto files and generated Python files.
 
-    Version comes from the `version` attr (baked at gazelle time from
-    `bundle.yaml`), not a runtime env var.
+    The version is read at build time from the bundle's `bundle.yaml`
+    (the `bundle_yaml` attr) — nothing is baked into BUILD files.
     """
 
     output_whl = ctx.actions.declare_file("{}_bundle.whl".format(ctx.label.name))
@@ -170,7 +175,7 @@ def _py_proto_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_whl)
     args.add("--package-name", ctx.attr.package_name)
-    args.add("--version", ctx.attr.version)
+    args.add("--bundle-yaml", ctx.file.bundle_yaml.path)
     args.add_all("--py-files", py_files)
     # Pass proto sources as src=dest pairs using top-level function
     args.add_all("--proto-sources", proto_sources,
@@ -178,7 +183,7 @@ def _py_proto_bundle_impl(ctx):
 
     ctx.actions.run(
         outputs = [output_whl],
-        inputs = depset(direct = py_files, transitive = [proto_sources]),
+        inputs = depset(direct = py_files + [ctx.file.bundle_yaml], transitive = [proto_sources]),
         executable = ctx.executable._wheel_builder,
         arguments = [args],
         mnemonic = "PyProtoBundle",
@@ -205,9 +210,10 @@ py_proto_bundle = rule(
             mandatory = True,
             doc = "PyPI package name",
         ),
-        "version": attr.string(
-            default = "1.0.0",
-            doc = "Package version. Baked at gazelle time from bundle.yaml.",
+        "bundle_yaml": attr.label(
+            allow_single_file = [".yaml"],
+            mandatory = True,
+            doc = "The bundle's bundle.yaml; the version is read from it at build time",
         ),
         "_wheel_builder": attr.label(
             default = "//tools:wheel_builder",
@@ -221,8 +227,8 @@ py_proto_bundle = rule(
 def _js_proto_bundle_impl(ctx):
     """Create a JavaScript/TypeScript NPM package with Connect-ES generated code.
 
-    Version comes from the `version` attr, baked at gazelle time from
-    `bundle.yaml`.
+    The version is read at build time from the bundle's `bundle.yaml`
+    (the `bundle_yaml` attr) — nothing is baked into BUILD files.
     """
     output_tgz = ctx.actions.declare_file("{}_bundle.tgz".format(ctx.label.name))
 
@@ -241,14 +247,14 @@ def _js_proto_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_tgz)
     args.add("--package-name", ctx.attr.package_name)
-    args.add("--version", ctx.attr.version)
+    args.add("--bundle-yaml", ctx.file.bundle_yaml.path)
     args.add_all("--es-files", es_files)
     args.add_all("--proto-sources", proto_sources,
                  map_each = _proto_source_mapper)
 
     ctx.actions.run(
         outputs = [output_tgz],
-        inputs = depset(direct = es_files, transitive = [proto_sources]),
+        inputs = depset(direct = es_files + [ctx.file.bundle_yaml], transitive = [proto_sources]),
         executable = ctx.executable._npm_bundler,
         arguments = [args],
         mnemonic = "JsProtoBundle",
@@ -271,9 +277,10 @@ js_proto_bundle = rule(
             mandatory = True,
             doc = "NPM package name",
         ),
-        "version": attr.string(
-            default = "1.0.0",
-            doc = "Package version. Baked at gazelle time from bundle.yaml.",
+        "bundle_yaml": attr.label(
+            allow_single_file = [".yaml"],
+            mandatory = True,
+            doc = "The bundle's bundle.yaml; the version is read from it at build time",
         ),
         "_npm_bundler": attr.label(
             default = "//tools:npm_bundler",
@@ -327,12 +334,12 @@ def _js_proto_loader_bundle_impl(ctx):
     args = ctx.actions.args()
     args.add("--output", output_tgz)
     args.add("--package-name", ctx.attr.package_name)
-    args.add("--version", ctx.attr.version)
+    args.add("--bundle-yaml", ctx.file.bundle_yaml.path)
     args.add_all("--proto-sources", proto_sources, map_each = _proto_source_mapper)
 
     ctx.actions.run(
         outputs = [output_tgz],
-        inputs = proto_sources,
+        inputs = depset(direct = [ctx.file.bundle_yaml], transitive = [proto_sources]),
         executable = ctx.executable._proto_loader_publisher,
         arguments = [args],
         mnemonic = "JsProtoLoaderBundle",
@@ -352,9 +359,10 @@ js_proto_loader_bundle = rule(
             mandatory = True,
             doc = "NPM package name (e.g., '@example/service-proto-loader')",
         ),
-        "version": attr.string(
-            default = "1.0.0",
-            doc = "Package version. Baked at gazelle time from bundle.yaml.",
+        "bundle_yaml": attr.label(
+            allow_single_file = [".yaml"],
+            mandatory = True,
+            doc = "The bundle's bundle.yaml; the version is read from it at build time",
         ),
         "_proto_loader_publisher": attr.label(
             default = "//tools:proto_loader_publisher",

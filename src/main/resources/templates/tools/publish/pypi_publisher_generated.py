@@ -4,6 +4,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,36 @@ from pathlib import Path
 # Add parent directory to path for utilities
 sys.path.insert(0, str(Path(__file__).parent))
 from publisher_utils_generated import ensure_directory_exists, calculate_checksum
+
+
+def read_bundle_version(bundle_yaml_path):
+    """Read the top-level `version:` from a bundle.yaml.
+
+    Minimal line parser on purpose — this tool runs under bazel py runtimes
+    with stdlib only, so no yaml library. Fails loudly when the file is
+    unreadable, no version line is found, or the version is malformed.
+    """
+    version = None
+    try:
+        with open(bundle_yaml_path, encoding='utf-8') as f:
+            for line in f:
+                match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+                if match:
+                    version = match.group(1)
+                    break
+    except OSError as e:
+        print(f"Error: cannot read bundle.yaml at {bundle_yaml_path}: {e}",
+              file=sys.stderr)
+        sys.exit(1)
+    if version is None:
+        print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not re.fullmatch(r'[0-9A-Za-z.+~-]+', version):
+        print(f"Error: malformed version {version!r} in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    return version
 
 
 def publish_to_local_repo(wheel_path, package_name, version, repo_path):
@@ -166,13 +197,24 @@ def main():
     parser.add_argument('wheel_path', help='Path to the wheel file')
     parser.add_argument('--package-name', required=True,
                         help='PyPI package name')
-    parser.add_argument('--version', default='1.0.0',
-                        help='Version')
+    parser.add_argument('--version', default=None,
+                        help='Version. Shown in publish output and the pip '
+                             'install hint, so it must match the version '
+                             'stamped in the wheel — resolve via '
+                             '--bundle-yaml to stay in sync.')
+    parser.add_argument('--bundle-yaml', default=None,
+                        help="Path to the bundle's bundle.yaml; used to resolve "
+                             'the version when --version is absent')
     parser.add_argument('--repo', default=os.path.expanduser('~/.cache/pip/simple'),
                         help='Local PyPI repository path')
     parser.add_argument('--index-url', help='PyPI index URL (for production)')
 
     args = parser.parse_args()
+
+    if args.version is None:
+        if args.bundle_yaml is None:
+            parser.error('one of --version or --bundle-yaml is required')
+        args.version = read_bundle_version(args.bundle_yaml)
 
     # Verify wheel exists
     if not os.path.exists(args.wheel_path):

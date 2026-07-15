@@ -291,7 +291,6 @@ fi
 MOCK_MAVEN_URL="http://${MOCK_HOST}:${MOCK_SERVER_PORT}/maven"
 MOCK_PYPI_URL="http://${MOCK_HOST}:${MOCK_SERVER_PORT}/pypi"
 
-export VERSION=1.0.0
 export PROTOLAKE_BAZEL_TIMEOUT_SECONDS=1200
 
 # Reset the mock log before the build

@@ -61,9 +61,9 @@ That's it. The wrapper pulls a Docker image, runs Gazelle + Bazel inside the con
 
 ### Set a version
 
-```bash
-VERSION=2.0.0 ./protolakew build --install-local
-```
+Each bundle's version lives in its `bundles/<name>/bundle.yaml` (`version:`
+field) — the single source of truth, read at build time. Edit it there (or
+let release-please bump it) and rebuild.
 
 ## Publishing
 
@@ -125,7 +125,6 @@ jobs:
 
       - name: Build and publish
         env:
-          VERSION: $\{github.ref_name\}
           MAVEN_REPO: $\{secrets.MAVEN_REPO\}
           PYPI_REPO: $\{secrets.PYPI_REPO\}
           NPM_REGISTRY_URL: $\{secrets.NPM_REGISTRY_URL\}
@@ -137,7 +136,6 @@ jobs:
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `VERSION` | Artifact version for all bundles | `1.0.0` |
 | `PROTOLAKE_IMAGE` | Docker image to use | `ghcr.io/cohub-space/protolake:latest` |
 | `MAVEN_REPO` | Maven repository URL or local path | `~/.m2/repository` |
 | `PYPI_REPO` | PyPI repository URL or local path | `~/.cache/pip/simple` |

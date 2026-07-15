@@ -5,11 +5,42 @@
 import argparse
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
+
+
+def read_bundle_version(bundle_yaml_path):
+    """Read the top-level `version:` from a bundle.yaml.
+
+    Minimal line parser on purpose — this tool runs under bazel py runtimes
+    with stdlib only, so no yaml library. Fails loudly when the file is
+    unreadable, no version line is found, or the version is malformed.
+    """
+    version = None
+    try:
+        with open(bundle_yaml_path, encoding='utf-8') as f:
+            for line in f:
+                match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+                if match:
+                    version = match.group(1)
+                    break
+    except OSError as e:
+        print(f"Error: cannot read bundle.yaml at {bundle_yaml_path}: {e}",
+              file=sys.stderr)
+        sys.exit(1)
+    if version is None:
+        print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not re.fullmatch(r'[0-9A-Za-z.+~-]+', version):
+        print(f"Error: malformed version {version!r} in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    return version
 
 
 def create_package_json(package_name, version):
@@ -128,26 +159,14 @@ def main():
     parser = argparse.ArgumentParser(description='Bundle Connect-ES proto libraries into NPM package')
     parser.add_argument('--output', required=True, help='Output tarball path')
     parser.add_argument('--package-name', required=True, help='NPM package name')
-    parser.add_argument('--version', required=True, help='Version')
+    parser.add_argument('--bundle-yaml', required=True,
+                        help="Path to the bundle's bundle.yaml; the version is read from it at build time")
     parser.add_argument('--es-files', nargs='*', default=[], help='Connect-ES generated files (_pb.js, _pb.d.ts)')
     parser.add_argument('--proto-sources', nargs='*', default=[], help='Proto source files')
     args = parser.parse_args()
 
-    # Handle environment variable expansion for version
-    if args.version.startswith('${') and args.version.endswith('}'):
-        # Extract variable name and default value
-        var_content = args.version[2:-1]  # Remove ${ and }
-        if ':-' in var_content:
-            var_name, default_value = var_content.split(':-', 1)
-            args.version = os.environ.get(var_name, default_value)
-        else:
-            # No default value provided
-            args.version = os.environ.get(var_content, '1.0.0')
-
-    # Ensure version is valid - if it still contains ${, use default
-    if '${' in args.version:
-        print(f"Warning: Version '{args.version}' contains unexpanded variables, using default '1.0.0'")
-        args.version = '1.0.0'
+    # bundle.yaml is the single source of truth for the bundle version.
+    args.version = read_bundle_version(args.bundle_yaml)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         print(f"Creating NPM package for {args.package_name}...")

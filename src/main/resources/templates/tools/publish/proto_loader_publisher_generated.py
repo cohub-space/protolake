@@ -10,11 +10,42 @@ to resolve imports from filesystem paths.
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+
+def read_bundle_version(bundle_yaml_path):
+    """Read the top-level `version:` from a bundle.yaml.
+
+    Minimal line parser on purpose — this tool runs under bazel py runtimes
+    with stdlib only, so no yaml library. Fails loudly when the file is
+    unreadable, no version line is found, or the version is malformed.
+    """
+    version = None
+    try:
+        with open(bundle_yaml_path, encoding='utf-8') as f:
+            for line in f:
+                match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+                if match:
+                    version = match.group(1)
+                    break
+    except OSError as e:
+        print(f"Error: cannot read bundle.yaml at {bundle_yaml_path}: {e}",
+              file=sys.stderr)
+        sys.exit(1)
+    if version is None:
+        print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    if not re.fullmatch(r'[0-9A-Za-z.+~-]+', version):
+        print(f"Error: malformed version {version!r} in {bundle_yaml_path}",
+              file=sys.stderr)
+        sys.exit(1)
+    return version
 
 
 def create_proto_loader_package(output_path, package_name, version, proto_sources):
@@ -247,11 +278,34 @@ def main():
     parser.add_argument('bundle_path', nargs='?',
                         help='Publish mode: path to the .tgz bundle file')
     parser.add_argument('--package-name', help='NPM package name')
-    parser.add_argument('--version', default='1.0.0', help='Package version')
+    parser.add_argument('--version', default=None,
+                        help='Package version. Build mode stamps it into the '
+                             'generated package.json; publish file mode keys '
+                             'the install directory on it — resolve via '
+                             '--bundle-yaml to stay in sync with bundle.yaml.')
+    parser.add_argument('--bundle-yaml', default=None,
+                        help="Path to the bundle's bundle.yaml; used to resolve "
+                             'the version when --version is absent')
     parser.add_argument('--proto-sources', nargs='*', default=[],
                         help='Proto source files (src=dest pairs). Build mode only.')
 
     args = parser.parse_args()
+
+    if args.output:
+        # Build mode stamps the version into the created package.json — a
+        # silent default here is exactly the version drift bundle.yaml
+        # single-sourcing exists to kill, so bundle.yaml is mandatory.
+        if args.bundle_yaml is None:
+            parser.error('--bundle-yaml is required in build mode (--output)')
+    elif args.bundle_path:
+        if args.version is None and args.bundle_yaml is None:
+            parser.error('one of --version or --bundle-yaml is required')
+    else:
+        parser.print_help()
+        sys.exit(1)
+
+    if args.version is None:
+        args.version = read_bundle_version(args.bundle_yaml)
 
     if args.output:
         if not args.package_name:
@@ -262,14 +316,11 @@ def main():
             args.version,
             args.proto_sources,
         )
-    elif args.bundle_path:
+    else:
         if not args.package_name:
             parser.error("--package-name required in publish mode")
         success = publish_proto_loader_package(
             args.bundle_path, args.package_name, args.version)
-    else:
-        parser.print_help()
-        sys.exit(1)
 
     sys.exit(0 if success else 1)
 

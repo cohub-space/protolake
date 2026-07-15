@@ -27,7 +27,6 @@ services:
       - PROTO_LAKE_LOG_LEVEL=DEBUG
       - MAVEN_REPO=/home/protolake/.m2/repository
       - PYPI_REPO=/home/protolake/.cache/pip/simple
-      - VERSION=1.0.0
       - NPM_PUBLISH_MODE=file
       - HOME=/home/protolake
       - PROTOLAKE_BAZEL_TIMEOUT_SECONDS=1200

@@ -114,15 +114,17 @@ public class WorkspaceInitializer {
                 context.put("protolake_gazelle_git_tag", "");
                 LOG.debugf("Using local path for protolake-gazelle: %s", protolakeGazellePath);
             } else {
-                // Default: fetch from public GitHub via tag. Bumped to v0.5.0
-                // for the -local publish twin (cohub-space/protolake-gazelle#18):
-                // earlier tags publish local installs at the RELEASE coordinates,
-                // which Maven caches forever — a stale local jar then silently
-                // shadows the eventual CI release on that machine.
+                // Default: fetch from public GitHub via tag. v0.6.0 is the
+                // first gazelle that emits `bundle_yaml` attrs on bundle rules
+                // instead of gazelle-baked `version` string attrs (PL-bstm).
+                // This pin MUST move in lockstep with template changes to
+                // templates/tools/proto_bundle.bzl: if the templates and the
+                // pinned gazelle disagree about the bundle-rule attr shape,
+                // every lake build fails at the bazel loading phase.
                 context.put("protolake_gazelle_git_url",
                         "https://github.com/cohub-space/protolake-gazelle.git");
                 context.put("protolake_gazelle_git_commit", "");
-                context.put("protolake_gazelle_git_tag", "v0.5.0");
+                context.put("protolake_gazelle_git_tag", "v0.6.0");
                 context.put("protolake_gazelle_path", "");
                 LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }
