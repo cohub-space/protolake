@@ -10,11 +10,28 @@ to resolve imports from filesystem paths.
 import argparse
 import json
 import os
+import re
 import shutil
 import sys
 import tarfile
 import tempfile
 from pathlib import Path
+
+
+def read_bundle_version(bundle_yaml_path):
+    """Read the top-level `version:` from a bundle.yaml.
+
+    Minimal line parser on purpose — this tool runs under bazel py runtimes
+    with stdlib only, so no yaml library. Fails loudly if no version found.
+    """
+    with open(bundle_yaml_path, encoding='utf-8') as f:
+        for line in f:
+            match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+            if match:
+                return match.group(1)
+    print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def create_proto_loader_package(output_path, package_name, version, proto_sources):
@@ -247,11 +264,19 @@ def main():
     parser.add_argument('bundle_path', nargs='?',
                         help='Publish mode: path to the .tgz bundle file')
     parser.add_argument('--package-name', help='NPM package name')
-    parser.add_argument('--version', default='1.0.0', help='Package version')
+    parser.add_argument('--version', default=None,
+                        help='Package version (publish mode: logging/paths only '
+                             '— the bundle tarball is already version-stamped)')
+    parser.add_argument('--bundle-yaml', default=None,
+                        help="Path to the bundle's bundle.yaml; used to resolve "
+                             'the version when --version is absent')
     parser.add_argument('--proto-sources', nargs='*', default=[],
                         help='Proto source files (src=dest pairs). Build mode only.')
 
     args = parser.parse_args()
+
+    if args.version is None:
+        args.version = read_bundle_version(args.bundle_yaml) if args.bundle_yaml else '1.0.0'
 
     if args.output:
         if not args.package_name:

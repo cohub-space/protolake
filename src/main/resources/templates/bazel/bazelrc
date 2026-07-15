@@ -43,7 +43,6 @@ build --action_env=PATH
 build --action_env=HOME
 build --action_env=MAVEN_REPO
 build --action_env=PYPI_REPO
-build --action_env=VERSION
 build --action_env=NPM_PUBLISH_MODE
 build --action_env=REGISTRY_TOKEN
 build --action_env=NPM_REGISTRY_URL

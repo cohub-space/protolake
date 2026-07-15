@@ -148,17 +148,27 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertExecutableFile(toolsPath.resolve("bundler/wheel_builder_generated.py"));
         assertExecutableFile(toolsPath.resolve("bundler/npm_bundler_generated.py"));
 
-        // Verify each bundler has expected content
+        // Verify each bundler has expected content. Versions are single-sourced
+        // from bundle.yaml at build time (--bundle-yaml), never baked or env-fed.
         assertFileContains(toolsPath.resolve("bundler/jar_bundler_generated.py"),
             "def main():",
             "def create_manifest(",
+            "def read_bundle_version(",
+            "--bundle-yaml",
             "#!/usr/bin/env python3"
         );
 
         assertFileContains(toolsPath.resolve("bundler/wheel_builder_generated.py"),
             "def main():",
             "def create_setup_py(",
+            "def read_bundle_version(",
+            "--bundle-yaml",
             "#!/usr/bin/env python3"
+        );
+
+        assertFileContains(toolsPath.resolve("bundler/npm_bundler_generated.py"),
+            "def read_bundle_version(",
+            "--bundle-yaml"
         );
 
         // Verify publishing tools — maven path uses pom_generator + maven_publish (rules_jvm_external),
@@ -168,10 +178,12 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertExecutableFile(toolsPath.resolve("publish/npm_publisher_generated.py"));
         assertFileExists(toolsPath, "publish/publisher_utils_generated.py");
 
-        // Verify pom_generator content
+        // Verify pom_generator content — accepts --bundle-yaml (single-sourced
+        // version) alongside the explicit --version escape hatch.
         assertFileContains(toolsPath.resolve("publish/pom_generator_generated.py"),
             "#!/usr/bin/env python3",
             "Generate a Maven POM XML",
+            "--bundle-yaml",
             "def main():"
         );
     }
@@ -186,13 +198,18 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         // Initialize workspace
         workspaceInitializer.initializeWorkspace(lake);
         
-        // Verify proto_bundle.bzl was created
+        // Verify proto_bundle.bzl was created. Bundle rules take the sibling
+        // bundle.yaml as an action input (no gazelle-baked version attr).
         assertFileExists(lakePath.resolve("tools"), "proto_bundle.bzl");
         assertFileContains(lakePath.resolve("tools/proto_bundle.bzl"),
             "java_proto_bundle = rule(",
             "py_proto_bundle = rule(",
-            "js_proto_bundle = rule("
+            "js_proto_bundle = rule(",
+            "\"bundle_yaml\": attr.label(",
+            "args.add(\"--bundle-yaml\", ctx.file.bundle_yaml.path)"
         );
+        assertThat(readFile(lakePath.resolve("tools/proto_bundle.bzl")))
+            .doesNotContain("\"version\": attr.string(");
         
         // Verify tools BUILD.bazel exports the rules
         assertFileExists(lakePath.resolve("tools"), "BUILD.bazel");

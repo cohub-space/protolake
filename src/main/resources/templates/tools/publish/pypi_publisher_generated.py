@@ -4,6 +4,7 @@
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -12,6 +13,22 @@ from pathlib import Path
 # Add parent directory to path for utilities
 sys.path.insert(0, str(Path(__file__).parent))
 from publisher_utils_generated import ensure_directory_exists, calculate_checksum
+
+
+def read_bundle_version(bundle_yaml_path):
+    """Read the top-level `version:` from a bundle.yaml.
+
+    Minimal line parser on purpose — this tool runs under bazel py runtimes
+    with stdlib only, so no yaml library. Fails loudly if no version found.
+    """
+    with open(bundle_yaml_path, encoding='utf-8') as f:
+        for line in f:
+            match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+            if match:
+                return match.group(1)
+    print(f"Error: no top-level 'version:' line found in {bundle_yaml_path}",
+          file=sys.stderr)
+    sys.exit(1)
 
 
 def publish_to_local_repo(wheel_path, package_name, version, repo_path):
@@ -166,13 +183,21 @@ def main():
     parser.add_argument('wheel_path', help='Path to the wheel file')
     parser.add_argument('--package-name', required=True,
                         help='PyPI package name')
-    parser.add_argument('--version', default='1.0.0',
-                        help='Version')
+    parser.add_argument('--version', default=None,
+                        help='Version (for logging/paths only — the wheel is '
+                             'already version-stamped by the bundler)')
+    parser.add_argument('--bundle-yaml', default=None,
+                        help="Path to the bundle's bundle.yaml; used to resolve "
+                             'the version when --version is absent')
     parser.add_argument('--repo', default=os.path.expanduser('~/.cache/pip/simple'),
                         help='Local PyPI repository path')
     parser.add_argument('--index-url', help='PyPI index URL (for production)')
 
     args = parser.parse_args()
+
+    # Version is informational here (the wheel filename carries the real one).
+    if args.version is None:
+        args.version = read_bundle_version(args.bundle_yaml) if args.bundle_yaml else '1.0.0'
 
     # Verify wheel exists
     if not os.path.exists(args.wheel_path):

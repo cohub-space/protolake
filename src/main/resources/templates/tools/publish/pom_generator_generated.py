@@ -5,15 +5,35 @@
 Writes POM XML to stdout. Consumed by a `genrule` sibling of
 `maven_publish` (rules_jvm_external) — `maven_publish.pom` takes a
 generated POM file and rules_jvm_external substitutes the coordinates
-at publish time.
+at publish time. The POM's version comes from the bundle's bundle.yaml
+via `--bundle-yaml=$(location ...)` (plus `--version-suffix=-local` on
+the local publish twin, matching its `-local` maven coordinates);
+`maven_publish.coordinates` keep a gazelle-baked version literal since
+rules_jvm_external expands coordinates at analysis time only.
 
 The actual upload (HTTP PUT to AR, checksums, retries) is handled by
 `maven_publish` itself; this script's only job is the POM payload.
 """
 
 import argparse
+import re
 import sys
 import xml.etree.ElementTree as ET
+
+
+def read_bundle_version(bundle_yaml_path):
+    """Read the top-level `version:` from a bundle.yaml.
+
+    Minimal line parser on purpose — this tool runs under bazel py runtimes
+    with stdlib only, so no yaml library. Fails loudly if no version found.
+    """
+    with open(bundle_yaml_path, encoding='utf-8') as f:
+        for line in f:
+            match = re.match(r"^version:\s*['\"]?([^'\"\s]+)", line)
+            if match:
+                return match.group(1)
+    raise SystemExit(
+        f"Error: no top-level 'version:' line found in {bundle_yaml_path}")
 
 
 def generate_pom(group_id, artifact_id, version, description=None,
@@ -70,7 +90,14 @@ def main():
     parser = argparse.ArgumentParser(description="Generate a Maven POM XML")
     parser.add_argument("--group-id", required=True)
     parser.add_argument("--artifact-id", required=True)
-    parser.add_argument("--version", required=True)
+    version_source = parser.add_mutually_exclusive_group(required=True)
+    version_source.add_argument("--version", help="Explicit version")
+    version_source.add_argument("--bundle-yaml",
+                                help="Path to the bundle's bundle.yaml; the "
+                                     "version is read from it at build time")
+    parser.add_argument("--version-suffix", default="",
+                        help="Suffix appended to the resolved version "
+                             "(e.g. '-local' for the local publish twin)")
     parser.add_argument("--description")
     parser.add_argument("--protobuf-version", default="4.33.5")
     parser.add_argument("--grpc-version", default="1.78.0")
@@ -81,10 +108,13 @@ def main():
 
     args = parser.parse_args()
 
+    version = args.version or read_bundle_version(args.bundle_yaml)
+    version += args.version_suffix
+
     project = generate_pom(
         args.group_id,
         args.artifact_id,
-        args.version,
+        version,
         description=args.description,
         protobuf_version=args.protobuf_version,
         grpc_version=args.grpc_version,

@@ -164,11 +164,6 @@ elif [ -n "${PROTOLAKE_GAZELLE_GIT_URL:-}" ]; then
     fi
 fi
 
-# Pass through VERSION if set
-if [ -n "${VERSION:-}" ]; then
-    DOCKER_ARGS+=(-e "VERSION=${VERSION}")
-fi
-
 # Pass through Bazel config profile (e.g., "ci" to activate remote cache)
 if [ -n "${PROTOLAKE_BAZEL_CONFIG:-}" ]; then
     DOCKER_ARGS+=(-e "PROTOLAKE_BAZEL_CONFIG=${PROTOLAKE_BAZEL_CONFIG}")
