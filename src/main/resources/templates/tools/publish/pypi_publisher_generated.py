@@ -45,18 +45,32 @@ def read_bundle_version(bundle_yaml_path):
     return version
 
 
+def normalize_project_name(package_name):
+    """Normalize a project name per PEP 503: lowercase, runs of `-_.` to `-`.
+
+    This is the form pip requests from a simple index, so the per-project
+    directory must use it.
+    """
+    return re.sub(r'[-_.]+', '-', package_name).lower()
+
+
 def publish_to_local_repo(wheel_path, package_name, version, repo_path):
     """Publish wheel to local PyPI repository using simple index format"""
 
-    # Normalize package name for PyPI (lowercase, hyphens)
-    normalized_name = package_name.replace('_', '-').lower()
-
-    # Create package directory in simple index structure
+    # Per-project directory named per PEP 503, as pip's simple API requires
+    normalized_name = normalize_project_name(package_name)
     package_dir = Path(repo_path) / normalized_name
     ensure_directory_exists(package_dir)
 
-    # Copy wheel directly to package directory
-    wheel_name = os.path.basename(wheel_path)
+    # Rename to a PEP-427 filename on copy — the bazel output basename
+    # (<target>_bundle.whl) is not parseable, so pip would never resolve the
+    # wheel from the index. The distribution segment escapes runs of `-_.`
+    # to `_`; the version is the same value wheel_builder stamped into the
+    # wheel's metadata (both resolve it from bundle.yaml), so the filename
+    # matches the metadata by construction. Bundles are pure-python and
+    # platform-independent, hence py3-none-any.
+    distribution = normalized_name.replace('-', '_')
+    wheel_name = f"{distribution}-{version.replace('-', '_')}-py3-none-any.whl"
     target_wheel = package_dir / wheel_name
     shutil.copy2(wheel_path, target_wheel)
     print(f"Copied wheel to {target_wheel}")
