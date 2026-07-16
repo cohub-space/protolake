@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# No WIF / Artifact Registry auth here: protolake's pom has no
+# <repositories> block and no space.cohub dependencies — everything
+# resolves anonymously from Maven Central (the docker-publish workflow's
+# image build runs mvn the same way, with no auth). If AR-hosted deps are
+# ever added, mirror the google-github-actions/auth + AR_TOKEN block from
+# vdp-local/vdp-remote's ci.yml.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: 'maven'
+
+      # PypiPublisherScriptTest shells out to python3 and silently skips
+      # (assumeTrue) when it's absent — pin python explicitly so the test
+      # always runs in CI instead of quietly passing via skip.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      # Full unit + integration suite. The *IntegrationTest classes are
+      # surefire-run (filesystem-only, no docker daemon needed); failsafe
+      # has no *IT.java to pick up, so the default skipITs=true is inert.
+      - name: Build & Test
+        run: mvn -B verify
