@@ -16,7 +16,7 @@ and decisions live in the
 # Tests
 ./mvnw test                       # unit + integration (Quarkus, in-JVM)
 ./mvnw verify                     # + a few longer ITs
-cd e2e && bash test_protolake.sh  # full end-to-end (~20 min cold)
+./test/run.py e2e                 # full end-to-end (~20 min cold)
 
 # Local image (e2e tests expect this tag)
 docker build -t protolake-proto-lake:latest .
@@ -30,13 +30,13 @@ with `PROTOLAKE_GAZELLE_SOURCE_PATH`.
 
 ## Project structure
 
-- `src/main/java/io/vdp/protolake/` — Java service (Quarkus, picocli CLI, gRPC,
+- `src/main/java/space/cohub/vdp/protolake/` — Java service (Quarkus, picocli CLI, gRPC,
   build pipeline, workspace initialization)
 - `src/main/resources/templates/` — files that get rendered/copied into a lake at
   init time (Bazel `tools/`, publishers, gazelle wrapper, release-please workflows)
 - `src/main/proto/` — service protos (`LakeService`, `BundleService`)
-- `e2e/` — bash + Python scripts that build the Docker image and run a real lake
-  through the full pipeline
+- `test/` — e2e harness (run.py + karate features) that builds the Docker image
+  and runs a real lake through the full pipeline
 - `Dockerfile` — multi-stage; produces `ghcr.io/cohub-space/protolake:latest`
 
 The repo defaults to fetching `protolake-gazelle` at the tag pinned in

@@ -60,7 +60,10 @@ public class BundleInitializer {
             .setName(BundleUtil.toResourceName(lakeName, name))
             .setDisplayName(displayName != null ? displayName : name)
             .setDescription(description != null ? description : "")
-            .setVersion("1.0.0") // Default version
+            // Birth version 0.1.0 — matches the engine's bundle skeleton and
+            // the release-as first-release pin; 1.0.0 signaled a maturity no
+            // fresh bundle has, and diverged from every other birth path.
+            .setVersion("0.1.0")
             .setCreateTime(LakeUtil.toProtoTimestamp(Instant.now()))
             .setUpdateTime(LakeUtil.toProtoTimestamp(Instant.now()));
         

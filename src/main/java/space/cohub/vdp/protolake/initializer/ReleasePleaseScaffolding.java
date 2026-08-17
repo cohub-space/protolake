@@ -40,9 +40,16 @@ import java.util.stream.Stream;
  * </ul>
  *
  * All five use {@code writeIfNotExists} semantics: protolake seeds the defaults,
- * users own them after that. Adding a bundle does NOT automatically update an
- * existing config.json — users either edit it directly or delete it and re-run
- * {@code protolake build} to get a fresh skeleton.
+ * users own them after that — with ONE managed exception: a package's
+ * {@code release-as} first-release pin is removed by every build once its
+ * manifest entry moves past the bootstrap seed (see
+ * {@link #convergeReleaseAsPins}). Adding a bundle does NOT automatically
+ * update an existing config.json — users either edit it directly or delete it
+ * and re-run {@code protolake build} to get a fresh skeleton. Delete-and-regen
+ * stays correct on a released lake: bundle.yaml is release-please's own
+ * version output, so a released bundle re-seeds at its released version;
+ * only a bundle whose sole release was exactly the birth version re-proposes
+ * it (tag {@code already_exists} → the recycled-release-PR recovery).
  *
  * <p>Why one workflow instead of a separate tag-triggered publish: refs (tags,
  * commits) created by the default {@code GITHUB_TOKEN} do NOT trigger downstream
@@ -64,6 +71,12 @@ public class ReleasePleaseScaffolding {
 
     private static final String CONFIG_FILE = "release-please-config.json";
     private static final String MANIFEST_FILE = ".release-please-manifest.json";
+
+    /** Manifest seed for a bundle whose first release has not shipped. */
+    static final String BOOTSTRAP_VERSION = "0.0.0";
+
+    /** First-release pin — the 0.x version the greenfield release PR proposes. */
+    static final String FIRST_RELEASE_VERSION = "0.1.0";
     private static final String RELEASE_WORKFLOW = ".github/workflows/release.yml";
     private static final String PR_TITLE_LINT_WORKFLOW = ".github/workflows/pr-title-lint.yml";
     private static final String PUBLISH_BUNDLE_WORKFLOW = ".github/workflows/publish-bundle.yml";
@@ -95,6 +108,7 @@ public class ReleasePleaseScaffolding {
                 JSON.writeValueAsString(buildConfigJson(bundles)));
         writeIfNotExists(lakePath.resolve(MANIFEST_FILE),
                 JSON.writeValueAsString(buildManifestJson(bundles)));
+        convergeReleaseAsPins(lakePath);
 
         // Workflow YAMLs are static — they're plain GitHub Actions files containing
         // bash `${...}` and Actions `${{...}}` syntax that conflicts with Qute's
@@ -144,6 +158,15 @@ public class ReleasePleaseScaffolding {
                 .forEach(b -> {
                     ObjectNode pkg = packages.putObject(bundlePath(b));
                     pkg.put("package-name", releasePackageName(b));
+                    if (isFreshBundle(b)) {
+                        // A fresh component has no tag to anchor release-please's
+                        // version math, and with separate-pull-requests:false it
+                        // inherits a sibling bundle's lineage instead of bumping
+                        // from the 0.0.0 manifest seed — the pin carries the
+                        // first release; convergeReleaseAsPins removes it once
+                        // the manifest moves.
+                        pkg.put("release-as", FIRST_RELEASE_VERSION);
+                    }
                     ObjectNode extraFile = pkg.putArray("extra-files").addObject();
                     extraFile.put("type", "yaml");
                     extraFile.put("path", "bundle.yaml");
@@ -168,9 +191,25 @@ public class ReleasePleaseScaffolding {
         return BundleUtil.getLakeRootRelativePath(b);
     }
 
-    private String bundleVersion(Bundle b) {
+    /**
+     * A bundle still at its birth version (or with none declared) has
+     * released nothing — its lineage starts at the bootstrap seed, with a
+     * {@code release-as} pin carrying the first release (the engine's
+     * ReleasePleaseEntryManager contract). Any other declared version means
+     * released or imported history: bundle.yaml is release-please's own
+     * extra-files output, so re-seeding from it keeps the delete-and-regen
+     * manifest recovery correct for released lakes.
+     */
+    private boolean isFreshBundle(Bundle b) {
         String v = b.getVersion();
-        return (v == null || v.isEmpty()) ? "1.0.0" : v;
+        return v == null || v.isEmpty() || FIRST_RELEASE_VERSION.equals(v);
+    }
+
+    private String bundleVersion(Bundle b) {
+        // The manifest records the last RELEASED version — seeding a fresh
+        // bundle at its declared version made version probes report
+        // unreleased bundles as released.
+        return isFreshBundle(b) ? BOOTSTRAP_VERSION : b.getVersion();
     }
 
     /**
@@ -210,6 +249,49 @@ public class ReleasePleaseScaffolding {
             }
         }
         return bundles;
+    }
+
+    /**
+     * Removes a package's {@code release-as} first-release pin once the
+     * manifest shows its first release shipped (moved past
+     * {@value #BOOTSTRAP_VERSION}) — a lingering pin would freeze every
+     * subsequent release at {@value #FIRST_RELEASE_VERSION}. Runs on every
+     * workspace init (the per-build lifecycle owner protolake-scaffolded
+     * lakes otherwise lack — the engine-managed twin is
+     * ReleasePleaseEntryManager). Touches ONLY the pin key; user edits to
+     * everything else survive, and the file is rewritten only on change.
+     */
+    private void convergeReleaseAsPins(Path lakePath) throws IOException {
+        Path configPath = lakePath.resolve(CONFIG_FILE);
+        Path manifestPath = lakePath.resolve(MANIFEST_FILE);
+        if (!Files.exists(configPath) || !Files.exists(manifestPath)) {
+            return;
+        }
+        ObjectNode config = (ObjectNode) JSON.readTree(Files.readString(configPath));
+        com.fasterxml.jackson.databind.JsonNode manifest =
+                JSON.readTree(Files.readString(manifestPath));
+        com.fasterxml.jackson.databind.JsonNode packages = config.get("packages");
+        if (packages == null || !packages.isObject()) {
+            return;
+        }
+        boolean changed = false;
+        var names = packages.fieldNames();
+        while (names.hasNext()) {
+            String path = names.next();
+            com.fasterxml.jackson.databind.JsonNode pkg = packages.get(path);
+            if (pkg.has("release-as")
+                    && manifest.has(path)
+                    && !BOOTSTRAP_VERSION.equals(manifest.get(path).asText())) {
+                ((ObjectNode) pkg).remove("release-as");
+                changed = true;
+                LOG.infof("First release of %s shipped (%s) — removed its"
+                        + " release-as pin", path, manifest.get(path).asText());
+            }
+        }
+        if (changed) {
+            Files.writeString(configPath,
+                    JSON.writeValueAsString(config) + System.lineSeparator());
+        }
     }
 
     private void writeIfNotExists(Path target, String content) throws IOException {

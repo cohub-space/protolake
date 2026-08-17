@@ -110,7 +110,7 @@ public class BundleInitializerIntegrationTest extends InitializerTestBase {
             "name: user-service",
             "display_name: User Service",
             "description: User management protos",
-            "version: \"1.0.0\""
+            "version: \"0.1.0\""
         );
         
         // Verify example proto was created
