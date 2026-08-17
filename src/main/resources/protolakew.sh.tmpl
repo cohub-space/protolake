@@ -19,6 +19,15 @@
 #
 #   Local install flags:
 #     --js-target PATH         Target JS/TS project for workspace install (repeatable, sets NPM_PUBLISH_MODE=workspace)
+#     --local-root PATH        Scope ALL name-addressed local stores (maven/pip/
+#                              npm installs, the protolake db, and the bazel
+#                              output base) under PATH — per-workspace isolation
+#                              for parallel checkouts. Publish and resolve from
+#                              the same root:
+#                              -Dmaven.repo.local=PATH/maven/repository
+#                              First run per root: `build` (registers the
+#                              lake's bundles into the scoped db) before
+#                              bundle-scoped commands.
 #
 #   Remote publishing flags (override env vars):
 #     --maven-repo URL         Maven registry URL (sets MAVEN_REPO)
@@ -34,6 +43,9 @@ LAKE_NAME="{lakeName}"
 LAKE_PREFIX="{lakePrefix}"
 PROTOLAKE_IMAGE="${PROTOLAKE_IMAGE:-ghcr.io/cohub-space/protolake:latest}"
 DOCKER_PULL="missing"
+# Flag-only (like DOCKER_PULL): initialized so an exported LOCAL_ROOT in the
+# caller's environment cannot silently redirect the local stores.
+LOCAL_ROOT=""
 
 # Compute the Docker mount target to match LakeUtil.getLocalPath()
 if [ -n "$LAKE_PREFIX" ]; then
@@ -49,31 +61,24 @@ JS_TARGET_PATHS=()
 DOCKER_ARGS=(
     --rm
     -v "${SCRIPT_DIR}:${MOUNT_TARGET}"
-    -v "protolake-cache-${LAKE_NAME}:/home/protolake/.cache/bazel"
     -e "PROTO_LAKE_BASE_PATH=/proto-lake"
 )
 
-# Mount local package repositories for install-local
-if [ -d "${HOME}/.m2" ]; then
-    DOCKER_ARGS+=(-v "${HOME}/.m2:/home/protolake/.m2")
-fi
-if [ -d "${HOME}/.cache/pip" ] || mkdir -p "${HOME}/.cache/pip"; then
-    DOCKER_ARGS+=(-v "${HOME}/.cache/pip:/home/protolake/.cache/pip")
-fi
-
-# NPM packages directory
-PROTO_LAKE_DIR="${HOME}/.proto-lake"
-mkdir -p "${PROTO_LAKE_DIR}/npm-packages" 2>/dev/null || true
-DOCKER_ARGS+=(-v "${PROTO_LAKE_DIR}/npm-packages:/home/protolake/.proto-lake/npm-packages")
-
-# SQLite database
-mkdir -p "${PROTO_LAKE_DIR}" 2>/dev/null || true
-DOCKER_ARGS+=(-v "${PROTO_LAKE_DIR}/protolake.db:/home/protolake/.proto-lake/protolake.db")
-
-# Parse CLI flags that map to env vars (must happen before env var passthrough)
+# Parse CLI flags that map to env vars (must happen before env var passthrough,
+# and before the local-store mounts — --local-root decides their sources)
 PASSTHROUGH_ARGS=()
 while [ $# -gt 0 ]; do
     case "$1" in
+        --local-root)
+            [ -n "$2" ] || { echo "ERROR: --local-root requires a path" >&2; exit 1; }
+            # A literal ~ survives only when the caller quoted it — the shell
+            # would otherwise have expanded it. Refuse rather than create a
+            # literal ./~ tree (whose cleanup is a classic footgun).
+            case "$2" in *"~"*) echo "ERROR: --local-root path contains a literal '~': $2" >&2; exit 1;; esac
+            mkdir -p "$2" || exit 1
+            LOCAL_ROOT="$(cd "$2" && pwd)" || { echo "ERROR: --local-root path not usable: $2" >&2; exit 1; }
+            shift 2
+            ;;
         --maven-repo)
             MAVEN_REPO="$2"
             shift 2
@@ -105,6 +110,68 @@ while [ $# -gt 0 ]; do
             ;;
     esac
 done
+
+# Bazel's TRUE content-addressed store (bazelrc: --disk_cache) is safe to
+# share across workspaces and is pure speed — it also must live on a volume
+# or --rm discards it every run. The OUTPUT BASE (bazelrc: --output_base)
+# is mutable server state (action outputs, external repos, the server
+# lock): shared, two concurrent builds of one lake serialize on its flock
+# or fight over the server — so --local-root scopes it per workspace.
+DOCKER_ARGS+=(-v "protolake-disk-cache-${LAKE_NAME}:/home/protolake/.cache/bazel-disk-cache")
+
+# Name-addressed local stores (maven / pip / npm / the protolake db / the
+# bazel output base): shared user-level locations by default; --local-root
+# scopes every one under PATH instead — per-workspace isolation, because
+# parallel checkouts publishing the same -local coordinate through a SHARED
+# store silently clobber each other (last write wins machine-wide, and
+# -local versions have no registry to correct a stale copy). Only the mount
+# SOURCES move: in-container paths and the MAVEN_REPO/PYPI_REPO defaults
+# are identical either way.
+if [ -n "${LOCAL_ROOT}" ]; then
+    mkdir -p "${LOCAL_ROOT}/maven" "${LOCAL_ROOT}/pip" "${LOCAL_ROOT}/npm-packages" "${LOCAL_ROOT}/bazel"
+    # Pre-create as a FILE: docker materializes a missing bind source as a
+    # directory, which sqlite then cannot open. An EMPTY directory is
+    # unambiguously that artifact — self-heal it; anything non-empty is
+    # user data and stays a loud stop.
+    if [ -d "${LOCAL_ROOT}/protolake.db" ]; then
+        rmdir "${LOCAL_ROOT}/protolake.db" 2>/dev/null || {
+            echo "ERROR: ${LOCAL_ROOT}/protolake.db is a NON-EMPTY directory —" >&2
+            echo "  inspect and remove it, then re-run." >&2
+            exit 1
+        }
+    fi
+    touch "${LOCAL_ROOT}/protolake.db"
+    DOCKER_ARGS+=(
+        -v "${LOCAL_ROOT}/maven:/home/protolake/.m2"
+        -v "${LOCAL_ROOT}/pip:/home/protolake/.cache/pip"
+        -v "${LOCAL_ROOT}/npm-packages:/home/protolake/.proto-lake/npm-packages"
+        -v "${LOCAL_ROOT}/protolake.db:/home/protolake/.proto-lake/protolake.db"
+        -v "${LOCAL_ROOT}/bazel:/home/protolake/.cache/bazel"
+    )
+else
+    DOCKER_ARGS+=(-v "protolake-cache-${LAKE_NAME}:/home/protolake/.cache/bazel")
+    if [ -d "${HOME}/.m2" ]; then
+        DOCKER_ARGS+=(-v "${HOME}/.m2:/home/protolake/.m2")
+    fi
+    if [ -d "${HOME}/.cache/pip" ] || mkdir -p "${HOME}/.cache/pip"; then
+        DOCKER_ARGS+=(-v "${HOME}/.cache/pip:/home/protolake/.cache/pip")
+    fi
+    PROTO_LAKE_DIR="${HOME}/.proto-lake"
+    mkdir -p "${PROTO_LAKE_DIR}/npm-packages" 2>/dev/null || true
+    DOCKER_ARGS+=(-v "${PROTO_LAKE_DIR}/npm-packages:/home/protolake/.proto-lake/npm-packages")
+    mkdir -p "${PROTO_LAKE_DIR}" 2>/dev/null || true
+    # Same materialized-directory self-heal as the --local-root branch —
+    # first-ever runs on existing machines commonly carry the artifact.
+    if [ -d "${PROTO_LAKE_DIR}/protolake.db" ]; then
+        rmdir "${PROTO_LAKE_DIR}/protolake.db" 2>/dev/null || {
+            echo "ERROR: ${PROTO_LAKE_DIR}/protolake.db is a NON-EMPTY directory —" >&2
+            echo "  inspect and remove it, then re-run." >&2
+            exit 1
+        }
+    fi
+    touch "${PROTO_LAKE_DIR}/protolake.db"
+    DOCKER_ARGS+=(-v "${PROTO_LAKE_DIR}/protolake.db:/home/protolake/.proto-lake/protolake.db")
+fi
 
 # Handle --js-target: resolve paths, set up Docker mounts
 if [ ${#JS_TARGET_PATHS[@]} -gt 0 ]; then
