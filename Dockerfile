@@ -81,6 +81,7 @@ RUN groupadd -g 1001 protolake && \
 RUN mkdir -p /home/protolake/.m2/repository \
              /home/protolake/.cache/pip/simple \
              /home/protolake/.cache/bazel \
+             /home/protolake/.cache/bazel-disk-cache \
              /home/protolake/.proto-lake/npm-packages \
              /home/protolake/.npm \
     && chown -R protolake:protolake /home/protolake

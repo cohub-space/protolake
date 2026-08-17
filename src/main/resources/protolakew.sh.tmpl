@@ -116,7 +116,8 @@ done
 # or --rm discards it every run. The OUTPUT BASE (bazelrc: --output_base)
 # is mutable server state (action outputs, external repos, the server
 # lock): shared, two concurrent builds of one lake serialize on its flock
-# or fight over the server — so --local-root scopes it per workspace.
+# or fight over the server — so --local-root scopes it per workspace (as a
+# per-root named volume; see below for why never a host bind).
 DOCKER_ARGS+=(-v "protolake-disk-cache-${LAKE_NAME}:/home/protolake/.cache/bazel-disk-cache")
 
 # Name-addressed local stores (maven / pip / npm / the protolake db / the
@@ -128,7 +129,7 @@ DOCKER_ARGS+=(-v "protolake-disk-cache-${LAKE_NAME}:/home/protolake/.cache/bazel
 # SOURCES move: in-container paths and the MAVEN_REPO/PYPI_REPO defaults
 # are identical either way.
 if [ -n "${LOCAL_ROOT}" ]; then
-    mkdir -p "${LOCAL_ROOT}/maven" "${LOCAL_ROOT}/pip" "${LOCAL_ROOT}/npm-packages" "${LOCAL_ROOT}/bazel"
+    mkdir -p "${LOCAL_ROOT}/maven" "${LOCAL_ROOT}/pip" "${LOCAL_ROOT}/npm-packages"
     # Pre-create as a FILE: docker materializes a missing bind source as a
     # directory, which sqlite then cannot open. An EMPTY directory is
     # unambiguously that artifact — self-heal it; anything non-empty is
@@ -146,8 +147,21 @@ if [ -n "${LOCAL_ROOT}" ]; then
         -v "${LOCAL_ROOT}/pip:/home/protolake/.cache/pip"
         -v "${LOCAL_ROOT}/npm-packages:/home/protolake/.proto-lake/npm-packages"
         -v "${LOCAL_ROOT}/protolake.db:/home/protolake/.proto-lake/protolake.db"
-        -v "${LOCAL_ROOT}/bazel:/home/protolake/.cache/bazel"
     )
+    # The output base cannot ride a HOST bind mount: on macOS the
+    # virtiofs delete semantics race bazel's external-repo extraction
+    # (unlinkat ... Directory not empty on a just-emptied dir) and corrupt
+    # every fetch. A per-root NAMED VOLUME keeps the isolation on the
+    # VM's native filesystem; the stable hashed name is printed so
+    # `docker volume rm` cleanup stays discoverable after the workspace
+    # is deleted.
+    LOCAL_ROOT_HASH="$(printf '%s' "${LOCAL_ROOT}" | shasum -a 256 2>/dev/null | cut -c1-8)"
+    if [ -z "${LOCAL_ROOT_HASH}" ]; then
+        LOCAL_ROOT_HASH="$(printf '%s' "${LOCAL_ROOT}" | cksum | cut -d' ' -f1)"
+    fi
+    BAZEL_BASE_VOLUME="protolake-base-${LAKE_NAME}-${LOCAL_ROOT_HASH}"
+    echo "protolakew: bazel output base volume: ${BAZEL_BASE_VOLUME}" >&2
+    DOCKER_ARGS+=(-v "${BAZEL_BASE_VOLUME}:/home/protolake/.cache/bazel")
 else
     DOCKER_ARGS+=(-v "protolake-cache-${LAKE_NAME}:/home/protolake/.cache/bazel")
     if [ -d "${HOME}/.m2" ]; then
