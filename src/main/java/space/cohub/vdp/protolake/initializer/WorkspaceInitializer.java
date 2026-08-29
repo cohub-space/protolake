@@ -114,7 +114,10 @@ public class WorkspaceInitializer {
                 context.put("protolake_gazelle_git_tag", "");
                 LOG.debugf("Using local path for protolake-gazelle: %s", protolakeGazellePath);
             } else {
-                // Default: fetch from public GitHub via tag. v0.6.0 is the
+                // Default: fetch from public GitHub via tag. v0.6.1 adds
+                // --maven-dep emission so bundle POMs declare external gencode
+                // deps (protovalidate, proto-google-common-protos) the thin
+                // JAR references at consumer class-load time; v0.6.0 was the
                 // first gazelle that emits `bundle_yaml` attrs on bundle rules
                 // instead of gazelle-baked `version` string attrs (PL-bstm).
                 // This pin MUST move in lockstep with template changes to
@@ -124,7 +127,7 @@ public class WorkspaceInitializer {
                 context.put("protolake_gazelle_git_url",
                         "https://github.com/cohub-space/protolake-gazelle.git");
                 context.put("protolake_gazelle_git_commit", "");
-                context.put("protolake_gazelle_git_tag", "v0.6.0");
+                context.put("protolake_gazelle_git_tag", "v0.6.1");
                 context.put("protolake_gazelle_path", "");
                 LOG.debugf("Using default GitHub remote for protolake-gazelle");
             }
