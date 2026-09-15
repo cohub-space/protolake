@@ -1,6 +1,7 @@
 package space.cohub.vdp.protolake.pipeline;
 
 import space.cohub.vdp.protolake.util.bazel.BazelCommand;
+import space.cohub.vdp.protolake.publish.NetrcFile;
 import jakarta.enterprise.context.ApplicationScoped;
 import jakarta.inject.Inject;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
@@ -264,6 +265,18 @@ public class BazelBuildRunner {
             if (registryToken != null && !registryToken.isEmpty()) {
                 publishEnv.putIfAbsent("MAVEN_USER", "oauth2accesstoken");
                 publishEnv.putIfAbsent("MAVEN_PASSWORD", registryToken);
+                // The publisher's READ of maven-metadata.xml (publish_maven_metadata)
+                // authenticates from ~/.netrc only and treats a 401/403 as "no
+                // metadata" — on a private registry that would replace the version
+                // list with the one version just published. Same token, netrc form,
+                // before any target runs; failing to write it fails the phase (closed).
+                java.util.Optional<String> host = NetrcFile.registryHost(System.getenv("MAVEN_REPO"), registryToken);
+                if (host.isPresent()) {
+                    NetrcFile.ensureMachineEntry(Path.of(System.getProperty("user.home")),
+                            host.get(), "oauth2accesstoken", registryToken);
+                    logs.add("~/.netrc carries the registry credential for " + host.get()
+                            + " (authenticated maven-metadata reads)");
+                }
             }
 
             if (installLocalConfig.getJsTargetsCount() > 0) {
