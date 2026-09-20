@@ -62,9 +62,12 @@ class BufCommandBreakingTest {
     }
 
     private void git(String... args) throws Exception {
-        String[] cmd = new String[args.length + 1];
-        cmd[0] = "git";
-        System.arraycopy(args, 0, cmd, 1, args.length);
+        // Repo-local identity and no signing or hooks: a developer's global
+        // commit.gpgsign or core.hooksPath must not fail the bootstrap.
+        String[] prefix = {"git", "-c", "commit.gpgsign=false", "-c", "core.hooksPath="};
+        String[] cmd = new String[prefix.length + args.length];
+        System.arraycopy(prefix, 0, cmd, 0, prefix.length);
+        System.arraycopy(args, 0, cmd, prefix.length, args.length);
         Process p = new ProcessBuilder(cmd).directory(lake.toFile()).redirectErrorStream(true).start();
         p.getInputStream().readAllBytes();
         assertThat(p.waitFor(30, TimeUnit.SECONDS)).isTrue();
