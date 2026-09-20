@@ -128,6 +128,20 @@ public class GitCommand {
     }
 
     /**
+     * The sha a revision expression names ({@code HEAD~1}, a branch), or
+     * empty when the checkout cannot resolve it — a shallow clone has no
+     * parent commit, a fresh init has no history.
+     */
+    public java.util.Optional<String> revParse(Path directory, String revision) {
+        try {
+            String sha = executeGitWithOutput(directory, "rev-parse", "--verify", "--quiet", revision + "^{commit}").trim();
+            return sha.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(sha);
+        } catch (IOException e) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    /**
      * Gets the current commit hash.
      */
     public String getCurrentCommit(Path directory) throws IOException {

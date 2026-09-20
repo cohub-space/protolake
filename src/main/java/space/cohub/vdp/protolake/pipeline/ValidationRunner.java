@@ -48,6 +48,10 @@ public class ValidationRunner {
     /** The branch a lake's breaking-change check measures from. */
     static final String BREAKING_BASE_REF = "origin/main";
 
+    static final String NO_BASELINE_MESSAGE = "Breaking-change check skipped: this checkout has neither "
+        + BREAKING_BASE_REF + " nor a previous commit to compare against (a shallow clone) — fetch main "
+        + "to get the check";
+
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
 
@@ -228,7 +232,18 @@ public class ValidationRunner {
     private List<ValidationError> runBufBreaking(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
-        List<String> breakingOutput = bufCommand.breaking(directory, breakingBaseline(directory));
+        java.util.Optional<String> baseline = breakingBaseline(directory);
+        if (baseline.isEmpty()) {
+            LOG.warn(NO_BASELINE_MESSAGE);
+            logs.add(NO_BASELINE_MESSAGE);
+            errors.add(ValidationError.newBuilder()
+                .setType(ValidationError.Type.BREAKING_CHANGE)
+                .setMessage(NO_BASELINE_MESSAGE)
+                .setSeverity(ValidationError.Severity.WARNING)
+                .build());
+            return errors;
+        }
+        List<String> breakingOutput = bufCommand.breaking(directory, baseline.get());
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
                 errors.add(ValidationError.newBuilder()
@@ -253,12 +268,20 @@ public class ValidationRunner {
      * so a breaking change two commits back is still a breaking change;
      * comparing against {@code HEAD~1} alone saw only the last commit and
      * let one through until CI. A checkout without {@code origin/main}
-     * (no remote, a shallow clone) keeps the previous-commit comparison.
+     * (no remote) compares against the previous commit; one with neither
+     * (a depth-1 clone) has no baseline, and the caller reports that as a
+     * WARNING rather than a clean check.
+     * Both are {@code ref=} inputs: buf's {@code branch=} takes a branch
+     * name, and {@code branch=HEAD~1} — the previous form — was rejected
+     * with "invalid refspec" on every run, which the runner read as a clean
+     * result.
      */
-    String breakingBaseline(Path directory) {
-        return gitCommand.mergeBase(directory, BREAKING_BASE_REF)
-            .map(sha -> ".git#ref=" + sha)
-            .orElse(".git#branch=HEAD~1");
+    java.util.Optional<String> breakingBaseline(Path directory) {
+        java.util.Optional<String> base = gitCommand.mergeBase(directory, BREAKING_BASE_REF);
+        if (base.isEmpty()) {
+            base = gitCommand.revParse(directory, "HEAD~1");
+        }
+        return base.map(sha -> ".git#ref=" + sha);
     }
 
     /**
