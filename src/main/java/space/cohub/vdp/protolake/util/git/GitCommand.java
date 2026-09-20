@@ -112,6 +112,22 @@ public class GitCommand {
     }
 
     /**
+     * The merge base of HEAD and {@code ref} (a branch name or sha) — the
+     * point a branch's changes are measured from. Empty when the ref does
+     * not exist in this checkout (no such remote, a shallow clone without
+     * it), so callers can fall back rather than fail.
+     */
+    public java.util.Optional<String> mergeBase(Path directory, String ref) {
+        try {
+            String result = executeGitWithOutput(directory, "merge-base", "HEAD", ref);
+            String sha = result.trim();
+            return sha.isEmpty() ? java.util.Optional.empty() : java.util.Optional.of(sha);
+        } catch (IOException e) {
+            return java.util.Optional.empty();
+        }
+    }
+
+    /**
      * Gets the current commit hash.
      */
     public String getCurrentCommit(Path directory) throws IOException {

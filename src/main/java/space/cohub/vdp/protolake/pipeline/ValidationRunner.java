@@ -45,6 +45,9 @@ public class ValidationRunner {
     @Inject
     GitCommand gitCommand;
 
+    /** The branch a lake's breaking-change check measures from. */
+    static final String BREAKING_BASE_REF = "origin/main";
+
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
 
@@ -225,7 +228,7 @@ public class ValidationRunner {
     private List<ValidationError> runBufBreaking(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
-        List<String> breakingOutput = bufCommand.breaking(directory, ".git#branch=HEAD~1");
+        List<String> breakingOutput = bufCommand.breaking(directory, breakingBaseline(directory));
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
                 errors.add(ValidationError.newBuilder()
@@ -242,6 +245,20 @@ public class ValidationRunner {
         }
 
         return errors;
+    }
+
+    /**
+     * The buf input a branch's protos are compared against. A branch is
+     * measured from where it left {@code origin/main} — the merge base —
+     * so a breaking change two commits back is still a breaking change;
+     * comparing against {@code HEAD~1} alone saw only the last commit and
+     * let one through until CI. A checkout without {@code origin/main}
+     * (no remote, a shallow clone) keeps the previous-commit comparison.
+     */
+    String breakingBaseline(Path directory) {
+        return gitCommand.mergeBase(directory, BREAKING_BASE_REF)
+            .map(sha -> ".git#ref=" + sha)
+            .orElse(".git#branch=HEAD~1");
     }
 
     /**
