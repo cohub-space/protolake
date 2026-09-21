@@ -91,14 +91,24 @@ public class BufCommand {
      * Runs buf breaking to detect breaking changes.
      * 
      * @param directory the directory containing protos to check
-     * @param against the reference to compare against (e.g., ".git#branch=HEAD~1")
+     * @param against the reference to compare against (e.g., ".git#ref=<sha>" — a ref= input; branch= takes a branch name)
      * @return list of breaking change descriptions from stdout
      */
     public List<String> breaking(Path directory, String against) throws IOException {
         LOG.debugf("Running buf breaking in: %s against %s", directory, against);
-        
-        return runWithOutput(directory, "breaking", "--against", against);
+        // buf v2: 100 = findings, 0 = none, 1 = the command itself failed
+        // (an unresolvable --against input, a clone error). A failed
+        // baseline must never read as "no breaking changes".
+        BufResult result = run(directory, "breaking", "--against", against);
+        if (result.exitCode() == 1 && result.stdout().isEmpty()) {
+            throw new IOException("buf breaking could not compare against " + against + ": "
+                + String.join("\n", result.stderr()));
+        }
+        return result.stdout();
     }
+
+    /** One buf invocation's exit code, stdout lines and stderr lines. */
+    record BufResult(int exitCode, List<String> stdout, List<String> stderr) {}
 
     /**
      * Runs buf format to check formatting.
@@ -154,6 +164,10 @@ public class BufCommand {
      * @return list of output lines from stdout
      */
     private List<String> runWithOutput(Path directory, String... args) throws IOException {
+        return run(directory, args).stdout();
+    }
+
+    private BufResult run(Path directory, String... args) throws IOException {
         List<String> command = new ArrayList<>();
         command.add(bufCommand);
         for (String arg : args) {
@@ -206,7 +220,7 @@ public class BufCommand {
                     ": " + errorMsg);
             }
             
-            return output;
+            return new BufResult(exitCode, output, errors);
             
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
