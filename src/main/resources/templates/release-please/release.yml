@@ -37,12 +37,84 @@ jobs:
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       paths_released:   ${{ steps.release.outputs.paths_released }}
+      prs_created:      ${{ steps.release.outputs.prs_created }}
+      prs:              ${{ steps.release.outputs.prs }}
     steps:
       - id: release
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+  # Gazelle bakes each bundle's version into its BUILD files from bundle.yaml
+  # (rules_jvm_external needs the maven coordinates at analysis time), and
+  # release-please's bump edits only bundle.yaml — so the committed BUILD files
+  # go stale on every release and the pom generator's version guard fails the
+  # next build. This job regenerates them on each release branch, with the
+  # same build the PR check runs, so the release merge lands both and main
+  # never drifts. It keys on the action's own PR output: one run can both tag
+  # a release and open or update the next release PR(s), and every PR it
+  # reports gets its branch regenerated (one per bundle under
+  # separate-pull-requests). The commit carries every file the build
+  # regenerates (the workspace initializer rewrites the wrapper, MODULE.bazel,
+  # the npm workspace and tools/ from the image's templates before gazelle
+  # runs), never half of them, so the branch is exactly the tree the build
+  # just verified. GITHUB_TOKEN pushes trigger no workflow, so it cannot
+  # loop. A red run here is not retried by the next chore push: re-run its
+  # failed jobs, or push a releasable commit.
+  regenerate-release-branch:
+    name: regenerate ${{ matrix.pr.headBranchName }}
+    needs: release-please
+    if: needs.release-please.outputs.prs_created == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        pr: ${{ fromJson(needs.release-please.outputs.prs) }}
+    permissions:
+      contents: write
+      id-token: write
+    env:
+      RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.RELEASE_BRANCH }}
+
+      # The remote cache is speed, not correctness: a lake without workload
+      # identity builds cold and skips the ci config that needs it.
+      - if: vars.WIF_PROVIDER != ''
+        id: auth
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ vars.WIF_PROVIDER }}
+          service_account: ${{ vars.CI_SERVICE_ACCOUNT }}
+
+      - if: vars.WIF_PROVIDER != ''
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Regenerate the lake against the bumped bundle versions
+        run: |
+          PROTOLAKE_IMAGE="${{ env.PROTOLAKE_IMAGE }}" \
+          PROTOLAKE_BAZEL_CONFIG="${{ vars.WIF_PROVIDER != '' && 'ci' || '' }}" \
+            ./protolakew --pull always build
+
+      # Only what the build regenerates: buf.yaml, buf.gen.yaml and .bazelrc
+      # are written once at init and user-owned afterwards; package.json and
+      # pnpm-lock.yaml are rewritten as a pair.
+      - name: Commit the regenerated files to the release branch
+        run: |
+          git add -- ':(glob)**/BUILD.bazel' .bazelrc.remote-cache MODULE.bazel \
+            package.json pnpm-lock.yaml protolakew tools
+          if git diff --cached --quiet; then
+            echo "generated files already match bundle.yaml"
+            exit 0
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git commit -m "chore: regenerate the lake's generated files for the release versions"
+          git push origin "HEAD:${RELEASE_BRANCH}"
 
   publish:
     needs: release-please
