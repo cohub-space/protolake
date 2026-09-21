@@ -54,8 +54,11 @@ jobs:
   # build the PR check runs, so the release merge lands both and main never
   # drifts. It keys on the action's own PR output: one run can both tag a
   # release and open or update the next release PR, and that PR's branch is
-  # the one to regenerate. GITHUB_TOKEN pushes trigger no workflow, so it
-  # cannot loop.
+  # the one to regenerate. The commit carries every file the build regenerates
+  # (the workspace initializer rewrites the wrapper, MODULE.bazel and tools/
+  # from the image's templates before gazelle runs), never half of them, so
+  # the branch is exactly the tree the build just verified. GITHUB_TOKEN
+  # pushes trigger no workflow, so it cannot loop.
   regenerate-release-branch:
     needs: release-please
     if: needs.release-please.outputs.prs_created == 'true'
@@ -71,30 +74,35 @@ jobs:
         with:
           ref: ${{ env.RELEASE_BRANCH }}
 
-      - id: auth
+      # The remote cache is speed, not correctness: a lake without workload
+      # identity builds cold and skips the ci config that needs it.
+      - if: vars.WIF_PROVIDER != ''
+        id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.CI_SERVICE_ACCOUNT }}
 
-      - uses: google-github-actions/setup-gcloud@v2
+      - if: vars.WIF_PROVIDER != ''
+        uses: google-github-actions/setup-gcloud@v2
 
-      - name: Regenerate the BUILD files against the bumped bundle versions
+      - name: Regenerate the lake against the bumped bundle versions
         run: |
           PROTOLAKE_IMAGE="${{ env.PROTOLAKE_IMAGE }}" \
-          PROTOLAKE_BAZEL_CONFIG=ci \
+          PROTOLAKE_BAZEL_CONFIG="${{ vars.WIF_PROVIDER != '' && 'ci' || '' }}" \
             ./protolakew --pull always build
 
-      - name: Commit the regenerated BUILD files to the release branch
+      - name: Commit the regenerated files to the release branch
         run: |
-          git add -- ':(glob)**/BUILD.bazel'
+          git add -- ':(glob)**/BUILD.bazel' .bazelrc .bazelrc.remote-cache MODULE.bazel \
+            buf.yaml buf.gen.yaml package.json protolakew tools
           if git diff --cached --quiet; then
-            echo "BUILD files already match bundle.yaml"
+            echo "generated files already match bundle.yaml"
             exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: regenerate BUILD files for the release versions"
+          git commit -m "chore: regenerate the lake's generated files for the release versions"
           git push origin "HEAD:${RELEASE_BRANCH}"
 
   publish:
