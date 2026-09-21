@@ -61,7 +61,9 @@ jobs:
   # runs), never half of them, so the branch is exactly the tree the build
   # just verified. GITHUB_TOKEN pushes trigger no workflow, so it cannot
   # loop. A red run here is not retried by the next chore push: re-run its
-  # failed jobs, or push a releasable commit.
+  # failed jobs, or push a releasable commit. Merge the release PR after
+  # this commit is on its branch: a merge during the build leaves main
+  # with the previous coordinates until a PR carries the regeneration.
   regenerate-release-branch:
     name: regenerate ${{ matrix.pr.headBranchName }}
     needs: release-please
@@ -105,6 +107,7 @@ jobs:
       # pnpm-lock.yaml are rewritten as a pair.
       - name: Commit the regenerated files to the release branch
         run: |
+          BASE="$(git rev-parse HEAD)"
           git add -- ':(glob)**/BUILD.bazel' .bazelrc.remote-cache MODULE.bazel \
             package.json pnpm-lock.yaml protolakew tools
           if git diff --cached --quiet; then
@@ -114,7 +117,12 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git commit -m "chore: regenerate the lake's generated files for the release versions"
-          git push origin "HEAD:${RELEASE_BRANCH}"
+          # The lease pins the branch to the sha this job checked out: a
+          # release PR merged (branch deleted) or force-updated by
+          # release-please during the build makes the push fail loudly
+          # instead of resurrecting or overwriting the branch.
+          git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${BASE}" \
+            origin "HEAD:${RELEASE_BRANCH}"
 
   publish:
     needs: release-please
