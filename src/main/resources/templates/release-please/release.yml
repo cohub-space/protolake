@@ -37,6 +37,8 @@ jobs:
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       paths_released:   ${{ steps.release.outputs.paths_released }}
+      prs_created:      ${{ steps.release.outputs.prs_created }}
+      pr:               ${{ steps.release.outputs.pr }}
     steps:
       - id: release
         uses: googleapis/release-please-action@v4
@@ -50,54 +52,40 @@ jobs:
   # go stale on every release and the pom generator's version guard fails the
   # next build. This job regenerates them on the release branch, with the same
   # build the PR check runs, so the release merge lands both and main never
-  # drifts. GITHUB_TOKEN pushes trigger no workflow, so it cannot loop.
+  # drifts. It keys on the action's own PR output: one run can both tag a
+  # release and open or update the next release PR, and that PR's branch is
+  # the one to regenerate. GITHUB_TOKEN pushes trigger no workflow, so it
+  # cannot loop.
   regenerate-release-branch:
     needs: release-please
-    if: needs.release-please.outputs.releases_created != 'true'
+    if: needs.release-please.outputs.prs_created == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
       contents: write
       id-token: write
     env:
-      RELEASE_BRANCH: release-please--branches--main
+      RELEASE_BRANCH: ${{ fromJson(needs.release-please.outputs.pr).headBranchName }}
     steps:
-      - id: branch
-        name: Find the release branch
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          if gh api "repos/${{ github.repository }}/branches/${RELEASE_BRANCH}" --silent; then
-            echo "exists=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "exists=false" >> "$GITHUB_OUTPUT"
-            echo "no ${RELEASE_BRANCH} branch; nothing to regenerate"
-          fi
-
-      - if: steps.branch.outputs.exists == 'true'
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           ref: ${{ env.RELEASE_BRANCH }}
 
-      - if: steps.branch.outputs.exists == 'true'
-        id: auth
+      - id: auth
         uses: google-github-actions/auth@v2
         with:
           workload_identity_provider: ${{ vars.WIF_PROVIDER }}
           service_account: ${{ vars.CI_SERVICE_ACCOUNT }}
 
-      - if: steps.branch.outputs.exists == 'true'
-        uses: google-github-actions/setup-gcloud@v2
+      - uses: google-github-actions/setup-gcloud@v2
 
-      - if: steps.branch.outputs.exists == 'true'
-        name: Regenerate the BUILD files against the bumped bundle versions
+      - name: Regenerate the BUILD files against the bumped bundle versions
         run: |
           PROTOLAKE_IMAGE="${{ env.PROTOLAKE_IMAGE }}" \
           PROTOLAKE_BAZEL_CONFIG=ci \
             ./protolakew --pull always build
 
-      - if: steps.branch.outputs.exists == 'true'
-        name: Commit the regenerated BUILD files to the release branch
+      - name: Commit the regenerated BUILD files to the release branch
         run: |
           git add -- ':(glob)**/BUILD.bazel'
           if git diff --cached --quiet; then
