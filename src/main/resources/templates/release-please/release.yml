@@ -107,6 +107,7 @@ jobs:
       # pnpm-lock.yaml are rewritten as a pair.
       - name: Commit the regenerated files to the release branch
         run: |
+          BASE="$(git rev-parse HEAD)"
           git add -- ':(glob)**/BUILD.bazel' .bazelrc.remote-cache MODULE.bazel \
             package.json pnpm-lock.yaml protolakew tools
           if git diff --cached --quiet; then
@@ -120,7 +121,7 @@ jobs:
           # release PR merged (branch deleted) or force-updated by
           # release-please during the build makes the push fail loudly
           # instead of resurrecting or overwriting the branch.
-          git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:$(git rev-parse HEAD~1)" \
+          git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${BASE}" \
             origin "HEAD:${RELEASE_BRANCH}"
 
   publish:
