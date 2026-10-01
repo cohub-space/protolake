@@ -138,6 +138,10 @@ public class ReleasePleaseScaffolding {
      *       out via release.yml's matrix on {@code paths_released}. Flip to
      *       {@code true} for lakes where bundles have genuinely independent
      *       release cadence.</li>
+     *   <li>{@code draft-pull-request: true} → release PRs open as drafts;
+     *       release.yml's regenerate job marks one ready once its branch carries
+     *       the regenerated BUILD files, so it cannot merge with stale
+     *       coordinates (GitHub refuses to merge a draft)</li>
      *   <li>{@code extra-files} uses the YAML jsonpath updater so release-please
      *       finds `version:` directly without a marker comment</li>
      * </ul>
@@ -151,6 +155,7 @@ public class ReleasePleaseScaffolding {
         root.put("tag-separator", "-");
         root.put("bump-minor-pre-major", true);
         root.put("separate-pull-requests", false);
+        root.put("draft-pull-request", true);
 
         ObjectNode packages = root.putObject("packages");
         bundles.stream()
