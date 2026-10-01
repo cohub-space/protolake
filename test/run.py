@@ -83,6 +83,12 @@ def main() -> int:
         KARATE_IMAGE,
     ]
     test_paths = ["smoke.feature", "e2e/"]
+    # Karate 2 exits 0 on a path it cannot find, so a missing suite path
+    # would pass vacuously.
+    missing = [p for p in test_paths if not (SCRIPT_DIR / p).exists()]
+    if missing:
+        sys.exit(f"suite path(s) missing under {SCRIPT_DIR}: "
+                 + ", ".join(missing))
     if args.tier in ("smoke", "e2e"):
         docker_args += [f"--tags=@{args.tier}"] + test_paths
     else:  # "all"
