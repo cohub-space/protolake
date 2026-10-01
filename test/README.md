@@ -57,8 +57,12 @@ or protolakew's `--local-root` under the suite's output directory), so the
 publish checks see only that run's artifacts and your own `~/.m2`, pip
 cache and protolake db stay untouched. A failed run keeps its output
 directory (`test-*-output/`, gitignored) for the logs; the next run clears
-it. Native Karate equivalents, for clearer per-area assertions, would go
-under `e2e/`.
+it. They leave the `protolake-proto-lake:latest` image and each lake's
+`protolake-disk-cache-<lake>` volume behind as the next run's build cache.
+They also drop every publishing setting a developer's shell may carry
+(`MAVEN_REPO`, `PYPI_REPO`, tokens, npm modes), so no run reaches a real
+registry. Native Karate equivalents, for clearer per-area assertions, would
+go under `e2e/`.
 
 ## Add a scenario
 

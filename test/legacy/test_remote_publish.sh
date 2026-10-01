@@ -13,6 +13,11 @@ set -uo pipefail
 # mounts live; the scripts moved to test/legacy/ but the stack did not.
 cd "$(dirname "$0")/.."
 
+# Never publish to a real registry from a developer's shell: drop every publishing
+# setting protolakew would forward. The suite sets each destination it means.
+unset MAVEN_REPO PYPI_REPO REGISTRY_TOKEN MAVEN_USER MAVEN_PASSWORD \
+      NPM_PUBLISH_MODE NPM_REGISTRY_URL NPM_REGISTRY_TOKEN JS_TARGETS
+
 # ============================================================================
 # Configuration
 # ============================================================================
@@ -24,6 +29,8 @@ GAZELLE_SOURCE_PATH="${PROTOLAKE_GAZELLE_SOURCE_PATH:-$(cd ../../protolake-gazel
 BUILD_TIMEOUT=1200  # 20 minutes for cold build
 MOCK_SERVER_PORT=18080
 BASE_VOLUME=""  # the scratch local root's bazel output base, named by protolakew
+BUILD_PID=""
+SUITE_DONE=false  # set once the summary prints; cleanup keeps the output otherwise
 
 # Counters
 PASS_COUNT=0
@@ -73,12 +80,25 @@ cleanup() {
         wait "$MOCK_SERVER_PID" 2>/dev/null || true
         echo "  Stopped mock server (PID $MOCK_SERVER_PID)"
     fi
-    if [ -n "$BASE_VOLUME" ]; then docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 || true; fi
-    # A failed run keeps its output, the logs the summary points at; the next run clears it.
-    if [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$OUTPUT_DIR"; fi
+    # An interrupted or timed-out build: stop it, and the container protolakew runs, before
+    # touching the volume that container holds.
+    if [ -n "$BUILD_PID" ] && kill -0 "$BUILD_PID" 2>/dev/null; then
+        kill "$BUILD_PID" 2>/dev/null || true
+        wait "$BUILD_PID" 2>/dev/null || true
+    fi
+    if [ -n "$BASE_VOLUME" ]; then
+        local holders
+        holders=$(docker ps -q --filter "volume=$BASE_VOLUME")
+        if [ -n "$holders" ]; then docker stop $holders >/dev/null 2>&1 || true; fi
+        docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 || true
+    fi
+    # Only a run that finished clean removes its output; any other keeps it for the logs.
+    if [ "$SUITE_DONE" = true ] && [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$OUTPUT_DIR"; fi
 }
 
+# Every exit cleans up, a failed or interrupted run included.
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # ============================================================================
 # Mock HTTP Server
@@ -462,6 +482,7 @@ if [ $FAIL_COUNT -gt 0 ] && [ -f "$BUILD_LOG" ]; then
     echo "Mock server log saved at: $MOCK_LOG"
 fi
 
+SUITE_DONE=true
 if [ $FAIL_COUNT -gt 0 ]; then
     exit 1
 else

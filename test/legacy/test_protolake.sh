@@ -22,6 +22,7 @@ HTTP_PORT=8085
 HEALTH_URL="http://localhost:${HTTP_PORT}/q/health"
 MAX_BUILD_WAIT=1200  # 20 minutes for cold build (C++ gRPC compilation can take 10+ min)
 POLL_INTERVAL=5
+SUITE_DONE=false  # set once the summary prints; cleanup keeps the stores otherwise
 # The stack's maven, npm and pip stores, scratch for this run: the publish
 # checks then see only this run's artifacts, and the developer's own stores
 # (docker-compose.yml's defaults) stay untouched.
@@ -104,11 +105,13 @@ cleanup() {
     echo ""
     echo "Cleaning up..."
     docker compose down --remove-orphans 2>/dev/null || true
-    rm -rf "$STORES_DIR"
+    # Only a run that finished clean removes its stores; any other keeps them for inspection.
+    if [ "$SUITE_DONE" = true ] && [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$STORES_DIR"; fi
 }
 
 # Every exit tears the stack down, a failed or interrupted run included.
 trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # ============================================================================
 # Phase 0: Prerequisites
@@ -230,6 +233,7 @@ SA_RESP=$(grpc_call "protolake.v1.BundleService/CreateBundle" "{
     \"bundle_prefix\": \"company_a.platform\",
     \"version\": \"1.0.0\",
     \"config\": {
+      \"generate_descriptor_set\": true,
       \"languages\": {
         \"java\": {
           \"enabled\": true,
@@ -929,6 +933,7 @@ if [ $FAIL_COUNT -gt 0 ]; then
     save_logs
 fi
 
+SUITE_DONE=true
 if [ $FAIL_COUNT -gt 0 ]; then
     exit 1
 else
