@@ -30,8 +30,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * would make {@code pip install <pkg>==<version> --index-url file://<repo>}
  * fail to resolve.
  *
- * <p>Also pins where the wheel goes: {@code --repo}, else {@code $PYPI_REPO},
- * else {@code ~/.cache/pip/simple}. The publish target gazelle emits passes no
+ * <p>Also pins where the wheel goes: {@code --repo}, else {@code --index-url},
+ * else {@code $PYPI_REPO}, else {@code ~/.cache/pip/simple}. The publish target gazelle emits passes no
  * {@code --repo}, so {@code $PYPI_REPO} (protolakew's {@code --pypi-repo}, CI's
  * registry URL) is the only way a remote registry reaches the script.
  *

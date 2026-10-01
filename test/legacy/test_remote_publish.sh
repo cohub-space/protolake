@@ -89,7 +89,8 @@ cleanup() {
     if [ -n "$BASE_VOLUME" ]; then
         local holders
         holders=$(docker ps -q --filter "volume=$BASE_VOLUME")
-        if [ -n "$holders" ]; then docker stop $holders >/dev/null 2>&1 || true; fi
+        # rm -f stops and removes in one call, so the volume is free when it returns.
+        if [ -n "$holders" ]; then docker rm -f $holders >/dev/null 2>&1 || true; fi
         docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 || true
     fi
     # Only a run that finished clean removes its output; any other keeps it for the logs.
