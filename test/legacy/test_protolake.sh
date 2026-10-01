@@ -5,8 +5,9 @@
 
 set -uo pipefail
 
-# Ensure we're running from the e2e/ directory
-cd "$(dirname "$0")"
+# Run from test/, where the stack's docker-compose.yml and its ./test-*-output
+# mounts live; the scripts moved to test/legacy/ but the stack did not.
+cd "$(dirname "$0")/.."
 
 # ============================================================================
 # Configuration
@@ -90,14 +91,14 @@ grpc_call() {
 save_logs() {
     echo ""
     echo "--- Docker logs (last 100 lines) ---"
-    docker-compose logs --tail=100 proto-lake 2>/dev/null || true
+    docker compose logs --tail=100 proto-lake 2>/dev/null || true
     echo "--- End Docker logs ---"
 }
 
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    docker-compose down --remove-orphans 2>/dev/null || true
+    docker compose down --remove-orphans 2>/dev/null || true
 }
 
 # ============================================================================
@@ -111,7 +112,7 @@ echo ""
 echo "Phase 0: Checking prerequisites..."
 
 PREREQ_FAIL=false
-for cmd in jq grpcurl docker docker-compose; do
+for cmd in jq grpcurl docker curl; do
     if command -v "$cmd" &> /dev/null; then
         echo "  Found: $cmd"
     else
@@ -120,6 +121,10 @@ for cmd in jq grpcurl docker docker-compose; do
     fi
 done
 
+if ! docker compose version &> /dev/null; then
+    echo "  MISSING: docker compose (v2)"
+    PREREQ_FAIL=true
+fi
 if [ "$PREREQ_FAIL" = true ]; then
     echo ""
     echo "Missing prerequisites. Install them and retry."
@@ -137,10 +142,10 @@ echo "Phase 1: Docker build & start..."
 # Clean previous state
 rm -rf "$LAKE_OUTPUT_DIR"
 mkdir -p "$LAKE_OUTPUT_DIR"
-docker-compose down --remove-orphans 2>/dev/null || true
+docker compose down --remove-orphans 2>/dev/null || true
 
 echo "  Building Docker image..."
-if ! docker-compose build 2>&1 | tail -5; then
+if ! docker compose build 2>&1 | tail -5; then
     fail "Docker build"
     echo "Docker build failed. Aborting."
     exit 1
@@ -148,7 +153,7 @@ fi
 pass "Docker build"
 
 echo "  Starting services..."
-docker-compose up -d
+docker compose up -d
 pass "Docker compose up"
 
 # Wait for health check
