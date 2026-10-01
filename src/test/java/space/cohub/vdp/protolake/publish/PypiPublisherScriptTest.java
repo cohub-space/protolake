@@ -31,9 +31,10 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * fail to resolve.
  *
  * <p>Also pins where the wheel goes: {@code --repo}, else {@code --index-url},
- * else {@code $PYPI_REPO}, else {@code ~/.cache/pip/simple}. The publish target gazelle emits passes no
- * {@code --repo}, so {@code $PYPI_REPO} (protolakew's {@code --pypi-repo}, CI's
- * registry URL) is the only way a remote registry reaches the script.
+ * else {@code $PYPI_REPO}, else {@code ~/.cache/pip/simple}. The publish target
+ * gazelle emits passes neither flag, so {@code $PYPI_REPO} (protolakew's
+ * {@code --pypi-repo}, CI's registry URL) is the only way a remote registry
+ * reaches the script.
  *
  * <p>Skipped when {@code python3} is not on the PATH (the script is stdlib-only,
  * any python3 works).
