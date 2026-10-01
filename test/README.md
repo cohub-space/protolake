@@ -8,10 +8,17 @@ the engine would emit if it were authored as a Board proto.
 ## Run
 
 ```bash
-./test/run.py smoke    # @smoke — service starts + gRPC reflection works (<1 min)
-./test/run.py e2e      # @e2e   — full bash pipeline (~20 min cold build)
-./test/run.py all      # both tags
+./test/run.py smoke    # Karate @smoke — service starts + gRPC reflection works (<1 min)
+./test/run.py e2e      # the legacy pipeline suites, on this host (~20 min cold build each)
+./test/run.py all      # both
 ```
+
+The legacy suites drive the stack themselves with `docker compose`, `jq`,
+`grpcurl`, `curl` and `python3`, so they run on the host, not in the Karate
+runner image; `run.py` checks those tools first (macOS:
+`brew install jq grpcurl`). They also need a protolake-gazelle checkout:
+the sibling `../protolake-gazelle`, or `PROTOLAKE_GAZELLE_SOURCE_PATH`. A
+suite passes only when its script exits 0.
 
 First run builds `cohub-karate-runner:2.1.3` locally; subsequent runs
 use the cached image. The protolake stack is brought up + torn down by `run.py`.
@@ -28,9 +35,8 @@ test/
 ├── docker-compose.yml     protolake stack (proto-lake-service)
 ├── karate-config.js       per-env URLs + ports
 ├── smoke.feature          @smoke probes (HTTP /q/health + gRPC reflection)
-├── e2e/
-│   └── legacy-pipeline.feature   @e2e wrappers around legacy/*.sh
-├── legacy/                bash test scripts (preserved during migration)
+├── e2e/                   native Karate @e2e features (none yet)
+├── legacy/                full-pipeline bash suites, run on the host by `run.py e2e`
 │   ├── test_protolake.sh         gRPC API path through full build pipeline
 │   ├── test_cli.sh               CLI path through protolakew wrapper
 │   └── test_remote_publish.sh    remote publish flow with mock server
@@ -40,19 +46,30 @@ test/
     └── Dockerfile         karate-runner image build context
 ```
 
-## Migration status
+## Legacy suites
 
-The legacy bash scripts are wrapped as @e2e Karate scenarios via
-`karate.exec` so they keep running through `./test/run.py e2e`. PL-e2c1
-(CI gate) and PL-e2bc (per-area split) closed as superseded by
-VDP-e8e9. If a follow-up wants native Karate equivalents of the bash
-phases for clearer per-area assertions, open a new task.
+The bash suites under `legacy/` are the only end-to-end coverage of the
+build pipeline (gazelle → buf → bazel → bundle → publish). Each runs from
+`test/`, where the stack's `docker-compose.yml` lives, and exits non-zero
+on any failed check. They publish into scratch stores (`test-lake-stores/`,
+or protolakew's `--local-root` under the suite's output directory), so the
+publish checks see only that run's artifacts and your own `~/.m2`, pip
+cache and protolake db stay untouched. A failed run keeps its output
+directory (`test-*-output/`, gitignored) for the logs; the next run clears
+it. They leave the `protolake-proto-lake:latest` image and each lake's
+`protolake-disk-cache-<lake>` volume behind as the next run's build cache.
+They also drop every publishing setting a developer's shell may carry
+(`MAVEN_REPO`, `PYPI_REPO`, tokens, npm modes), so no run reaches a real
+registry. Native Karate equivalents, for clearer per-area assertions, would
+go under `e2e/`.
 
 ## Add a scenario
 
 Smoke: append a `Scenario:` to `smoke.feature` (must run in <5 min total).
 
-E2E: drop a new `*.feature` under `test/e2e/`, tag scenarios with `@e2e`.
+E2E: drop a new `*.feature` under `test/e2e/` and tag its scenarios `@smoke`
+to run in the smoke tier; `run.py` passes `e2e/` to Karate once it holds a
+feature.
 Service URLs are accessible via `services.proto_lake.httpUrl` /
 `services.proto_lake.grpcTarget` from `karate-config.js`.
 

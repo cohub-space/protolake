@@ -37,14 +37,58 @@ jobs:
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       paths_released:   ${{ steps.release.outputs.paths_released }}
-      prs_created:      ${{ steps.release.outputs.prs_created }}
-      prs:              ${{ steps.release.outputs.prs }}
+      drafts:           ${{ steps.drafts.outputs.prs }}
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
+      # A release PR stays a draft until its branch carries the regenerated
+      # files (regenerate-release-branch below), and GitHub refuses to merge
+      # a draft. release-please pushes a new version bump onto an open
+      # release PR without drafting it, so every ready one is held first,
+      # with its head recorded.
+      - name: Hold the open release PRs as drafts
+        id: hold
+        run: |
+          held=$(gh pr list -R "$GITHUB_REPOSITORY" --label 'autorelease: pending' --state open \
+            --json number,isDraft,headRefOid \
+            --jq '[.[] | select(.isDraft | not) | "\(.number):\(.headRefOid)"] | join(" ")')
+          for entry in $held; do
+            gh pr ready --undo "$(echo "$entry" | cut -d: -f1)" -R "$GITHUB_REPOSITORY"
+          done
+          echo "held=$held" >> "$GITHUB_OUTPUT"
+
       - id: release
         uses: googleapis/release-please-action@v4
         with:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
+
+      # A held PR whose head release-please did not move still carries its
+      # regenerated tree. This runs when release-please failed too: a PR it
+      # moved stays a draft either way.
+      - name: Ready the held release PRs release-please left alone
+        if: always() && steps.hold.outputs.held != ''
+        env:
+          HELD: ${{ steps.hold.outputs.held }}
+        run: |
+          for entry in $HELD; do
+            pr=$(echo "$entry" | cut -d: -f1)
+            head=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json state,headRefOid \
+              --jq 'select(.state == "OPEN") | .headRefOid')
+            if [ "$head" = "$(echo "$entry" | cut -d: -f2)" ]; then
+              gh pr ready "$pr" -R "$GITHUB_REPOSITORY"
+            fi
+          done
+
+      # Every open release PR that is a draft now needs its branch
+      # regenerated: one release-please opened or moved, or one an earlier
+      # failed run left held.
+      - name: List the release PRs to regenerate
+        id: drafts
+        run: |
+          prs=$(gh pr list -R "$GITHUB_REPOSITORY" --label 'autorelease: pending' --state open \
+            --json number,isDraft,headRefName --jq '[.[] | select(.isDraft)] | tojson')
+          echo "prs=$prs" >> "$GITHUB_OUTPUT"
 
   # Gazelle bakes each bundle's version into its BUILD files from bundle.yaml
   # (rules_jvm_external needs the maven coordinates at analysis time), and
@@ -52,33 +96,39 @@ jobs:
   # go stale on every release and the pom generator's version guard fails the
   # next build. This job regenerates them on each release branch, with the
   # same build the PR check runs, so the release merge lands both and main
-  # never drifts. It keys on the action's own PR output: one run can both tag
-  # a release and open or update the next release PR(s), and every PR it
-  # reports gets its branch regenerated (one per bundle under
-  # separate-pull-requests). The commit carries every file the build
-  # regenerates (the workspace initializer rewrites the wrapper, MODULE.bazel,
-  # the npm workspace and tools/ from the image's templates before gazelle
-  # runs), never half of them, so the branch is exactly the tree the build
-  # just verified. GITHUB_TOKEN pushes trigger no workflow, so it cannot
-  # loop. A red run here is not retried by the next chore push: re-run its
-  # failed jobs, or push a releasable commit. Merge the release PR after
-  # this commit is on its branch: a merge during the build leaves main
-  # with the previous coordinates until a PR carries the regeneration.
+  # never drifts. It runs for every open release PR the release-please job
+  # leaves a draft (one per bundle under separate-pull-requests). The commit
+  # carries every file the build regenerates (the workspace initializer
+  # rewrites the wrapper, MODULE.bazel, the npm workspace and tools/ from the
+  # image's templates before gazelle runs), never half of them, so the branch
+  # is exactly the tree the build just verified. GITHUB_TOKEN pushes trigger
+  # no workflow, so it cannot loop. A red run here leaves the release PR a
+  # draft, and the next run of this workflow regenerates it again: re-run the
+  # workflow, or push a commit. The release PR stays a draft until its branch
+  # is regenerated, and GitHub refuses to merge a draft: a
+  # merge during the build would leave main with the previous coordinates.
+  # release-please opens it as a draft (draft-pull-request in
+  # release-please-config.json), the release-please job holds a ready one
+  # before release-please can move it, and this job marks it ready only once
+  # the regenerated tree is on the branch.
   regenerate-release-branch:
-    name: regenerate ${{ matrix.pr.headBranchName }}
+    name: regenerate ${{ matrix.pr.headRefName }}
     needs: release-please
-    if: needs.release-please.outputs.prs_created == 'true'
+    if: needs.release-please.outputs.drafts != '' && needs.release-please.outputs.drafts != '[]'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        pr: ${{ fromJson(needs.release-please.outputs.prs) }}
+        pr: ${{ fromJson(needs.release-please.outputs.drafts) }}
     permissions:
       contents: write
       id-token: write
+      pull-requests: write
     env:
-      RELEASE_BRANCH: ${{ matrix.pr.headBranchName }}
+      RELEASE_BRANCH: ${{ matrix.pr.headRefName }}
+      RELEASE_PR: ${{ matrix.pr.number }}
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -123,6 +173,9 @@ jobs:
           # instead of resurrecting or overwriting the branch.
           git push --force-with-lease="refs/heads/${RELEASE_BRANCH}:${BASE}" \
             origin "HEAD:${RELEASE_BRANCH}"
+
+      - name: Mark the release PR ready
+        run: gh pr ready "$RELEASE_PR" -R "$GITHUB_REPOSITORY"
 
   publish:
     needs: release-please

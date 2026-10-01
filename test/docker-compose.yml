@@ -10,9 +10,11 @@ services:
       - "9050:9090"  # gRPC port (external:internal)
     volumes:
       - ./test-lake-output:/var/proto-lake  # Proto storage
-      - ~/.m2:/home/protolake/.m2           # Maven local repo
-      - ~/.npm:/home/protolake/.npm         # NPM cache
-      - ~/.cache/pip:/home/protolake/.cache/pip  # Pip cache
+      # The developer's own stores by default; test_protolake.sh points them at a
+      # scratch tree so its publish checks see only that run's artifacts.
+      - ${PROTOLAKE_M2_DIR:-~/.m2}:/home/protolake/.m2           # Maven local repo
+      - ${PROTOLAKE_NPM_DIR:-~/.npm}:/home/protolake/.npm         # NPM cache
+      - ${PROTOLAKE_PIP_DIR:-~/.cache/pip}:/home/protolake/.cache/pip  # Pip cache
       - ${PROTOLAKE_GAZELLE_SOURCE_PATH:-../../protolake-gazelle}:/protolake-gazelle  # Local protolake-gazelle (override via env)
       # Note: While each lake has its own workspace cache, these volumes help persist
       # shared dependencies and Bazel's repository cache across container restarts
@@ -25,7 +27,8 @@ services:
       - PROTOLAKE_GAZELLE_SOURCE_PATH=/protolake-gazelle
       - MAVEN_LOCAL_REPO=/home/protolake/.m2/repository
       - PROTO_LAKE_LOG_LEVEL=DEBUG
-      - MAVEN_REPO=/home/protolake/.m2/repository
+      # maven_publish (rules_jvm_external) accepts only URI-scheme repositories.
+      - MAVEN_REPO=file:///home/protolake/.m2/repository
       - PYPI_REPO=/home/protolake/.cache/pip/simple
       - NPM_PUBLISH_MODE=file
       - HOME=/home/protolake
