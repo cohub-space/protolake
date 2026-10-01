@@ -87,7 +87,12 @@ cleanup() {
         holders=$(docker ps -q --filter "volume=$BASE_VOLUME")
         # rm -f stops and removes in one call, so the volume is free when it returns.
         if [ -n "$holders" ]; then docker rm -f $holders >/dev/null 2>&1 || true; fi
-        docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 || true
+        # A --rm container's own auto-removal can still hold the volume for a moment.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            docker volume inspect "$BASE_VOLUME" >/dev/null 2>&1 || break
+            docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 && break
+            sleep 1
+        done
     fi
     # Only a run that finished clean removes its output; any other keeps it for the logs.
     if [ "$SUITE_DONE" = true ] && [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$OUTPUT_DIR"; fi

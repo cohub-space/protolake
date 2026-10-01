@@ -176,6 +176,20 @@ class PypiPublisherScriptTest {
         }
     }
 
+    @Test
+    void localRepoFlag_winsOverIndexUrl() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+
+        // An unreachable URL: reaching it at all would fail the run.
+        ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
+                List.of("--repo", repo.toString(), "--index-url", "http://127.0.0.1:9/never"),
+                Map.of());
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
+    }
+
     private Path copyTemplate(String name, Path targetDir) throws IOException {
         try (InputStream in = getClass().getClassLoader()
                 .getResourceAsStream(TEMPLATE_DIR + name)) {
