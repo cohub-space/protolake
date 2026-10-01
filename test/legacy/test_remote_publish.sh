@@ -5,7 +5,7 @@
 # Uses a mock HTTP server to capture upload requests
 #
 # Prerequisites: Docker, protolake-gazelle at ../../protolake-gazelle (or PROTOLAKE_GAZELLE_SOURCE_PATH)
-# Usage: cd e2e && bash test_remote_publish.sh
+# Usage: bash test/legacy/test_remote_publish.sh, or ./test/run.py e2e for all three suites
 
 set -uo pipefail
 
@@ -23,6 +23,7 @@ DOCKER_IMAGE="protolake-proto-lake:latest"
 GAZELLE_SOURCE_PATH="${PROTOLAKE_GAZELLE_SOURCE_PATH:-$(cd ../../protolake-gazelle 2>/dev/null && pwd)}"
 BUILD_TIMEOUT=1200  # 20 minutes for cold build
 MOCK_SERVER_PORT=18080
+BASE_VOLUME=""  # the scratch local root's bazel output base, named by protolakew
 
 # Counters
 PASS_COUNT=0
@@ -72,8 +73,9 @@ cleanup() {
         wait "$MOCK_SERVER_PID" 2>/dev/null || true
         echo "  Stopped mock server (PID $MOCK_SERVER_PID)"
     fi
-    rm -rf "$OUTPUT_DIR"
-    docker volume rm "protolake-cache-${LAKE_NAME}" 2>/dev/null || true
+    if [ -n "$BASE_VOLUME" ]; then docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 || true; fi
+    # A failed run keeps its output, the logs the summary points at; the next run clears it.
+    if [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$OUTPUT_DIR"; fi
 }
 
 trap cleanup EXIT
@@ -181,7 +183,6 @@ echo "Phase 1: Docker build..."
 
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
-docker volume rm "protolake-cache-${LAKE_NAME}" 2>/dev/null || true
 
 echo "  Building Docker image..."
 if ! docker compose build 2>&1 | tail -5; then
@@ -199,6 +200,9 @@ echo ""
 echo "Phase 2: Starting mock registry server on port $MOCK_SERVER_PORT..."
 
 ABS_OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+# protolakew's local stores (the --install-local half) go to this scratch root,
+# not the developer's ~/.m2, pip cache and protolake db.
+LOCAL_ROOT="$ABS_OUTPUT_DIR/local-root"
 MOCK_LOG="${ABS_OUTPUT_DIR}/mock_server.log"
 : > "$MOCK_LOG"
 
@@ -257,12 +261,13 @@ echo "Phase 4: Create bundle and copy protos..."
 
 export PROTOLAKE_GAZELLE_SOURCE_PATH="$GAZELLE_SOURCE_PATH"
 
-SA_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew create-bundle --name service_a \
+SA_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name service_a \
     --bundle-prefix company_a.platform \
     --java-artifact-id service-a-proto \
     --python-package-name company_service_a_proto \
     --js-package-name @company/service-a-proto 2>&1)
 SA_EXIT=$?
+BASE_VOLUME=$(echo "$SA_OUTPUT" | sed -n 's/^protolakew: bazel output base volume: //p' | head -1)
 
 if [ $SA_EXIT -eq 0 ]; then
     pass "create-bundle service_a exit code 0"
@@ -272,8 +277,8 @@ else
     echo "$SA_OUTPUT" | tail -10 | sed 's/^/    /'
 fi
 
-cp -r test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
 rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
 
 check_file "$LAKE_DIR/company_a/platform/service_a/api/v1/user.proto" "service_a user.proto"
@@ -302,7 +307,7 @@ export PROTOLAKE_BAZEL_TIMEOUT_SECONDS=1200
 : > "$MOCK_LOG"
 
 BUILD_LOG="${ABS_OUTPUT_DIR}/build.log"
-(cd "$LAKE_DIR" && ./protolakew build --install-local --skip-validation \
+(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --install-local --skip-validation \
     --maven-repo "$MOCK_MAVEN_URL" \
     --pypi-repo "$MOCK_PYPI_URL" \
     --registry-token "test-bearer-token-12345") > "$BUILD_LOG" 2>&1 &

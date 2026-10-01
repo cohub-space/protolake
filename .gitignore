@@ -53,3 +53,7 @@ service-account*.json
 /.quarkus/cli/plugins/
 # TLS Certificates
 .certs/
+
+# Legacy e2e suites' scratch output (a failed run keeps its own)
+test/test-*-output/
+test/test-lake-stores/

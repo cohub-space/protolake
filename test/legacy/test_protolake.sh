@@ -22,6 +22,11 @@ HTTP_PORT=8085
 HEALTH_URL="http://localhost:${HTTP_PORT}/q/health"
 MAX_BUILD_WAIT=1200  # 20 minutes for cold build (C++ gRPC compilation can take 10+ min)
 POLL_INTERVAL=5
+# The stack's maven, npm and pip stores, scratch for this run: the publish
+# checks then see only this run's artifacts, and the developer's own stores
+# (docker-compose.yml's defaults) stay untouched.
+STORES_DIR="$(pwd)/test-lake-stores"
+export PROTOLAKE_M2_DIR="$STORES_DIR/m2" PROTOLAKE_NPM_DIR="$STORES_DIR/npm" PROTOLAKE_PIP_DIR="$STORES_DIR/pip"
 
 # Counters
 PASS_COUNT=0
@@ -99,7 +104,11 @@ cleanup() {
     echo ""
     echo "Cleaning up..."
     docker compose down --remove-orphans 2>/dev/null || true
+    rm -rf "$STORES_DIR"
 }
+
+# Every exit tears the stack down, a failed or interrupted run included.
+trap cleanup EXIT
 
 # ============================================================================
 # Phase 0: Prerequisites
@@ -140,8 +149,8 @@ echo ""
 echo "Phase 1: Docker build & start..."
 
 # Clean previous state
-rm -rf "$LAKE_OUTPUT_DIR"
-mkdir -p "$LAKE_OUTPUT_DIR"
+rm -rf "$LAKE_OUTPUT_DIR" "$STORES_DIR"
+mkdir -p "$LAKE_OUTPUT_DIR" "$PROTOLAKE_M2_DIR" "$PROTOLAKE_NPM_DIR" "$PROTOLAKE_PIP_DIR"
 docker compose down --remove-orphans 2>/dev/null || true
 
 echo "  Building Docker image..."
@@ -171,7 +180,6 @@ done
 if [ $ELAPSED -ge 60 ]; then
     fail "Service health check (timeout after 60s)"
     save_logs
-    cleanup
     exit 1
 fi
 
@@ -294,9 +302,9 @@ check_file "$LAKE_DIR/company_b/apps/service_b/bundle.yaml" "service_b bundle.ya
 echo ""
 echo "Phase 4: Copy proto files..."
 
-cp -r test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
+cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
 
 # Remove auto-generated example.proto files
 rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
@@ -334,7 +342,6 @@ if [ $? -ne 0 ]; then
     fail "BuildLake RPC"
     echo "  Response: $BUILD_RESP"
     save_logs
-    cleanup
     exit 1
 fi
 
@@ -343,7 +350,6 @@ if [ -z "$OPERATION_NAME" ] || [ "$OPERATION_NAME" = "null" ]; then
     fail "Extract operation name"
     echo "  Response: $BUILD_RESP"
     save_logs
-    cleanup
     exit 1
 fi
 
@@ -764,7 +770,7 @@ echo "Phase 9: Verify local publishing..."
 if [ "$BUILD_SUCCEEDED" = true ]; then
     # --- Java (Maven Local) ---
     echo "  Checking Maven local repository..."
-    M2_BASE="$HOME/.m2/repository/com/company/proto"
+    M2_BASE="$PROTOLAKE_M2_DIR/repository/com/company/proto"
 
     if [ -d "$M2_BASE/service-a-proto" ]; then
         pass "Maven: service-a-proto directory exists"
@@ -805,27 +811,18 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
 
     # --- Python (PyPI Local) ---
     echo "  Checking PyPI local index..."
-    PYPI_BASE="$HOME/.cache/pip/simple"
+    PYPI_BASE="$PROTOLAKE_PIP_DIR/simple"
 
     PY_PACKAGES=$(find "$PYPI_BASE" -name "*.whl" 2>/dev/null || echo "")
     if [ -n "$PY_PACKAGES" ]; then
         pass "PyPI: wheel files found in local index"
         echo "$PY_PACKAGES" | sed 's/^/    /'
     else
-        # Also check inside the container
-        PY_IN_CONTAINER=$(run_in_docker "find /home/protolake/.cache/pip/simple -name '*.whl' 2>/dev/null" 2>/dev/null || echo "")
-        if [ -n "$PY_IN_CONTAINER" ]; then
-            pass "PyPI: wheel files found in container"
-            echo "$PY_IN_CONTAINER" | sed 's/^/    /'
-        else
-            fail "PyPI: no wheel files found"
-        fi
+        fail "PyPI: no wheel files found in $PYPI_BASE"
     fi
 
     # --- JavaScript (npm) ---
     echo "  Checking npm local packages..."
-    NPM_BASE="$HOME/.npm"
-
     # npm file-based publishing copies directories (not tgz) to npm-packages/
     # npm pack mode copies tgz files to npm-packs/
     NPM_PACKAGES=$(run_in_docker "find /home/protolake/.proto-lake/npm-packages -name 'package.json' 2>/dev/null; find /home/protolake/.proto-lake/npm-packs -name '*.tgz' 2>/dev/null" 2>/dev/null || echo "")
@@ -929,8 +926,6 @@ if [ $FAIL_COUNT -gt 0 ]; then
     echo "Some tests failed. Saving docker logs..."
     save_logs
 fi
-
-cleanup
 
 if [ $FAIL_COUNT -gt 0 ]; then
     exit 1

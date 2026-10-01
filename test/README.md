@@ -52,8 +52,13 @@ test/
 The bash suites under `legacy/` are the only end-to-end coverage of the
 build pipeline (gazelle → buf → bazel → bundle → publish). Each runs from
 `test/`, where the stack's `docker-compose.yml` lives, and exits non-zero
-on any failed check. Native Karate equivalents, for clearer per-area
-assertions, would go under `e2e/`.
+on any failed check. They publish into scratch stores (`test-lake-stores/`,
+or protolakew's `--local-root` under the suite's output directory), so the
+publish checks see only that run's artifacts and your own `~/.m2`, pip
+cache and protolake db stay untouched. A failed run keeps its output
+directory (`test-*-output/`, gitignored) for the logs; the next run clears
+it. Native Karate equivalents, for clearer per-area assertions, would go
+under `e2e/`.
 
 ## Add a scenario
 
