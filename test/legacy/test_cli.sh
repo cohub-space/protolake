@@ -354,6 +354,16 @@ echo ""
 echo "  Build phases:"
 grep -E "^\[protolake\]|Phase|Build succeeded|Build failed|command succeeded" "$BUILD_LOG" 2>/dev/null | head -20 | sed 's/^/    /'
 
+# The build seeds the release-please scaffolding. A release PR must not merge
+# before its branch carries the regenerated BUILD files, so release-please
+# opens release PRs as drafts, the release-please job holds a ready one before
+# release-please can move it, and every draft release PR is regenerated.
+echo ""
+echo "  Release-please scaffolding:"
+check_file_contains "$LAKE_DIR/release-please-config.json" '"draft-pull-request" *: *true' "release-please opens release PRs as drafts"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh pr ready --undo' "release.yml holds a ready release PR as a draft"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(.isDraft)] | tojson' "release.yml regenerates every draft release PR"
+
 # ============================================================================
 # Phase 6: Verify Generated BUILD Files
 # ============================================================================

@@ -70,6 +70,49 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
                 """.formatted(name, name, version));
     }
 
+    /**
+     * A release PR must not merge before its branch carries the regenerated
+     * BUILD files: release-please opens it as a draft; release.yml holds a
+     * ready one as a draft before release-please can move it, readies again
+     * the ones it left alone, and regenerates every draft, marking it ready
+     * only after pushing.
+     */
+    @Test
+    void releasePrsStayDraftsUntilTheirBranchIsRegenerated() throws Exception {
+        scaffolding.generate(lake);
+
+        JsonNode config = JSON.readTree(
+                Files.readString(lakePath.resolve("release-please-config.json")));
+        assertThat(config.get("draft-pull-request").asBoolean()).isTrue();
+
+        String release = Files.readString(lakePath.resolve(".github/workflows/release.yml"));
+        int releaseJob = release.indexOf("  release-please:");
+        int regenerateJob = release.indexOf("  regenerate-release-branch:");
+        assertThat(releaseJob).isPositive();
+        assertThat(regenerateJob).isGreaterThan(releaseJob);
+        String releasePlease = release.substring(releaseJob, regenerateJob);
+        int hold = releasePlease.indexOf("gh pr ready --undo");
+        int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
+        int readyAgain = releasePlease.indexOf(
+                "if [ \"$head\" = \"$(echo \"$entry\" | cut -d: -f2)\" ]; then");
+        int drafts = releasePlease.indexOf("select(.isDraft)] | tojson");
+        assertThat(hold).as("held before release-please can move it").isPositive();
+        assertThat(action).isGreaterThan(hold);
+        assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);
+        assertThat(releasePlease).contains("if: always() && steps.hold.outputs.held != ''");
+        assertThat(drafts).as("every draft is regenerated").isGreaterThan(readyAgain);
+        assertThat(releasePlease).contains("drafts:           ${{ steps.drafts.outputs.prs }}");
+
+        String regenerate = release.substring(regenerateJob, release.indexOf("\n  publish:", regenerateJob));
+        assertThat(regenerate).contains("pr: ${{ fromJson(needs.release-please.outputs.drafts) }}");
+        assertThat(regenerate).contains("pull-requests: write");
+        assertThat(regenerate).doesNotContain("gh pr ready --undo");
+        int push = regenerate.indexOf("git push --force-with-lease");
+        int ready = regenerate.indexOf("gh pr ready \"$RELEASE_PR\"");
+        assertThat(push).isPositive();
+        assertThat(ready).as("marked ready only after the push").isGreaterThan(push);
+    }
+
     @Test
     void freshSeedsBootstrapPlusPin_releasedSeedsVerbatim_pinRemovedOnceShipped()
             throws Exception {
