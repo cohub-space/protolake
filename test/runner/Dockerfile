@@ -1,5 +1,5 @@
 # Karate OSS + grpcurl. Built locally by run.py on first invocation.
-# ~400 MB on disk, against an ~840 MB download for
+# ~400 MB of unpacked layers, against an ~840 MB download for
 # karatelabs/karate-chrome (which we don't need — we don't run UI
 # tests). Generated scaffold-once by CoHub.
 #
