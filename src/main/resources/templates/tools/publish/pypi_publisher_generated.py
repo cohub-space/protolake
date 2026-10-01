@@ -219,8 +219,13 @@ def main():
     parser.add_argument('--bundle-yaml', default=None,
                         help="Path to the bundle's bundle.yaml; used to resolve "
                              'the version when --version is absent')
-    parser.add_argument('--repo', default=os.path.expanduser('~/.cache/pip/simple'),
-                        help='Local PyPI repository path')
+    # PYPI_REPO is how protolakew's --pypi-repo and CI name the target; the
+    # publish target passes no --repo, so the environment must reach here.
+    parser.add_argument('--repo',
+                        default=os.environ.get('PYPI_REPO')
+                        or os.path.expanduser('~/.cache/pip/simple'),
+                        help='Local PyPI repository path or registry URL '
+                             '(default: $PYPI_REPO, else ~/.cache/pip/simple)')
     parser.add_argument('--index-url', help='PyPI index URL (for production)')
 
     args = parser.parse_args()
