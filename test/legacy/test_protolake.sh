@@ -233,7 +233,6 @@ SA_RESP=$(grpc_call "protolake.v1.BundleService/CreateBundle" "{
     \"bundle_prefix\": \"company_a.platform\",
     \"version\": \"1.0.0\",
     \"config\": {
-      \"generate_descriptor_set\": true,
       \"languages\": {
         \"java\": {
           \"enabled\": true,
@@ -317,6 +316,12 @@ cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/app
 # Enable fat_jar for service_b to test both thin and fat JAR modes
 sed -i '' '/^      group_id: "com.company.proto"/a\
       fat_jar: true' "$LAKE_DIR/company_b/apps/service_b/bundle.yaml"
+
+# Enable descriptor sets for service_a the way a bundle owner does, in bundle.yaml:
+# CreateBundle renders bundle.yaml from a template that carries only the language
+# settings, so the request cannot set it.
+sed -i '' '/^config:/a\
+  generate_descriptor_set: true' "$LAKE_DIR/company_a/platform/service_a/bundle.yaml"
 
 check_file "$LAKE_DIR/company_a/platform/service_a/api/v1/user.proto" "service_a user.proto"
 check_file "$LAKE_DIR/company_a/platform/service_a/types/v1/common.proto" "service_a common.proto"
