@@ -275,6 +275,9 @@ echo ""
 echo "Phase 5: Build lake via protolakew (timeout: ${BUILD_TIMEOUT}s)..."
 
 export PROTOLAKE_BAZEL_TIMEOUT_SECONDS=1200
+# protolakew skips npm publishing unless asked; file mode publishes into the
+# local root's npm-packages, which Phase 7 checks.
+export NPM_PUBLISH_MODE=file
 
 # Run build with timeout tracking
 BUILD_LOG="${ABS_OUTPUT_DIR}/build.log"

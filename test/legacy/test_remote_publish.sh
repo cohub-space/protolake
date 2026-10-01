@@ -391,9 +391,13 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
         fail "Maven: no POM upload found in mock log"
     fi
 
-    # Check auth token was sent
-    if grep -q '"auth": "Bearer test-bearer-token-12345"' "$MOCK_LOG" 2>/dev/null; then
-        pass "Registry token sent as Bearer auth"
+    # Check auth token was sent: as Basic oauth2accesstoken:<token> (the Maven
+    # publisher and twine, the form Artifact Registry accepts), or as Bearer
+    # (the PyPI publisher's fallback when twine is absent).
+    BASIC_AUTH="Basic $(printf 'oauth2accesstoken:%s' 'test-bearer-token-12345' | base64)"
+    if grep -q "\"auth\": \"$BASIC_AUTH\"" "$MOCK_LOG" 2>/dev/null \
+        || grep -q '"auth": "Bearer test-bearer-token-12345"' "$MOCK_LOG" 2>/dev/null; then
+        pass "Registry token sent in the request headers"
     else
         fail "Registry token not found in request headers"
     fi

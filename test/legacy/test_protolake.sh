@@ -306,9 +306,9 @@ cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a
 cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
 cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
 
-# Remove auto-generated example.proto files
-rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
-rm -f "$LAKE_DIR/company_b/apps/service_b/example.proto"
+# The scaffolded example.proto files stay: CreateBundle committed them, and
+# deleting a committed proto is a breaking change this build's validation
+# refuses. (The CLI suites build with --skip-validation and delete them.)
 
 # Enable fat_jar for service_b to test both thin and fat JAR modes
 sed -i '' '/^      group_id: "com.company.proto"/a\
@@ -489,7 +489,9 @@ else
 fi
 
 # Query publish targets
-PUBLISH_TARGETS=$(run_in_docker "cd $LAKE_CONTAINER_PATH && bazel query 'kind(\"genrule\", //...)' --output=label 2>/dev/null | grep publish_" 2>/dev/null || echo "")
+# Gazelle emits publish targets as maven_publish and py_binary rules named
+# publish_<bundle>_to_<registry>, so match them by name, not rule kind.
+PUBLISH_TARGETS=$(run_in_docker "cd $LAKE_CONTAINER_PATH && bazel query 'filter(\":publish_\", //...)' --output=label 2>/dev/null" 2>/dev/null || echo "")
 if [ -n "$PUBLISH_TARGETS" ]; then
     PUBLISH_COUNT=$(echo "$PUBLISH_TARGETS" | wc -l | tr -d ' ')
     pass "Found $PUBLISH_COUNT publish targets"
