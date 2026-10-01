@@ -6,8 +6,14 @@
 
 set -uo pipefail
 
-# Ensure we're running from the e2e/ directory
-cd "$(dirname "$0")"
+# Run from test/, where the stack's docker-compose.yml and its ./test-*-output
+# mounts live; the scripts moved to test/legacy/ but the stack did not.
+cd "$(dirname "$0")/.."
+
+# Never publish to a real registry from a developer's shell: drop every publishing
+# setting protolakew would forward. The suite sets each destination it means.
+unset MAVEN_REPO PYPI_REPO REGISTRY_TOKEN MAVEN_USER MAVEN_PASSWORD \
+      NPM_PUBLISH_MODE NPM_REGISTRY_URL NPM_REGISTRY_TOKEN JS_TARGETS
 
 # ============================================================================
 # Configuration
@@ -18,6 +24,9 @@ OUTPUT_DIR="./test-cli-output"
 DOCKER_IMAGE="protolake-proto-lake:latest"
 GAZELLE_SOURCE_PATH="${PROTOLAKE_GAZELLE_SOURCE_PATH:-$(cd ../../protolake-gazelle 2>/dev/null && pwd)}"
 BUILD_TIMEOUT=1200  # 20 minutes for cold build
+BASE_VOLUME=""  # the scratch local root's bazel output base, named by protolakew
+BUILD_PID=""
+SUITE_DONE=false  # set once the summary prints; cleanup keeps the output otherwise
 
 # Counters
 PASS_COUNT=0
@@ -67,9 +76,31 @@ check_file_contains() {
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    rm -rf "$OUTPUT_DIR"
-    docker volume rm "protolake-cache-${LAKE_NAME}" 2>/dev/null || true
+    # An interrupted or timed-out build: stop it, and the container protolakew runs, before
+    # touching the volume that container holds.
+    if [ -n "$BUILD_PID" ] && kill -0 "$BUILD_PID" 2>/dev/null; then
+        kill "$BUILD_PID" 2>/dev/null || true
+        wait "$BUILD_PID" 2>/dev/null || true
+    fi
+    if [ -n "$BASE_VOLUME" ]; then
+        local holders
+        holders=$(docker ps -q --filter "volume=$BASE_VOLUME")
+        # rm -f stops and removes in one call, so the volume is free when it returns.
+        if [ -n "$holders" ]; then docker rm -f $holders >/dev/null 2>&1 || true; fi
+        # A --rm container's own auto-removal can still hold the volume for a moment.
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            docker volume inspect "$BASE_VOLUME" >/dev/null 2>&1 || break
+            docker volume rm "$BASE_VOLUME" >/dev/null 2>&1 && break
+            sleep 1
+        done
+    fi
+    # Only a run that finished clean removes its output; any other keeps it for the logs.
+    if [ "$SUITE_DONE" = true ] && [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$OUTPUT_DIR"; fi
 }
+
+# Every exit cleans up, a failed or interrupted run included.
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # ============================================================================
 # Phase 0: Prerequisites
@@ -82,7 +113,7 @@ echo ""
 echo "Phase 0: Checking prerequisites..."
 
 PREREQ_FAIL=false
-for cmd in docker; do
+for cmd in docker jq; do
     if command -v "$cmd" &> /dev/null; then
         echo "  Found: $cmd"
     else
@@ -91,6 +122,10 @@ for cmd in docker; do
     fi
 done
 
+if ! docker compose version &> /dev/null; then
+    echo "  MISSING: docker compose (v2)"
+    PREREQ_FAIL=true
+fi
 if [ "$PREREQ_FAIL" = true ]; then
     echo ""
     echo "Missing prerequisites. Install them and retry."
@@ -113,10 +148,9 @@ echo "Phase 1: Docker build..."
 # Clean previous state
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
-docker volume rm "protolake-cache-${LAKE_NAME}" 2>/dev/null || true
 
 echo "  Building Docker image..."
-if ! docker-compose build 2>&1 | tail -5; then
+if ! docker compose build 2>&1 | tail -5; then
     fail "Docker build"
     echo "Docker build failed. Aborting."
     exit 1
@@ -131,6 +165,10 @@ echo ""
 echo "Phase 2: Init lake via CLI..."
 
 ABS_OUTPUT_DIR="$(cd "$OUTPUT_DIR" && pwd)"
+# Every protolakew call below shares this scratch local root, so the publish
+# checks see only this run's artifacts and the developer's ~/.m2, pip cache
+# and protolake db stay untouched.
+LOCAL_ROOT="$ABS_OUTPUT_DIR/local-root"
 
 INIT_OUTPUT=$(docker run --rm \
     -v "${ABS_OUTPUT_DIR}:/proto-lake" \
@@ -184,12 +222,13 @@ export PROTOLAKE_IMAGE="$DOCKER_IMAGE"
 
 # Create service_a
 echo "  Creating service_a..."
-SA_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew create-bundle --name service_a \
+SA_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name service_a \
     --bundle-prefix company_a.platform \
     --java-artifact-id service-a-proto \
     --python-package-name company_service_a_proto \
     --js-package-name @company/service-a-proto 2>&1)
 SA_EXIT=$?
+BASE_VOLUME=$(echo "$SA_OUTPUT" | sed -n 's/^protolakew: bazel output base volume: //p' | head -1)
 
 if [ $SA_EXIT -eq 0 ]; then
     pass "create-bundle service_a exit code 0"
@@ -201,7 +240,7 @@ fi
 
 # Create service_b
 echo "  Creating service_b..."
-SB_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew create-bundle --name service_b \
+SB_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name service_b \
     --bundle-prefix company_b.apps \
     --java-artifact-id service-b-proto \
     --python-package-name company_service_b_proto \
@@ -233,9 +272,9 @@ check_file_contains "$LAKE_DIR/company_b/apps/service_b/bundle.yaml" "service-b-
 echo ""
 echo "Phase 4: Copy proto files..."
 
-cp -r test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
+cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
 
 # Remove auto-generated example.proto files
 rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
@@ -261,10 +300,13 @@ echo ""
 echo "Phase 5: Build lake via protolakew (timeout: ${BUILD_TIMEOUT}s)..."
 
 export PROTOLAKE_BAZEL_TIMEOUT_SECONDS=1200
+# protolakew skips npm publishing unless asked; file mode publishes into the
+# local root's npm-packages, which Phase 7 checks.
+export NPM_PUBLISH_MODE=file
 
 # Run build with timeout tracking
 BUILD_LOG="${ABS_OUTPUT_DIR}/build.log"
-(cd "$LAKE_DIR" && ./protolakew build --install-local --skip-validation) > "$BUILD_LOG" 2>&1 &
+(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --install-local --skip-validation) > "$BUILD_LOG" 2>&1 &
 BUILD_PID=$!
 
 # Wait with timeout and progress reporting
@@ -280,7 +322,6 @@ while kill -0 $BUILD_PID 2>/dev/null; do
         echo "  --- Build log (last 50 lines) ---"
         tail -50 "$BUILD_LOG" | sed 's/^/    /'
         echo "  --- End build log ---"
-        cleanup
         exit 1
     fi
 
@@ -362,7 +403,7 @@ echo "Phase 7: Verify published artifacts..."
 if [ "$BUILD_SUCCEEDED" = true ]; then
     # --- Java (Maven Local) ---
     echo "  Checking Maven local repository..."
-    M2_BASE="$HOME/.m2/repository/com/example/proto"
+    M2_BASE="$LOCAL_ROOT/maven/repository/com/example/proto"
 
     if [ -d "$M2_BASE/service-a-proto" ]; then
         pass "Maven: service-a-proto directory exists"
@@ -392,7 +433,7 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
 
     # --- Python (PyPI Local) ---
     echo "  Checking PyPI local index..."
-    PYPI_BASE="$HOME/.cache/pip/simple"
+    PYPI_BASE="$LOCAL_ROOT/pip/simple"
 
     PY_PACKAGES=$(find "$PYPI_BASE" -name "*.whl" 2>/dev/null || echo "")
     if [ -n "$PY_PACKAGES" ]; then
@@ -404,7 +445,7 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
 
     # --- JavaScript (npm file mode) ---
     echo "  Checking npm local packages..."
-    NPM_PKG_BASE="$HOME/.proto-lake/npm-packages"
+    NPM_PKG_BASE="$LOCAL_ROOT/npm-packages"
 
     NPM_PACKAGES=$(find "$NPM_PKG_BASE" -name "package.json" 2>/dev/null || echo "")
     if [ -n "$NPM_PACKAGES" ]; then
@@ -426,7 +467,7 @@ echo "Phase 7.5: Test dep show CLI command..."
 
 if [ "$BUILD_SUCCEEDED" = true ]; then
     # Test 1: Show all snippets for service_a
-    DEP_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew dep show service_a 2>&1)
+    DEP_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" dep show service_a 2>&1)
     DEP_EXIT=$?
 
     if [ $DEP_EXIT -eq 0 ]; then
@@ -449,26 +490,28 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
         fail "dep show missing artifact_id"
     fi
 
-    # Test 2: --plain mode (snippet text only)
-    PLAIN_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew dep show service_a --plain 2>&1)
-    # Should not contain [protolake] prefix
-    if echo "$PLAIN_OUTPUT" | grep -q "\[protolake\]"; then
-        fail "dep show --plain contains [protolake] prefix"
+    # Test 2: --plain mode: succeeds and prints the snippet without the [protolake] prefix
+    PLAIN_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" dep show service_a --plain 2>&1)
+    PLAIN_EXIT=$?
+    if [ $PLAIN_EXIT -eq 0 ] && echo "$PLAIN_OUTPUT" | grep -q "service-a-proto" \
+        && ! echo "$PLAIN_OUTPUT" | grep -q "\[protolake\]"; then
+        pass "dep show --plain prints the bare snippet"
     else
-        pass "dep show --plain is clean"
+        fail "dep show --plain (exit $PLAIN_EXIT): no bare snippet in the output"
     fi
 
-    # Test 3: --json mode
+    # Test 3: --json mode: succeeds and carries a non-empty snippets list
     # Filter out Quarkus startup logs (stderr mixed in by Docker) — extract only the JSON object
-    JSON_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew dep show service_a --json 2>/dev/null)
-    if echo "$JSON_OUTPUT" | sed -n '/^{/,/^}/p' | jq -r '.snippets' > /dev/null 2>&1; then
-        pass "dep show --json produces valid JSON"
+    JSON_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" dep show service_a --json 2>/dev/null)
+    JSON_EXIT=$?
+    if [ $JSON_EXIT -eq 0 ] && echo "$JSON_OUTPUT" | sed -n '/^{/,/^}/p' | jq -e '.snippets | length > 0' > /dev/null 2>&1; then
+        pass "dep show --json produces a snippets list"
     else
-        fail "dep show --json invalid JSON"
+        fail "dep show --json (exit $JSON_EXIT): no snippets list in the output"
     fi
 
     # Test 4: --lang filter
-    JAVA_ONLY=$(cd "$LAKE_DIR" && ./protolakew dep show service_a --lang java --plain 2>&1)
+    JAVA_ONLY=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" dep show service_a --lang java --plain 2>&1)
     if echo "$JAVA_ONLY" | grep -q "groupId\|implementation("; then
         pass "dep show --lang java shows Java snippet"
     else
@@ -496,8 +539,7 @@ if [ $FAIL_COUNT -gt 0 ] && [ -f "$BUILD_LOG" ]; then
     echo "Build log saved at: $BUILD_LOG"
 fi
 
-cleanup
-
+SUITE_DONE=true
 if [ $FAIL_COUNT -gt 0 ]; then
     exit 1
 else

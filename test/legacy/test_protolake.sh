@@ -5,8 +5,9 @@
 
 set -uo pipefail
 
-# Ensure we're running from the e2e/ directory
-cd "$(dirname "$0")"
+# Run from test/, where the stack's docker-compose.yml and its ./test-*-output
+# mounts live; the scripts moved to test/legacy/ but the stack did not.
+cd "$(dirname "$0")/.."
 
 # ============================================================================
 # Configuration
@@ -21,6 +22,12 @@ HTTP_PORT=8085
 HEALTH_URL="http://localhost:${HTTP_PORT}/q/health"
 MAX_BUILD_WAIT=1200  # 20 minutes for cold build (C++ gRPC compilation can take 10+ min)
 POLL_INTERVAL=5
+SUITE_DONE=false  # set once the summary prints; cleanup keeps the stores otherwise
+# The stack's maven, npm and pip stores, scratch for this run: the publish
+# checks then see only this run's artifacts, and the developer's own stores
+# (docker-compose.yml's defaults) stay untouched.
+STORES_DIR="$(pwd)/test-lake-stores"
+export PROTOLAKE_M2_DIR="$STORES_DIR/m2" PROTOLAKE_NPM_DIR="$STORES_DIR/npm" PROTOLAKE_PIP_DIR="$STORES_DIR/pip"
 
 # Counters
 PASS_COUNT=0
@@ -90,15 +97,21 @@ grpc_call() {
 save_logs() {
     echo ""
     echo "--- Docker logs (last 100 lines) ---"
-    docker-compose logs --tail=100 proto-lake 2>/dev/null || true
+    docker compose logs --tail=100 proto-lake 2>/dev/null || true
     echo "--- End Docker logs ---"
 }
 
 cleanup() {
     echo ""
     echo "Cleaning up..."
-    docker-compose down --remove-orphans 2>/dev/null || true
+    docker compose down --remove-orphans 2>/dev/null || true
+    # Only a run that finished clean removes its stores; any other keeps them for inspection.
+    if [ "$SUITE_DONE" = true ] && [ "$FAIL_COUNT" -eq 0 ]; then rm -rf "$STORES_DIR"; fi
 }
+
+# Every exit tears the stack down, a failed or interrupted run included.
+trap cleanup EXIT
+trap 'exit 130' INT TERM
 
 # ============================================================================
 # Phase 0: Prerequisites
@@ -111,7 +124,7 @@ echo ""
 echo "Phase 0: Checking prerequisites..."
 
 PREREQ_FAIL=false
-for cmd in jq grpcurl docker docker-compose; do
+for cmd in jq grpcurl docker curl; do
     if command -v "$cmd" &> /dev/null; then
         echo "  Found: $cmd"
     else
@@ -120,6 +133,10 @@ for cmd in jq grpcurl docker docker-compose; do
     fi
 done
 
+if ! docker compose version &> /dev/null; then
+    echo "  MISSING: docker compose (v2)"
+    PREREQ_FAIL=true
+fi
 if [ "$PREREQ_FAIL" = true ]; then
     echo ""
     echo "Missing prerequisites. Install them and retry."
@@ -135,12 +152,12 @@ echo ""
 echo "Phase 1: Docker build & start..."
 
 # Clean previous state
-rm -rf "$LAKE_OUTPUT_DIR"
-mkdir -p "$LAKE_OUTPUT_DIR"
-docker-compose down --remove-orphans 2>/dev/null || true
+rm -rf "$LAKE_OUTPUT_DIR" "$STORES_DIR"
+mkdir -p "$LAKE_OUTPUT_DIR" "$PROTOLAKE_M2_DIR" "$PROTOLAKE_NPM_DIR" "$PROTOLAKE_PIP_DIR"
+docker compose down --remove-orphans 2>/dev/null || true
 
 echo "  Building Docker image..."
-if ! docker-compose build 2>&1 | tail -5; then
+if ! docker compose build 2>&1 | tail -5; then
     fail "Docker build"
     echo "Docker build failed. Aborting."
     exit 1
@@ -148,7 +165,7 @@ fi
 pass "Docker build"
 
 echo "  Starting services..."
-docker-compose up -d
+docker compose up -d
 pass "Docker compose up"
 
 # Wait for health check
@@ -166,7 +183,6 @@ done
 if [ $ELAPSED -ge 60 ]; then
     fail "Service health check (timeout after 60s)"
     save_logs
-    cleanup
     exit 1
 fi
 
@@ -289,17 +305,23 @@ check_file "$LAKE_DIR/company_b/apps/service_b/bundle.yaml" "service_b bundle.ya
 echo ""
 echo "Phase 4: Copy proto files..."
 
-cp -r test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
-cp -r test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
+cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
+cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
 
-# Remove auto-generated example.proto files
-rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
-rm -f "$LAKE_DIR/company_b/apps/service_b/example.proto"
+# The scaffolded example.proto files stay: CreateBundle committed them, and
+# deleting a committed proto is a breaking change this build's validation
+# refuses. (The CLI suites build with --skip-validation and delete them.)
 
 # Enable fat_jar for service_b to test both thin and fat JAR modes
 sed -i '' '/^      group_id: "com.company.proto"/a\
       fat_jar: true' "$LAKE_DIR/company_b/apps/service_b/bundle.yaml"
+
+# Enable descriptor sets for service_a the way a bundle owner does, in bundle.yaml:
+# CreateBundle renders bundle.yaml from a template that carries only the language
+# settings, so the request cannot set it.
+sed -i '' '/^config:/a\
+  generate_descriptor_set: true' "$LAKE_DIR/company_a/platform/service_a/bundle.yaml"
 
 check_file "$LAKE_DIR/company_a/platform/service_a/api/v1/user.proto" "service_a user.proto"
 check_file "$LAKE_DIR/company_a/platform/service_a/types/v1/common.proto" "service_a common.proto"
@@ -329,7 +351,6 @@ if [ $? -ne 0 ]; then
     fail "BuildLake RPC"
     echo "  Response: $BUILD_RESP"
     save_logs
-    cleanup
     exit 1
 fi
 
@@ -338,7 +359,6 @@ if [ -z "$OPERATION_NAME" ] || [ "$OPERATION_NAME" = "null" ]; then
     fail "Extract operation name"
     echo "  Response: $BUILD_RESP"
     save_logs
-    cleanup
     exit 1
 fi
 
@@ -478,7 +498,9 @@ else
 fi
 
 # Query publish targets
-PUBLISH_TARGETS=$(run_in_docker "cd $LAKE_CONTAINER_PATH && bazel query 'kind(\"genrule\", //...)' --output=label 2>/dev/null | grep publish_" 2>/dev/null || echo "")
+# Gazelle emits publish targets as maven_publish and py_binary rules named
+# publish_<bundle>_to_<registry>, so match them by name, not rule kind.
+PUBLISH_TARGETS=$(run_in_docker "cd $LAKE_CONTAINER_PATH && bazel query 'filter(\":publish_\", //...)' --output=label 2>/dev/null" 2>/dev/null || echo "")
 if [ -n "$PUBLISH_TARGETS" ]; then
     PUBLISH_COUNT=$(echo "$PUBLISH_TARGETS" | wc -l | tr -d ' ')
     pass "Found $PUBLISH_COUNT publish targets"
@@ -759,7 +781,7 @@ echo "Phase 9: Verify local publishing..."
 if [ "$BUILD_SUCCEEDED" = true ]; then
     # --- Java (Maven Local) ---
     echo "  Checking Maven local repository..."
-    M2_BASE="$HOME/.m2/repository/com/company/proto"
+    M2_BASE="$PROTOLAKE_M2_DIR/repository/com/company/proto"
 
     if [ -d "$M2_BASE/service-a-proto" ]; then
         pass "Maven: service-a-proto directory exists"
@@ -800,27 +822,18 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
 
     # --- Python (PyPI Local) ---
     echo "  Checking PyPI local index..."
-    PYPI_BASE="$HOME/.cache/pip/simple"
+    PYPI_BASE="$PROTOLAKE_PIP_DIR/simple"
 
     PY_PACKAGES=$(find "$PYPI_BASE" -name "*.whl" 2>/dev/null || echo "")
     if [ -n "$PY_PACKAGES" ]; then
         pass "PyPI: wheel files found in local index"
         echo "$PY_PACKAGES" | sed 's/^/    /'
     else
-        # Also check inside the container
-        PY_IN_CONTAINER=$(run_in_docker "find /home/protolake/.cache/pip/simple -name '*.whl' 2>/dev/null" 2>/dev/null || echo "")
-        if [ -n "$PY_IN_CONTAINER" ]; then
-            pass "PyPI: wheel files found in container"
-            echo "$PY_IN_CONTAINER" | sed 's/^/    /'
-        else
-            fail "PyPI: no wheel files found"
-        fi
+        fail "PyPI: no wheel files found in $PYPI_BASE"
     fi
 
     # --- JavaScript (npm) ---
     echo "  Checking npm local packages..."
-    NPM_BASE="$HOME/.npm"
-
     # npm file-based publishing copies directories (not tgz) to npm-packages/
     # npm pack mode copies tgz files to npm-packs/
     NPM_PACKAGES=$(run_in_docker "find /home/protolake/.proto-lake/npm-packages -name 'package.json' 2>/dev/null; find /home/protolake/.proto-lake/npm-packs -name '*.tgz' 2>/dev/null" 2>/dev/null || echo "")
@@ -925,8 +938,7 @@ if [ $FAIL_COUNT -gt 0 ]; then
     save_logs
 fi
 
-cleanup
-
+SUITE_DONE=true
 if [ $FAIL_COUNT -gt 0 ]; then
     exit 1
 else

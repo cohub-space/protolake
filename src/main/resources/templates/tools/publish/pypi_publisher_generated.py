@@ -219,11 +219,20 @@ def main():
     parser.add_argument('--bundle-yaml', default=None,
                         help="Path to the bundle's bundle.yaml; used to resolve "
                              'the version when --version is absent')
-    parser.add_argument('--repo', default=os.path.expanduser('~/.cache/pip/simple'),
-                        help='Local PyPI repository path')
-    parser.add_argument('--index-url', help='PyPI index URL (for production)')
+    parser.add_argument('--repo', default=None,
+                        help='Local PyPI repository path or registry URL '
+                             '(default: $PYPI_REPO, else ~/.cache/pip/simple)')
+    parser.add_argument('--index-url',
+                        help='PyPI registry URL (legacy spelling of a URL --repo)')
 
     args = parser.parse_args()
+
+    # One destination, explicit flags first: --repo, then the legacy --index-url,
+    # then PYPI_REPO, which is how protolakew's --pypi-repo and CI name it (the
+    # publish target gazelle emits passes neither flag), then the local index.
+    # A URL publishes to that registry; anything else is a local index path.
+    dest = (args.repo or args.index_url or os.environ.get('PYPI_REPO')
+            or os.path.expanduser('~/.cache/pip/simple'))
 
     if args.version is None:
         if args.bundle_yaml is None:
@@ -236,7 +245,7 @@ def main():
         sys.exit(1)
 
     try:
-        if args.repo.startswith('https://') or args.repo.startswith('http://'):
+        if dest.startswith('https://') or dest.startswith('http://'):
             # Remote registry mode
             token = os.environ.get('REGISTRY_TOKEN', '')
             if not token:
@@ -244,27 +253,12 @@ def main():
                       file=sys.stderr)
                 sys.exit(1)
 
-            publish_to_remote_registry(args.wheel_path, args.repo, token)
+            publish_to_remote_registry(args.wheel_path, dest, token)
 
             print(f"\nSuccessfully published to remote PyPI registry:")
             print(f"  Package: {args.package_name}")
             print(f"  Version: {args.version}")
-            print(f"  Registry: {args.repo}")
-
-        elif args.index_url:
-            # Legacy --index-url flag (redirect to remote)
-            token = os.environ.get('REGISTRY_TOKEN', '')
-            if not token:
-                print("Error: REGISTRY_TOKEN env var required for remote upload",
-                      file=sys.stderr)
-                sys.exit(1)
-
-            publish_to_remote_registry(args.wheel_path, args.index_url, token)
-
-            print(f"\nSuccessfully published to PyPI:")
-            print(f"  Package: {args.package_name}")
-            print(f"  Version: {args.version}")
-            print(f"  Registry: {args.index_url}")
+            print(f"  Registry: {dest}")
 
         else:
             # Local repository mode
@@ -272,7 +266,7 @@ def main():
                 args.wheel_path,
                 args.package_name,
                 args.version,
-                args.repo
+                dest
             )
 
             print(f"\nSuccessfully published to local PyPI repository:")
@@ -280,7 +274,7 @@ def main():
             print(f"  Version: {args.version}")
             print(f"  Location: {published_wheel}")
             print(f"\nTo install locally:")
-            print(f"  pip install --index-url file://{args.repo} {args.package_name}=={args.version}")
+            print(f"  pip install --index-url file://{dest} {args.package_name}=={args.version}")
 
     except Exception as e:
         print(f"Error publishing to PyPI: {e}", file=sys.stderr)

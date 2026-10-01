@@ -4,12 +4,19 @@ import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
 
+import com.sun.net.httpserver.HttpServer;
+
 import java.io.IOException;
 import java.io.InputStream;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -22,6 +29,12 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * ({@code <target>_bundle.whl}) is not a parseable wheel filename — keeping it
  * would make {@code pip install <pkg>==<version> --index-url file://<repo>}
  * fail to resolve.
+ *
+ * <p>Also pins where the wheel goes: {@code --repo}, else {@code --index-url},
+ * else {@code $PYPI_REPO}, else {@code ~/.cache/pip/simple}. The publish target
+ * gazelle emits passes neither flag, so {@code $PYPI_REPO} (protolakew's
+ * {@code --pypi-repo}, CI's registry URL) is the only way a remote registry
+ * reaches the script.
  *
  * <p>Skipped when {@code python3} is not on the PATH (the script is stdlib-only,
  * any python3 works).
@@ -78,6 +91,106 @@ class PypiPublisherScriptTest {
                 .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
     }
 
+    @Test
+    void pypiRepoEnv_isTheRepoWhenNoRepoFlagIsGiven() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+
+        ProcessResult result = run(wheel, "company_user_proto", "0.4.0", List.of(),
+                Map.of("PYPI_REPO", repo.toString()));
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
+    }
+
+    @Test
+    void repoFlag_winsOverPypiRepoEnv() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+        Path envRepo = tempDir.resolve("env-repo");
+
+        ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
+                List.of("--repo", repo.toString()), Map.of("PYPI_REPO", envRepo.toString()));
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
+        assertThat(envRepo).doesNotExist();
+    }
+
+    @Test
+    void pypiRepoEnvUrl_uploadsToThatRegistry() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake-wheel");
+        List<String> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            String body = new String(exchange.getRequestBody().readAllBytes(),
+                    StandardCharsets.ISO_8859_1);
+            requests.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath()
+                    + " auth=" + exchange.getRequestHeaders().getFirst("Authorization")
+                    + " wheel=" + body.contains("filename=\"user_bundle.whl\""));
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/pypi";
+            // An empty PATH hides any installed twine, so the stdlib upload runs.
+            Path emptyPath = Files.createDirectories(tempDir.resolve("empty-path"));
+            ProcessResult result = run(wheel, "company_user_proto", "0.4.0", List.of(),
+                    Map.of("PYPI_REPO", url, "REGISTRY_TOKEN", "test-token",
+                            "PATH", emptyPath.toString()));
+
+            assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+            assertThat(requests).containsExactly(
+                    "POST /pypi/ auth=Bearer test-token wheel=true");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void indexUrlFlag_winsOverPypiRepoEnv() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake-wheel");
+        List<String> paths = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            paths.add(exchange.getRequestURI().getPath());
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            Path emptyPath = Files.createDirectories(tempDir.resolve("empty-path"));
+            ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
+                    List.of("--index-url", base + "/flag-registry"),
+                    Map.of("PYPI_REPO", base + "/env-registry", "REGISTRY_TOKEN", "test-token",
+                            "PATH", emptyPath.toString()));
+
+            assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+            assertThat(paths).containsExactly("/flag-registry/");
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    @Test
+    void localRepoFlag_winsOverIndexUrl() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+
+        // An unreachable URL: reaching it at all would fail the run.
+        ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
+                List.of("--repo", repo.toString(), "--index-url", "http://127.0.0.1:9/never"),
+                Map.of());
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
+    }
+
     private Path copyTemplate(String name, Path targetDir) throws IOException {
         try (InputStream in = getClass().getClassLoader()
                 .getResourceAsStream(TEMPLATE_DIR + name)) {
@@ -90,19 +203,35 @@ class PypiPublisherScriptTest {
 
     private ProcessResult runPublisher(Path wheel, String packageName, String version)
             throws Exception {
+        return run(wheel, packageName, version, List.of("--repo", repo.toString()), Map.of());
+    }
+
+    private ProcessResult run(Path wheel, String packageName, String version,
+            List<String> extraArgs, Map<String, String> env) throws Exception {
         List<String> command = new ArrayList<>(List.of(
-                "python3", script.toString(), wheel.toString(),
+                python3(), script.toString(), wheel.toString(),
                 "--package-name", packageName,
-                "--version", version,
-                "--repo", repo.toString()));
-        Process process = new ProcessBuilder(command)
+                "--version", version));
+        command.addAll(extraArgs);
+        ProcessBuilder builder = new ProcessBuilder(command)
                 .directory(tempDir.toFile())
-                .redirectErrorStream(true)
-                .start();
+                .redirectErrorStream(true);
+        builder.environment().remove("PYPI_REPO");
+        builder.environment().putAll(env);
+        Process process = builder.start();
         String output = new String(process.getInputStream().readAllBytes());
         assertThat(process.waitFor(30, TimeUnit.SECONDS))
                 .as("publisher timed out; output:\n%s", output).isTrue();
         return new ProcessResult(process.exitValue(), output);
+    }
+
+    /** python3's absolute path, so a test can run the script with a narrowed PATH. */
+    private static String python3() throws Exception {
+        Process process = new ProcessBuilder("python3", "-c", "import sys; print(sys.executable)")
+                .redirectErrorStream(true).start();
+        String path = new String(process.getInputStream().readAllBytes()).trim();
+        assertThat(process.waitFor(10, TimeUnit.SECONDS)).isTrue();
+        return path;
     }
 
     private static boolean pythonAvailable() {
