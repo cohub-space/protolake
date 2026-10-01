@@ -33,7 +33,7 @@ env:
 
 jobs:
   release-please:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     outputs:
       releases_created: ${{ steps.release.outputs.releases_created }}
       paths_released:   ${{ steps.release.outputs.paths_released }}
@@ -68,7 +68,7 @@ jobs:
     name: regenerate ${{ matrix.pr.headBranchName }}
     needs: release-please
     if: needs.release-please.outputs.prs_created == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
       fail-fast: false
@@ -127,7 +127,7 @@ jobs:
   publish:
     needs: release-please
     if: needs.release-please.outputs.releases_created == 'true'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     strategy:
       matrix:
         bundle-path: ${{ fromJson(needs.release-please.outputs.paths_released) }}
