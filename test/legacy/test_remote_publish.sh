@@ -260,6 +260,8 @@ echo ""
 echo "Phase 4: Create bundle and copy protos..."
 
 export PROTOLAKE_GAZELLE_SOURCE_PATH="$GAZELLE_SOURCE_PATH"
+# protolakew runs the image Phase 1 built, not the published latest.
+export PROTOLAKE_IMAGE="$DOCKER_IMAGE"
 
 SA_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name service_a \
     --bundle-prefix company_a.platform \

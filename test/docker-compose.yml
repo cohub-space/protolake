@@ -27,7 +27,8 @@ services:
       - PROTOLAKE_GAZELLE_SOURCE_PATH=/protolake-gazelle
       - MAVEN_LOCAL_REPO=/home/protolake/.m2/repository
       - PROTO_LAKE_LOG_LEVEL=DEBUG
-      - MAVEN_REPO=/home/protolake/.m2/repository
+      # maven_publish (rules_jvm_external) accepts only URI-scheme repositories.
+      - MAVEN_REPO=file:///home/protolake/.m2/repository
       - PYPI_REPO=/home/protolake/.cache/pip/simple
       - NPM_PUBLISH_MODE=file
       - HOME=/home/protolake
