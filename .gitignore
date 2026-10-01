@@ -53,3 +53,6 @@ service-account*.json
 /.quarkus/cli/plugins/
 # TLS Certificates
 .certs/
+
+# Python bytecode (test/run.py)
+__pycache__/
