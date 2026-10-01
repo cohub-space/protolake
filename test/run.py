@@ -26,7 +26,7 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-KARATE_IMAGE = "cohub-karate-runner:1.5.2"
+KARATE_IMAGE = "cohub-karate-runner:2.1.3"
 COMPOSE_FILE = SCRIPT_DIR / "docker-compose.yml"
 
 

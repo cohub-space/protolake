@@ -13,8 +13,8 @@ the engine would emit if it were authored as a Board proto.
 ./test/run.py all      # both tags
 ```
 
-First run builds `cohub-karate-runner:1.5.2` locally (Karate OSS +
-grpcurl on `eclipse-temurin:17-jre-jammy`); subsequent runs use the
+First run builds `cohub-karate-runner:2.1.3` locally (Karate OSS +
+grpcurl on `eclipse-temurin:21-jre-noble`); subsequent runs use the
 cached image. The protolake stack is brought up + torn down by `run.py`.
 
 (On Windows or when `chmod +x` doesn't apply, invoke as
