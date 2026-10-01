@@ -148,6 +148,34 @@ class PypiPublisherScriptTest {
         }
     }
 
+    @Test
+    void indexUrlFlag_winsOverPypiRepoEnv() throws Exception {
+        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake-wheel");
+        List<String> paths = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            paths.add(exchange.getRequestURI().getPath());
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String base = "http://127.0.0.1:" + server.getAddress().getPort();
+            Path emptyPath = Files.createDirectories(tempDir.resolve("empty-path"));
+            ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
+                    List.of("--index-url", base + "/flag-registry"),
+                    Map.of("PYPI_REPO", base + "/env-registry", "REGISTRY_TOKEN", "test-token",
+                            "PATH", emptyPath.toString()));
+
+            assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+            assertThat(paths).containsExactly("/flag-registry/");
+        } finally {
+            server.stop(0);
+        }
+    }
+
     private Path copyTemplate(String name, Path targetDir) throws IOException {
         try (InputStream in = getClass().getClassLoader()
                 .getResourceAsStream(TEMPLATE_DIR + name)) {
