@@ -1,6 +1,7 @@
 # Karate OSS + grpcurl. Built locally by run.py on first invocation.
-# ~350 MB vs ~800 MB for karatelabs/karate-chrome (which we don't need —
-# we don't run UI tests). Generated scaffold-once by CoHub.
+# ~400 MB on disk, against an ~840 MB download for
+# karatelabs/karate-chrome (which we don't need — we don't run UI
+# tests). Generated scaffold-once by CoHub.
 #
 # Why custom: Karate OSS has no built-in gRPC support (gRPC native is a
 # commercial Karate Labs add-on requiring a karate.lic file). The OSS
