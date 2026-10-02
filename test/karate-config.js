@@ -24,21 +24,31 @@ function fn() {
   // Unary RPCs only — streaming responses won't parse as a single JSON
   // object (drop to a raw karate.exec call for those).
   config.grpc = {
+    // Call a unary RPC. payload defaults to {} (no body); opts.headers is a
+    // {name: value} map sent as request metadata, one -H per entry. Returns
+    // the parsed JSON response; fails the scenario with grpcurl's output on
+    // error or unparseable output.
+    // The payload, target, method and headers reach bash as environment
+    // variables, expanded inside double quotes, through karate.exec's args
+    // form. Never the line form: Karate re-tokenizes a line and drops its
+    // quotes before `sh -c` runs it, so a space would split a value and a
+    // `*` would expand to file names, silently changing what gets sent.
     call: function (target, method, payload, opts) {
       opts = opts || {};
-      var json = JSON.stringify(payload || {});
-      var headers = '';
-      if (opts.headers) {
-        for (var h in opts.headers) {
-          headers += ' -H "' + h + ': ' + opts.headers[h] + '"';
-        }
+      var env = { GRPC_PAYLOAD: JSON.stringify(payload || {}),
+                  GRPC_TARGET: target, GRPC_METHOD: method };
+      // karate.toString renders a JS object and a def'd map alike as JSON.
+      var headers = opts.headers ? JSON.parse(karate.toString(opts.headers)) : {};
+      var count = 0;
+      for (var name in headers) {
+        env['GRPC_H' + count++] = name + ': ' + headers[name];
       }
-      var cmd = 'printf %s "$GRPC_PAYLOAD" | grpcurl -plaintext' + headers +
-                ' -d @ ' + target + ' ' + method;
+      var script = 'args=(-plaintext)\n' +
+        'for ((i = 0; i < ' + count + '; i++)); do v="GRPC_H$i"; args+=(-H "${!v}"); done\n' +
+        'printf %s "$GRPC_PAYLOAD" | grpcurl "${args[@]}" -d @ "$GRPC_TARGET" "$GRPC_METHOD"';
       var raw = karate.exec({
-        line: cmd,
-        useShell: true,
-        env: { GRPC_PAYLOAD: json },
+        args: ['bash', '-c', script],
+        env: env,
         redirectErrorStream: true
       });
       try { return JSON.parse(raw); }
