@@ -82,9 +82,7 @@ and parses JSON responses:
     * match list contains 'protolake.v1.LakeService'
 
   Scenario: create a lake via gRPC and assert on response
-    * def resp = grpc.call(services.proto_lake.grpcTarget,
-                           'protolake.v1.LakeService/CreateLake',
-                           { lake: { name: 'test-lake', display_name: 'Test' } })
+    * def resp = grpc.call(services.proto_lake.grpcTarget, 'protolake.v1.LakeService/CreateLake', { lake: { name: 'test-lake', display_name: 'Test' } })
     * match resp.name == 'lakes/test-lake'
 ```
 
