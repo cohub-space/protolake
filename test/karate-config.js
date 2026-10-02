@@ -34,6 +34,12 @@ function fn() {
     // quotes before `sh -c` runs it, so a space would split a value and a
     // `*` would expand to file names, silently changing what gets sent.
     call: function (target, method, payload, opts) {
+      // Karate copies the environment with Map.copyOf, which throws a bare
+      // NullPointerException on an undefined value, so a missing target or
+      // method (a service with no grpcTarget, say) fails here by name.
+      if (target == null || method == null) {
+        karate.fail('grpc.call(' + method + ') failed:\nmissing target or method (target: ' + target + ')');
+      }
       opts = opts || {};
       var env = { GRPC_PAYLOAD: JSON.stringify(payload || {}),
                   GRPC_TARGET: target, GRPC_METHOD: method };
