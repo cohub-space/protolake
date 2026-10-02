@@ -56,13 +56,61 @@ def normalize_project_name(package_name):
     return re.sub(r'[-_.]+', '-', package_name).lower()
 
 
+# PEP 440's version grammar, as the `packaging` library spells it (stdlib only
+# here, so no import of it). Used to compare the bundle's version with the
+# canonical form setuptools stamped into the wheel.
+_PEP440_VERSION = re.compile(r"""
+    ^\s*v?
+    (?:(?P<epoch>[0-9]+)!)?
+    (?P<release>[0-9]+(?:\.[0-9]+)*)
+    (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
+    (?P<post>(?:-(?P<post_n1>[0-9]+))|(?:[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?))?
+    (?P<dev>[-_.]?(?P<dev_l>dev)[-_.]?(?P<dev_n>[0-9]+)?)?
+    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    \s*$
+""", re.VERBOSE | re.IGNORECASE)
+
+_PRE_RELEASE_SPELLINGS = {'alpha': 'a', 'beta': 'b', 'c': 'rc', 'pre': 'rc', 'preview': 'rc'}
+
+
+def normalize_pep440(version):
+    """The canonical PEP 440 form of a version (what setuptools stamps), or
+    None when the version is not PEP 440 at all: 1.0.0-rc.1 -> 1.0.0rc1."""
+    match = _PEP440_VERSION.match(version)
+    if not match:
+        return None
+    parts = []
+    if match.group('epoch') and int(match.group('epoch')) != 0:
+        parts.append(f"{int(match.group('epoch'))}!")
+    parts.append('.'.join(str(int(n)) for n in match.group('release').split('.')))
+    if match.group('pre'):
+        letter = match.group('pre_l').lower()
+        parts.append(f"{_PRE_RELEASE_SPELLINGS.get(letter, letter)}"
+                     f"{int(match.group('pre_n') or 0)}")
+    if match.group('post'):
+        parts.append(f".post{int(match.group('post_n1') or match.group('post_n2') or 0)}")
+    if match.group('dev'):
+        parts.append(f".dev{int(match.group('dev_n') or 0)}")
+    if match.group('local'):
+        parts.append('+' + '.'.join(
+            str(int(segment)) if segment.isdigit() else segment.lower()
+            for segment in re.split(r'[-_.]', match.group('local'))))
+    return ''.join(parts)
+
+
+def not_a_wheel(wheel_path, reason):
+    print(f"Error: {wheel_path} is not a wheel: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
 def wheel_metadata(wheel_path):
-    """Read the distribution, version and tags a wheel declares about itself.
+    """Read the distribution, version, build tag and tags a wheel declares
+    about itself.
 
     A wheel's single `<distribution>-<version>.dist-info` directory carries
     the name and the PEP 440 version setuptools stamped into its METADATA,
-    and the WHEEL file inside it lists the wheel's tags. Fails loudly when
-    the file is not a wheel.
+    and the WHEEL file inside it lists the wheel's tags and, optionally, its
+    build number. Fails loudly when the file is not a wheel.
     """
     try:
         with zipfile.ZipFile(wheel_path) as wheel:
@@ -71,29 +119,27 @@ def wheel_metadata(wheel_path):
                 if '/' in name and name.split('/', 1)[0].endswith('.dist-info')
             })
             if len(dist_infos) != 1:
-                print(f"Error: {wheel_path} is not a wheel: it has "
-                      f"{len(dist_infos)} .dist-info directories, not one",
-                      file=sys.stderr)
-                sys.exit(1)
+                not_a_wheel(wheel_path, f"it has {len(dist_infos)} .dist-info "
+                                        f"directories, not one")
             dist_info = dist_infos[0]
             wheel_file = wheel.read(f"{dist_info}/WHEEL").decode('utf-8')
-    except (zipfile.BadZipFile, KeyError) as e:
-        print(f"Error: {wheel_path} is not a wheel: {e}", file=sys.stderr)
-        sys.exit(1)
+    except KeyError:
+        not_a_wheel(wheel_path, f"{dist_info} has no WHEEL file")
+    except (zipfile.BadZipFile, OSError, UnicodeDecodeError) as e:
+        not_a_wheel(wheel_path, e)
 
     stem = dist_info[:-len('.dist-info')]
     if stem.count('-') != 1:
-        print(f"Error: {wheel_path} is not a wheel: cannot read "
-              f"<distribution>-<version> from {dist_info}", file=sys.stderr)
-        sys.exit(1)
+        not_a_wheel(wheel_path, f"cannot read <distribution>-<version> from {dist_info}")
     distribution, version = stem.split('-')
-    tags = [line.split(':', 1)[1].strip() for line in wheel_file.splitlines()
-            if line.lower().startswith('tag:')]
+    fields = [line.split(':', 1) for line in wheel_file.splitlines() if ':' in line]
+    tags = [value.strip() for key, value in fields if key.strip().lower() == 'tag']
+    builds = [value.strip() for key, value in fields if key.strip().lower() == 'build']
     if not tags:
-        print(f"Error: {wheel_path} is not a wheel: {dist_info}/WHEEL lists "
-              f"no Tag", file=sys.stderr)
-        sys.exit(1)
-    return distribution, version, tags
+        not_a_wheel(wheel_path, f"{dist_info}/WHEEL lists no Tag")
+    if len(builds) > 1 or (builds and not re.fullmatch(r'[0-9][0-9A-Za-z.]*', builds[0])):
+        not_a_wheel(wheel_path, f"{dist_info}/WHEEL has a malformed Build {builds}")
+    return distribution, version, (builds[0] if builds else None), tags
 
 
 def compressed_tag_set(tags):
@@ -126,22 +172,30 @@ def pep427_wheel_name(wheel_path, package_name, version):
     The bazel output basename (<target>_bundle.whl) is not a parseable wheel
     filename: pip cannot resolve it from an index, and a registry rejects the
     upload (Artifact Registry answers 400). The name is read from the wheel's
-    own .dist-info, so it matches the wheel's metadata by construction. The
-    wheel must belong to --package-name and carry the bundle's version, so a
-    misconfigured target or a stale build never publishes.
+    own .dist-info, normalized as the binary distribution format specifies,
+    so it matches the wheel's metadata by construction. The wheel must belong
+    to --package-name and carry the bundle's version (compared in canonical
+    PEP 440 form), so a misconfigured target or a stale build never publishes.
     """
-    distribution, wheel_version, tags = wheel_metadata(wheel_path)
+    distribution, wheel_version, build, tags = wheel_metadata(wheel_path)
     if normalize_project_name(distribution) != normalize_project_name(package_name):
         print(f"Error: {wheel_path} holds distribution {distribution!r}, "
               f"not --package-name {package_name!r}", file=sys.stderr)
         sys.exit(1)
-    if wheel_version != version:
-        print(f"Error: {wheel_path} carries version {wheel_version!r}, but the "
-              f"bundle's version is {version!r}: rebuild the wheel (a version "
-              f"setuptools normalizes per PEP 440 can't be published as-is)",
-              file=sys.stderr)
+    expected = normalize_pep440(version)
+    if expected is None:
+        print(f"Error: the bundle's version {version!r} is not a PEP 440 version, "
+              f"so no Python wheel can carry it", file=sys.stderr)
         sys.exit(1)
-    return f"{distribution}-{wheel_version}-{compressed_tag_set(tags)}.whl"
+    canonical = normalize_pep440(wheel_version)
+    if canonical != expected:
+        print(f"Error: {wheel_path} carries version {wheel_version!r}, but the "
+              f"bundle's version {version!r} is {expected!r} in PEP 440 form: "
+              f"rebuild the wheel", file=sys.stderr)
+        sys.exit(1)
+    name = re.sub(r'[-_.]+', '_', distribution).lower()
+    fields = [name, canonical.replace('-', '_')] + ([build] if build else [])
+    return '-'.join(fields + [compressed_tag_set(tags)]) + '.whl'
 
 
 def publish_to_local_repo(wheel_path, package_name, wheel_name, repo_path):
@@ -151,9 +205,14 @@ def publish_to_local_repo(wheel_path, package_name, wheel_name, repo_path):
     package_dir = Path(repo_path) / normalize_project_name(package_name)
     ensure_directory_exists(package_dir)
 
-    # Copy under the wheel's PEP 427 name (see pep427_wheel_name)
+    # Copy under the wheel's PEP 427 name (see pep427_wheel_name). Bazel
+    # outputs are read-only and copy2 would carry that mode over, so a second
+    # publish of the same version could not overwrite the first: replace any
+    # earlier copy, and write the content without the source's mode.
     target_wheel = package_dir / wheel_name
-    shutil.copy2(wheel_path, target_wheel)
+    if target_wheel.exists():
+        target_wheel.unlink()
+    shutil.copyfile(wheel_path, target_wheel)
     print(f"Copied wheel to {target_wheel}")
 
     # Update package index
@@ -210,7 +269,7 @@ def publish_to_remote_registry(wheel_path, wheel_name, registry_url, token):
     """
     with tempfile.TemporaryDirectory() as staging:
         staged = os.path.join(staging, wheel_name)
-        shutil.copy2(wheel_path, staged)
+        shutil.copyfile(wheel_path, staged)
         upload_to_registry(staged, registry_url, token)
     return wheel_name
 
@@ -339,9 +398,9 @@ def main():
         print(f"Error: Wheel file not found: {args.wheel_path}", file=sys.stderr)
         sys.exit(1)
 
-    wheel_name = pep427_wheel_name(args.wheel_path, args.package_name, args.version)
-
     try:
+        wheel_name = pep427_wheel_name(args.wheel_path, args.package_name, args.version)
+
         if dest.startswith('https://') or dest.startswith('http://'):
             # Remote registry mode
             token = os.environ.get('REGISTRY_TOKEN', '')
