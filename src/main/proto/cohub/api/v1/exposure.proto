@@ -1,0 +1,48 @@
+// exposure.proto
+//
+// Options that declare how an RPC is exposed beyond gRPC. google.api.http
+// already gives an RPC its REST form; these options cover the two things no
+// published option says: serving a client- or bidi-streaming RPC to browsers
+// over a WebSocket, and handing an exposure back to the service's author.
+//
+// The proto says what an RPC can be; the board says where a source serves it.
+// See cohub-knowledge docs/designs/cross-cutting/api-exposure/.
+syntax = "proto3";
+
+package cohub.api.v1;
+
+import "google/protobuf/descriptor.proto";
+
+option java_multiple_files = true;
+option java_package = "space.cohub.api.v1";
+option java_outer_classname = "ExposureProto";
+
+// How an RPC is exposed beyond gRPC.
+message MethodExposure {
+  // Serve this client- or bidi-streaming RPC to browsers over a WebSocket,
+  // through the board's WebSocket bridge. Set on a unary or server-streaming
+  // RPC, it fails the bundle build: gRPC-web already serves those to browsers.
+  bool websocket = 1;
+
+  // Publish this RPC's specs, but generate no transcoding or bridge for it:
+  // the service serves this exposure itself. Unset inherits the service's
+  // default; false exempts the RPC from a service-wide custom.
+  optional bool custom = 2;
+}
+
+// Defaults for every RPC in a service.
+message ServiceExposure {
+  // Every RPC in the service is custom unless its method sets custom = false.
+  bool custom = 1;
+}
+
+// Field numbers sit in the 50000-99999 range protobuf reserves for an
+// organization's own options; they are registered in protobuf's global
+// extension registry before lakes outside cohub depend on them.
+extend google.protobuf.MethodOptions {
+  MethodExposure exposure = 51701;
+}
+
+extend google.protobuf.ServiceOptions {
+  ServiceExposure service_exposure = 51701;
+}
