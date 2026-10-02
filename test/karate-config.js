@@ -50,7 +50,9 @@ function fn() {
         useShell: true,
         redirectErrorStream: true
       });
-      return raw.split(',').filter(function (s) { return s.length > 0; });
+      return raw.split(',')
+                .map(function (s) { return s.trim(); })
+                .filter(function (s) { return s.length > 0; });
     }
   };
 

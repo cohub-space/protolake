@@ -54,6 +54,9 @@ service-account*.json
 # TLS Certificates
 .certs/
 
+# Python bytecode (test/run.py)
+__pycache__/
+
 # Legacy e2e suites' scratch output (a failed run keeps its own)
 test/test-*-output/
 test/test-lake-stores/

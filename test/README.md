@@ -20,9 +20,8 @@ runner image; `run.py` checks those tools first (macOS:
 the sibling `../protolake-gazelle`, or `PROTOLAKE_GAZELLE_SOURCE_PATH`. A
 suite passes only when its script exits 0.
 
-First run builds `cohub-karate-runner:1.5.2` locally (Karate OSS +
-grpcurl on `eclipse-temurin:17-jre-jammy`); subsequent runs use the
-cached image. The protolake stack is brought up + torn down by `run.py`.
+First run builds `cohub-karate-runner:2.1.3` locally; subsequent runs
+use the cached image. The protolake stack is brought up + torn down by `run.py`.
 
 (On Windows or when `chmod +x` doesn't apply, invoke as
 `python test/run.py smoke`.)

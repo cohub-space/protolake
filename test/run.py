@@ -29,7 +29,7 @@ import sys
 from pathlib import Path
 
 SCRIPT_DIR = Path(__file__).resolve().parent
-KARATE_IMAGE = "cohub-karate-runner:1.5.2"
+KARATE_IMAGE = "cohub-karate-runner:2.1.3"
 COMPOSE_FILE = SCRIPT_DIR / "docker-compose.yml"
 
 
@@ -68,6 +68,11 @@ def smoke() -> int:
     # Explicit paths, not ".": generated fixtures may land in gitignored
     # test/playground/<board>/ and would be scanned too.
     paths = ["smoke.feature"] + (["e2e/"] if any((SCRIPT_DIR / "e2e").glob("**/*.feature")) else [])
+    # Karate 2 exits 0 on a path it cannot find, so a missing suite path
+    # would pass vacuously.
+    missing = [p for p in paths if not (SCRIPT_DIR / p).exists()]
+    if missing:
+        sys.exit(f"suite path(s) missing under {SCRIPT_DIR}: " + ", ".join(missing))
     rc = run([
         "docker", "run", "--rm", "--network", "host",
         "-v", f"{SCRIPT_DIR}:/test", "-w", "/test",
