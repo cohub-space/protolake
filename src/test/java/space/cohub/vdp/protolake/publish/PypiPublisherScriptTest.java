@@ -291,7 +291,9 @@ class PypiPublisherScriptTest {
 
         assertThat(result.exitCode).as("publisher output:\n%s", result.output).isNotZero();
         assertThat(result.output)
-                .contains("carries version '0.3.9', but the bundle's version '0.4.0'");
+                .contains("carries version '0.3.9', but the bundle's version is '0.4.0':"
+                        + " rebuild the wheel")
+                .doesNotContain("PEP 440 form");
         assertThat(repo).doesNotExist();
     }
 
@@ -325,6 +327,74 @@ class PypiPublisherScriptTest {
         assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
         assertThat(repo.resolve("company-user-proto")
                 .resolve("company_user_proto-0.4.0-1-py3-none-any.whl")).exists();
+    }
+
+    @Test
+    void buildTagWithAnUnderscore_isCarriedIntoTheFilename() throws Exception {
+        Path wheel = wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nBuild: 1_abc\nTag: py3-none-any\n"));
+
+        ProcessResult result = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-1_abc-py3-none-any.whl")).exists();
+    }
+
+    @Test
+    void buildTagThatDoesNotStartWithADigit_isRefused() throws Exception {
+        assertRefusedInBothModes(wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nBuild: abc\nTag: py3-none-any\n")), "0.4.0",
+                "has a malformed Build");
+    }
+
+    @Test
+    void wheelAlreadyInTheIndex_isRepublishedInPlace() throws Exception {
+        // Publishing the index's own copy again must not delete it first
+        Path wheel = wheel("vdp_py_bundle_bundle.whl", "company_user_proto", "0.4.0");
+        assertThat(runPublisher(wheel, "company_user_proto", "0.4.0").exitCode).isZero();
+        Path published = repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl");
+
+        ProcessResult again = runPublisher(published, "company_user_proto", "0.4.0");
+
+        assertThat(again.exitCode).as("publisher output:\n%s", again.output).isZero();
+        assertThat(published).exists().hasSameBinaryContentAs(wheel);
+        try (var files = Files.list(published.getParent())) {
+            assertThat(files.map(f -> f.getFileName().toString()).sorted())
+                    .containsExactly("company_user_proto-0.4.0-py3-none-any.whl", "index.html");
+        }
+    }
+
+    @Test
+    void normalizePep440_matchesPackagingCanonicalForms_asciiOnly() throws Exception {
+        // Expected values are packaging's str(Version(v)); None = InvalidVersion.
+        // The non-ASCII inputs are written as Python escapes so the command
+        // line stays ASCII whatever the JVM's argument encoding.
+        String check = String.join("\n",
+                "import sys",
+                "sys.path.insert(0, sys.argv[1])",
+                "import pypi_publisher_generated as p",
+                "cases = {",
+                "    '2.64.0': '2.64.0', '1.0.0-rc.1': '1.0.0rc1', '1.0.0.RC1': '1.0.0rc1',",
+                "    '2.60.0+g02c3': '2.60.0+g02c3', '1.0-1': '1.0.post1', '1.0a': '1.0a0',",
+                "    '1.0.post': '1.0.post0', '1.0.dev': '1.0.dev0', 'v1.0': '1.0',",
+                "    '1!2.0': '1!2.0', '0!1.0': '1.0', '2.064.0': '2.64.0',",
+                "    '1.0.0+Ubuntu-1_007': '1.0.0+ubuntu.1.7', '1.0-alpha.2.dev3': '1.0a2.dev3',",
+                "    ' 1.0 ': '1.0', '1.0.0~beta': None, 'latest': None, '': None,",
+                "    '1.0+\\u212a': None, '1.0po\\u017ft1': None,",
+                "}",
+                "bad = {v: (p.normalize_pep440(v), want) for v, want in cases.items()",
+                "       if p.normalize_pep440(v) != want}",
+                "print('MISMATCH ' + repr(bad) if bad else 'OK')");
+        Process process = new ProcessBuilder(python3(), "-c", check,
+                script.getParent().toString())
+                .directory(tempDir.toFile()).redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes()).trim();
+        assertThat(process.waitFor(30, TimeUnit.SECONDS)).isTrue();
+        assertThat(output).isEqualTo("OK");
     }
 
     @Test

@@ -58,15 +58,20 @@ def normalize_project_name(package_name):
 
 # PEP 440's version grammar, as the `packaging` library spells it (stdlib only
 # here, so no import of it). Used to compare the bundle's version with the
-# canonical form setuptools stamped into the wheel.
+# canonical form setuptools stamped into the wheel. The components match
+# ASCII only — `(?a:...)` — so Unicode case folding can't admit a spelling
+# packaging rejects (the long s in `1.0poſt1`, the Kelvin sign in `1.0+K`).
 _PEP440_VERSION = re.compile(r"""
-    ^\s*v?
-    (?:(?P<epoch>[0-9]+)!)?
-    (?P<release>[0-9]+(?:\.[0-9]+)*)
-    (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
-    (?P<post>(?:-(?P<post_n1>[0-9]+))|(?:[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?))?
-    (?P<dev>[-_.]?(?P<dev_l>dev)[-_.]?(?P<dev_n>[0-9]+)?)?
-    (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    ^\s*
+    (?a:
+        v?
+        (?:(?P<epoch>[0-9]+)!)?
+        (?P<release>[0-9]+(?:\.[0-9]+)*)
+        (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
+        (?P<post>(?:-(?P<post_n1>[0-9]+))|(?:[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?))?
+        (?P<dev>[-_.]?(?P<dev_l>dev)[-_.]?(?P<dev_n>[0-9]+)?)?
+        (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    )
     \s*$
 """, re.VERBOSE | re.IGNORECASE)
 
@@ -137,7 +142,7 @@ def wheel_metadata(wheel_path):
     builds = [value.strip() for key, value in fields if key.strip().lower() == 'build']
     if not tags:
         not_a_wheel(wheel_path, f"{dist_info}/WHEEL lists no Tag")
-    if len(builds) > 1 or (builds and not re.fullmatch(r'[0-9][0-9A-Za-z.]*', builds[0])):
+    if len(builds) > 1 or (builds and not re.fullmatch(r'[0-9][0-9A-Za-z._]*', builds[0])):
         not_a_wheel(wheel_path, f"{dist_info}/WHEEL has a malformed Build {builds}")
     return distribution, version, (builds[0] if builds else None), tags
 
@@ -189,9 +194,10 @@ def pep427_wheel_name(wheel_path, package_name, version):
         sys.exit(1)
     canonical = normalize_pep440(wheel_version)
     if canonical != expected:
+        bundle = (f"is {version!r}" if expected == version
+                  else f"{version!r} is {expected!r} in PEP 440 form")
         print(f"Error: {wheel_path} carries version {wheel_version!r}, but the "
-              f"bundle's version {version!r} is {expected!r} in PEP 440 form: "
-              f"rebuild the wheel", file=sys.stderr)
+              f"bundle's version {bundle}: rebuild the wheel", file=sys.stderr)
         sys.exit(1)
     name = re.sub(r'[-_.]+', '_', distribution).lower()
     fields = [name, canonical.replace('-', '_')] + ([build] if build else [])
@@ -207,13 +213,24 @@ def publish_to_local_repo(wheel_path, package_name, wheel_name, repo_path):
 
     # Copy under the wheel's PEP 427 name (see pep427_wheel_name). Bazel
     # outputs are read-only and copy2 would carry that mode over, so a second
-    # publish of the same version could not overwrite the first: replace any
-    # earlier copy, and write the content without the source's mode.
+    # publish of the same version could not overwrite the first. The content
+    # goes to a temporary file beside the target, which is then renamed over
+    # any earlier copy: the source is never touched (it may itself be the
+    # earlier copy), and pip never sees a half-written wheel.
     target_wheel = package_dir / wheel_name
-    if target_wheel.exists():
-        target_wheel.unlink()
-    shutil.copyfile(wheel_path, target_wheel)
-    print(f"Copied wheel to {target_wheel}")
+    if target_wheel.exists() and os.path.samefile(wheel_path, target_wheel):
+        print(f"{target_wheel} is already in place")
+    else:
+        fd, staged = tempfile.mkstemp(dir=package_dir, prefix='.', suffix='.whl.tmp')
+        os.close(fd)
+        try:
+            shutil.copyfile(wheel_path, staged)
+            os.chmod(staged, 0o644)
+            os.replace(staged, target_wheel)
+        finally:
+            if os.path.exists(staged):
+                os.unlink(staged)
+        print(f"Copied wheel to {target_wheel}")
 
     # Update package index
     update_package_index(package_dir)
