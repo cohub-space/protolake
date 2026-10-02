@@ -8,6 +8,8 @@ import re
 import shutil
 import subprocess
 import sys
+import tempfile
+import zipfile
 from pathlib import Path
 
 # Add parent directory to path for utilities
@@ -54,26 +56,181 @@ def normalize_project_name(package_name):
     return re.sub(r'[-_.]+', '-', package_name).lower()
 
 
-def publish_to_local_repo(wheel_path, package_name, version, repo_path):
+# PEP 440's version grammar, as the `packaging` library spells it (stdlib only
+# here, so no import of it). Used to compare the bundle's version with the
+# canonical form setuptools stamped into the wheel. The components match
+# ASCII only — `(?a:...)` — so Unicode case folding can't admit a spelling
+# packaging rejects (the long s in `1.0poſt1`, the Kelvin sign in `1.0+K`).
+_PEP440_VERSION = re.compile(r"""
+    ^\s*
+    (?a:
+        v?
+        (?:(?P<epoch>[0-9]+)!)?
+        (?P<release>[0-9]+(?:\.[0-9]+)*)
+        (?P<pre>[-_.]?(?P<pre_l>alpha|a|beta|b|preview|pre|c|rc)[-_.]?(?P<pre_n>[0-9]+)?)?
+        (?P<post>(?:-(?P<post_n1>[0-9]+))|(?:[-_.]?(?P<post_l>post|rev|r)[-_.]?(?P<post_n2>[0-9]+)?))?
+        (?P<dev>[-_.]?(?P<dev_l>dev)[-_.]?(?P<dev_n>[0-9]+)?)?
+        (?:\+(?P<local>[a-z0-9]+(?:[-_.][a-z0-9]+)*))?
+    )
+    \s*$
+""", re.VERBOSE | re.IGNORECASE)
+
+_PRE_RELEASE_SPELLINGS = {'alpha': 'a', 'beta': 'b', 'c': 'rc', 'pre': 'rc', 'preview': 'rc'}
+
+
+def normalize_pep440(version):
+    """The canonical PEP 440 form of a version (what setuptools stamps), or
+    None when the version is not PEP 440 at all: 1.0.0-rc.1 -> 1.0.0rc1."""
+    match = _PEP440_VERSION.match(version)
+    if not match:
+        return None
+    parts = []
+    if match.group('epoch') and int(match.group('epoch')) != 0:
+        parts.append(f"{int(match.group('epoch'))}!")
+    parts.append('.'.join(str(int(n)) for n in match.group('release').split('.')))
+    if match.group('pre'):
+        letter = match.group('pre_l').lower()
+        parts.append(f"{_PRE_RELEASE_SPELLINGS.get(letter, letter)}"
+                     f"{int(match.group('pre_n') or 0)}")
+    if match.group('post'):
+        parts.append(f".post{int(match.group('post_n1') or match.group('post_n2') or 0)}")
+    if match.group('dev'):
+        parts.append(f".dev{int(match.group('dev_n') or 0)}")
+    if match.group('local'):
+        parts.append('+' + '.'.join(
+            str(int(segment)) if segment.isdigit() else segment.lower()
+            for segment in re.split(r'[-_.]', match.group('local'))))
+    return ''.join(parts)
+
+
+def not_a_wheel(wheel_path, reason):
+    print(f"Error: {wheel_path} is not a wheel: {reason}", file=sys.stderr)
+    sys.exit(1)
+
+
+def wheel_metadata(wheel_path):
+    """Read the distribution, version, build tag and tags a wheel declares
+    about itself.
+
+    A wheel's single `<distribution>-<version>.dist-info` directory carries
+    the name and the PEP 440 version setuptools stamped into its METADATA,
+    and the WHEEL file inside it lists the wheel's tags and, optionally, its
+    build number. Fails loudly when the file is not a wheel.
+    """
+    try:
+        with zipfile.ZipFile(wheel_path) as wheel:
+            dist_infos = sorted({
+                name.split('/', 1)[0] for name in wheel.namelist()
+                if '/' in name and name.split('/', 1)[0].endswith('.dist-info')
+            })
+            if len(dist_infos) != 1:
+                not_a_wheel(wheel_path, f"it has {len(dist_infos)} .dist-info "
+                                        f"directories, not one")
+            dist_info = dist_infos[0]
+            wheel_file = wheel.read(f"{dist_info}/WHEEL").decode('utf-8')
+    except KeyError:
+        not_a_wheel(wheel_path, f"{dist_info} has no WHEEL file")
+    except (zipfile.BadZipFile, OSError, UnicodeDecodeError) as e:
+        not_a_wheel(wheel_path, e)
+
+    stem = dist_info[:-len('.dist-info')]
+    if stem.count('-') != 1:
+        not_a_wheel(wheel_path, f"cannot read <distribution>-<version> from {dist_info}")
+    distribution, version = stem.split('-')
+    fields = [line.split(':', 1) for line in wheel_file.splitlines() if ':' in line]
+    tags = [value.strip() for key, value in fields if key.strip().lower() == 'tag']
+    builds = [value.strip() for key, value in fields if key.strip().lower() == 'build']
+    if not tags:
+        not_a_wheel(wheel_path, f"{dist_info}/WHEEL lists no Tag")
+    if len(builds) > 1 or (builds and not re.fullmatch(r'[0-9][0-9A-Za-z._]*', builds[0])):
+        not_a_wheel(wheel_path, f"{dist_info}/WHEEL has a malformed Build {builds}")
+    return distribution, version, (builds[0] if builds else None), tags
+
+
+def compressed_tag_set(tags):
+    """The tag component of a wheel filename (PEP 425 compressed tag set).
+
+    Bundles are pure-python and carry one tag (py3-none-any); several tags
+    compress into dotted fields (py2.py3-none-any) when they form a product.
+    """
+    fields = [[], [], []]
+    for tag in tags:
+        parts = tag.split('-')
+        if len(parts) != 3:
+            print(f"Error: malformed wheel tag {tag!r}", file=sys.stderr)
+            sys.exit(1)
+        for values, part in zip(fields, parts):
+            if part not in values:
+                values.append(part)
+    product = {f"{py}-{abi}-{plat}"
+               for py in fields[0] for abi in fields[1] for plat in fields[2]}
+    if product != set(tags):
+        print(f"Error: wheel tags {tags} do not compress into one filename "
+              f"tag set", file=sys.stderr)
+        sys.exit(1)
+    return '-'.join('.'.join(values) for values in fields)
+
+
+def pep427_wheel_name(wheel_path, package_name, version):
+    """The PEP 427 filename a wheel must be published under.
+
+    The bazel output basename (<target>_bundle.whl) is not a parseable wheel
+    filename: pip cannot resolve it from an index, and a registry rejects the
+    upload (Artifact Registry answers 400). The name is read from the wheel's
+    own .dist-info, normalized as the binary distribution format specifies,
+    so it matches the wheel's metadata by construction. The wheel must belong
+    to --package-name and carry the bundle's version (compared in canonical
+    PEP 440 form), so a misconfigured target or a stale build never publishes.
+    """
+    distribution, wheel_version, build, tags = wheel_metadata(wheel_path)
+    if normalize_project_name(distribution) != normalize_project_name(package_name):
+        print(f"Error: {wheel_path} holds distribution {distribution!r}, "
+              f"not --package-name {package_name!r}", file=sys.stderr)
+        sys.exit(1)
+    expected = normalize_pep440(version)
+    if expected is None:
+        print(f"Error: the bundle's version {version!r} is not a PEP 440 version, "
+              f"so no Python wheel can carry it", file=sys.stderr)
+        sys.exit(1)
+    canonical = normalize_pep440(wheel_version)
+    if canonical != expected:
+        bundle = (f"is {version!r}" if expected == version
+                  else f"{version!r} is {expected!r} in PEP 440 form")
+        print(f"Error: {wheel_path} carries version {wheel_version!r}, but the "
+              f"bundle's version {bundle}: rebuild the wheel", file=sys.stderr)
+        sys.exit(1)
+    name = re.sub(r'[-_.]+', '_', distribution).lower()
+    fields = [name, canonical.replace('-', '_')] + ([build] if build else [])
+    return '-'.join(fields + [compressed_tag_set(tags)]) + '.whl'
+
+
+def publish_to_local_repo(wheel_path, package_name, wheel_name, repo_path):
     """Publish wheel to local PyPI repository using simple index format"""
 
     # Per-project directory named per PEP 503, as pip's simple API requires
-    normalized_name = normalize_project_name(package_name)
-    package_dir = Path(repo_path) / normalized_name
+    package_dir = Path(repo_path) / normalize_project_name(package_name)
     ensure_directory_exists(package_dir)
 
-    # Rename to a PEP-427 filename on copy — the bazel output basename
-    # (<target>_bundle.whl) is not parseable, so pip would never resolve the
-    # wheel from the index. The distribution segment escapes runs of `-_.`
-    # to `_`; the version is the same value wheel_builder stamped into the
-    # wheel's metadata (both resolve it from bundle.yaml), so the filename
-    # matches the metadata by construction. Bundles are pure-python and
-    # platform-independent, hence py3-none-any.
-    distribution = normalized_name.replace('-', '_')
-    wheel_name = f"{distribution}-{version.replace('-', '_')}-py3-none-any.whl"
+    # Copy under the wheel's PEP 427 name (see pep427_wheel_name). Bazel
+    # outputs are read-only and copy2 would carry that mode over, so a second
+    # publish of the same version could not overwrite the first. The content
+    # goes to a temporary file beside the target, which is then renamed over
+    # any earlier copy: the source is never touched (it may itself be the
+    # earlier copy), and pip never sees a half-written wheel.
     target_wheel = package_dir / wheel_name
-    shutil.copy2(wheel_path, target_wheel)
-    print(f"Copied wheel to {target_wheel}")
+    if target_wheel.exists() and os.path.samefile(wheel_path, target_wheel):
+        print(f"{target_wheel} is already in place")
+    else:
+        fd, staged = tempfile.mkstemp(dir=package_dir, prefix='.', suffix='.whl.tmp')
+        os.close(fd)
+        try:
+            shutil.copyfile(wheel_path, staged)
+            os.chmod(staged, 0o644)
+            os.replace(staged, target_wheel)
+        finally:
+            if os.path.exists(staged):
+                os.unlink(staged)
+        print(f"Copied wheel to {target_wheel}")
 
     # Update package index
     update_package_index(package_dir)
@@ -120,8 +277,22 @@ def update_root_index(repo_path):
     print(f"Updated root index: {index_path}")
 
 
-def publish_to_remote_registry(wheel_path, registry_url, token):
-    """Publish wheel to a remote PyPI registry (e.g., GCP Artifact Registry) using twine"""
+def publish_to_remote_registry(wheel_path, wheel_name, registry_url, token):
+    """Publish wheel to a remote PyPI registry (e.g., GCP Artifact Registry).
+
+    Uploads a copy staged under the wheel's PEP 427 name (see
+    pep427_wheel_name): twine and the registry read the distribution, the
+    version and the tags from the filename.
+    """
+    with tempfile.TemporaryDirectory() as staging:
+        staged = os.path.join(staging, wheel_name)
+        shutil.copyfile(wheel_path, staged)
+        upload_to_registry(staged, registry_url, token)
+    return wheel_name
+
+
+def upload_to_registry(wheel_path, registry_url, token):
+    """Upload a PEP 427-named wheel with twine, else a stdlib HTTP upload"""
     registry_url = registry_url.rstrip('/')
 
     # Try twine first
@@ -245,6 +416,8 @@ def main():
         sys.exit(1)
 
     try:
+        wheel_name = pep427_wheel_name(args.wheel_path, args.package_name, args.version)
+
         if dest.startswith('https://') or dest.startswith('http://'):
             # Remote registry mode
             token = os.environ.get('REGISTRY_TOKEN', '')
@@ -253,7 +426,7 @@ def main():
                       file=sys.stderr)
                 sys.exit(1)
 
-            publish_to_remote_registry(args.wheel_path, dest, token)
+            publish_to_remote_registry(args.wheel_path, wheel_name, dest, token)
 
             print(f"\nSuccessfully published to remote PyPI registry:")
             print(f"  Package: {args.package_name}")
@@ -265,7 +438,7 @@ def main():
             published_wheel = publish_to_local_repo(
                 args.wheel_path,
                 args.package_name,
-                args.version,
+                wheel_name,
                 dest
             )
 

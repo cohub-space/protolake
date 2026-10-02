@@ -13,25 +13,45 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.CopyOnWriteArrayList;
 import java.util.concurrent.TimeUnit;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.zip.ZipEntry;
+import java.util.zip.ZipOutputStream;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Executes the pypi_publisher template in local-repo mode and pins the simple
- * index layout pip resolves from: a per-project directory named per PEP 503
- * and the wheel renamed to a PEP-427 filename. The bazel output basename
- * ({@code <target>_bundle.whl}) is not a parseable wheel filename — keeping it
- * would make {@code pip install <pkg>==<version> --index-url file://<repo>}
- * fail to resolve.
+ * Executes the pypi_publisher template and pins the name a wheel is published
+ * under: the PEP-427 filename read from the wheel's own {@code .dist-info}. The
+ * bazel output basename ({@code <target>_bundle.whl}) is not a parseable wheel
+ * filename — in a local simple index pip never resolves it, and a registry
+ * rejects the upload (Artifact Registry answered 400 for cohub-vdp-proto
+ * 2.64.0). Local mode copies the wheel under that name into a per-project
+ * directory named per PEP 503; remote mode uploads a copy staged under it, by
+ * twine or the stdlib fallback.
  *
- * <p>Also pins where the wheel goes: {@code --repo}, else {@code --index-url},
- * else {@code $PYPI_REPO}, else {@code ~/.cache/pip/simple}. The publish target
+ * <p>The name is normalized as the binary distribution format specifies: the
+ * distribution lowercased with runs of {@code -_.} as {@code _}, the version in
+ * canonical PEP 440 form ({@code 1.0.0-rc.1} is published as {@code 1.0.0rc1}),
+ * and a WHEEL {@code Build:} number carried as the optional build tag.
+ *
+ * <p>Also pins the refusals that run before anything is written or uploaded, in
+ * both modes: a file that is not a wheel (no zip, zero or several
+ * {@code .dist-info} directories, no WHEEL file, no Tag, tags that do not
+ * compress), a wheel of another distribution, a wheel built at another version
+ * than the bundle's, and a bundle version that is not PEP 440. Each fails with
+ * a message, never a traceback.
+ *
+ * <p>And where the wheel goes: {@code --repo}, else {@code --index-url}, else
+ * {@code $PYPI_REPO}, else {@code ~/.cache/pip/simple}. The publish target
  * gazelle emits passes neither flag, so {@code $PYPI_REPO} (protolakew's
  * {@code --pypi-repo}, CI's registry URL) is the only way a remote registry
  * reaches the script.
@@ -42,6 +62,7 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 class PypiPublisherScriptTest {
 
     private static final String TEMPLATE_DIR = "templates/tools/publish/";
+    private static final Pattern UPLOAD_FILENAME = Pattern.compile("filename=\"([^\"]+)\"");
 
     @TempDir
     Path tempDir;
@@ -63,14 +84,14 @@ class PypiPublisherScriptTest {
     @Test
     void localRepo_renamesBazelWheelToPep427_underPep503ProjectDir() throws Exception {
         // Bazel names the wheel after the target, not the distribution
-        Path wheel = Files.writeString(tempDir.resolve("vdp_py_bundle_bundle.whl"), "fake");
+        Path wheel = wheel("vdp_py_bundle_bundle.whl", "company_user_proto", "1.2.3");
 
         ProcessResult result = runPublisher(wheel, "company_user_proto", "1.2.3");
 
         assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
         Path published = repo.resolve("company-user-proto")
                 .resolve("company_user_proto-1.2.3-py3-none-any.whl");
-        assertThat(published).exists();
+        assertThat(published).exists().hasSameBinaryContentAs(wheel);
         assertThat(repo.resolve("company-user-proto/vdp_py_bundle_bundle.whl")).doesNotExist();
 
         // Both index levels must reference the names pip requests
@@ -81,19 +102,32 @@ class PypiPublisherScriptTest {
 
     @Test
     void localRepo_normalizesProjectNamePerPep503() throws Exception {
-        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+        // setuptools escapes the distribution in the .dist-info name
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0");
 
         ProcessResult result = runPublisher(wheel, "Company.User_Proto", "0.4.0");
 
         assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
-        // Directory: PEP 503 (runs of -_. -> "-"); filename: PEP 427 (-> "_")
+        // Directory: PEP 503 (runs of -_. -> "-"); filename: PEP 427, from the wheel
         assertThat(repo.resolve("company-user-proto")
                 .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
     }
 
     @Test
+    void severalTags_compressIntoTheFilename() throws Exception {
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0",
+                "py2-none-any", "py3-none-any");
+
+        ProcessResult result = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py2.py3-none-any.whl")).exists();
+    }
+
+    @Test
     void pypiRepoEnv_isTheRepoWhenNoRepoFlagIsGiven() throws Exception {
-        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0");
 
         ProcessResult result = run(wheel, "company_user_proto", "0.4.0", List.of(),
                 Map.of("PYPI_REPO", repo.toString()));
@@ -105,7 +139,7 @@ class PypiPublisherScriptTest {
 
     @Test
     void repoFlag_winsOverPypiRepoEnv() throws Exception {
-        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0");
         Path envRepo = tempDir.resolve("env-repo");
 
         ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
@@ -118,17 +152,18 @@ class PypiPublisherScriptTest {
     }
 
     @Test
-    void pypiRepoEnvUrl_uploadsToThatRegistry() throws Exception {
-        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake-wheel");
+    void pypiRepoEnvUrl_uploadsThePep427NamedWheelToThatRegistry() throws Exception {
+        Path wheel = wheel("vdp_py_bundle_bundle.whl", "company_user_proto", "0.4.0");
         List<String> requests = new CopyOnWriteArrayList<>();
         HttpServer server = HttpServer.create(
                 new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
         server.createContext("/", exchange -> {
             String body = new String(exchange.getRequestBody().readAllBytes(),
                     StandardCharsets.ISO_8859_1);
+            Matcher filename = UPLOAD_FILENAME.matcher(body);
             requests.add(exchange.getRequestMethod() + " " + exchange.getRequestURI().getPath()
                     + " auth=" + exchange.getRequestHeaders().getFirst("Authorization")
-                    + " wheel=" + body.contains("filename=\"user_bundle.whl\""));
+                    + " file=" + (filename.find() ? filename.group(1) : "<none>"));
             exchange.sendResponseHeaders(200, -1);
             exchange.close();
         });
@@ -142,16 +177,50 @@ class PypiPublisherScriptTest {
                             "PATH", emptyPath.toString()));
 
             assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
-            assertThat(requests).containsExactly(
-                    "POST /pypi/ auth=Bearer test-token wheel=true");
+            assertThat(requests).containsExactly("POST /pypi/ auth=Bearer test-token"
+                    + " file=company_user_proto-0.4.0-py3-none-any.whl");
         } finally {
             server.stop(0);
         }
     }
 
     @Test
+    void remoteRegistry_twineUploadsThePep427NamedWheel() throws Exception {
+        Path wheel = wheel("vdp_py_bundle_bundle.whl", "cohub_vdp_proto", "2.64.0");
+        Path bin = Files.createDirectories(tempDir.resolve("bin"));
+        Path captured = tempDir.resolve("captured");
+        // A fake twine on an otherwise empty PATH: it answers --version, and for
+        // an upload records the credentials and keeps a copy of each wheel it
+        // was handed, under the name it was handed.
+        Path twine = Files.writeString(bin.resolve("twine"), String.join("\n",
+                "#!/bin/sh",
+                "[ \"$1\" = \"--version\" ] && exit 0",
+                "/bin/mkdir -p '" + captured + "'",
+                "echo \"$TWINE_USERNAME:$TWINE_PASSWORD\" > '" + captured + "/creds'",
+                "for arg in \"$@\"; do",
+                "  case \"$arg\" in *.whl) /bin/cp \"$arg\" '" + captured + "/' ;; esac",
+                "done",
+                ""));
+        assertThat(twine.toFile().setExecutable(true)).isTrue();
+
+        ProcessResult result = run(wheel, "cohub_vdp_proto", "2.64.0", List.of(),
+                Map.of("PYPI_REPO", "https://registry.invalid/python-internal/",
+                        "REGISTRY_TOKEN", "test-token", "PATH", bin.toString()));
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        try (var uploaded = Files.list(captured)) {
+            assertThat(uploaded.map(p -> p.getFileName().toString()).sorted())
+                    .containsExactly("cohub_vdp_proto-2.64.0-py3-none-any.whl", "creds");
+        }
+        assertThat(captured.resolve("cohub_vdp_proto-2.64.0-py3-none-any.whl"))
+                .hasSameBinaryContentAs(wheel);
+        assertThat(captured.resolve("creds")).content()
+                .isEqualTo("oauth2accesstoken:test-token\n");
+    }
+
+    @Test
     void indexUrlFlag_winsOverPypiRepoEnv() throws Exception {
-        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake-wheel");
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0");
         List<String> paths = new CopyOnWriteArrayList<>();
         HttpServer server = HttpServer.create(
                 new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
@@ -179,7 +248,7 @@ class PypiPublisherScriptTest {
 
     @Test
     void localRepoFlag_winsOverIndexUrl() throws Exception {
-        Path wheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "fake");
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0");
 
         // An unreachable URL: reaching it at all would fail the run.
         ProcessResult result = run(wheel, "company_user_proto", "0.4.0",
@@ -189,6 +258,323 @@ class PypiPublisherScriptTest {
         assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
         assertThat(repo.resolve("company-user-proto")
                 .resolve("company_user_proto-0.4.0-py3-none-any.whl")).exists();
+    }
+
+    @Test
+    void fileThatIsNotAWheel_isRefusedBeforeAnythingIsWritten() throws Exception {
+        Path notAWheel = Files.writeString(tempDir.resolve("user_bundle.whl"), "not a zip");
+
+        ProcessResult result = runPublisher(notAWheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isNotZero();
+        assertThat(result.output).contains("is not a wheel");
+        assertThat(repo).doesNotExist();
+    }
+
+    @Test
+    void wheelOfAnotherDistribution_isRefusedBeforeAnythingIsWritten() throws Exception {
+        Path wheel = wheel("user_bundle.whl", "other_proto", "0.4.0");
+
+        ProcessResult result = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isNotZero();
+        assertThat(result.output).contains("holds distribution 'other_proto'");
+        assertThat(repo).doesNotExist();
+    }
+
+    @Test
+    void wheelBuiltAtAnotherVersion_isRefusedBeforeAnythingIsWritten() throws Exception {
+        // A stale build: the wheel predates the bundle's version bump
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.3.9");
+
+        ProcessResult result = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isNotZero();
+        assertThat(result.output)
+                .contains("carries version '0.3.9', but the bundle's version is '0.4.0':"
+                        + " rebuild the wheel")
+                .doesNotContain("PEP 440 form");
+        assertThat(repo).doesNotExist();
+    }
+
+    @Test
+    void distributionAndVersion_comeFromTheWheel_inNormalizedForm() throws Exception {
+        // An older setuptools keeps the project's capitals and dots in the
+        // .dist-info name; a pre-release is stamped in canonical PEP 440 form.
+        Path wheel = wheel("user_bundle.whl", "Company.User_Proto", "1.0.0rc1");
+
+        ProcessResult result = runPublisher(wheel, "company-user-proto", "1.0.0-rc.1");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-1.0.0rc1-py3-none-any.whl")).exists();
+        // the raw bundle spelling never names the file
+        try (var published = Files.list(repo.resolve("company-user-proto"))) {
+            assertThat(published.map(f -> f.getFileName().toString()))
+                    .noneMatch(f -> f.contains("rc.1") || f.contains("rc_1"));
+        }
+    }
+
+    @Test
+    void buildNumber_isCarriedIntoTheFilename() throws Exception {
+        Path wheel = wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/METADATA", "Name: company_user_proto\n",
+                "company_user_proto-0.4.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nBuild: 1\nTag: py3-none-any\n"));
+
+        ProcessResult result = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-1-py3-none-any.whl")).exists();
+    }
+
+    @Test
+    void buildTagWithAnUnderscore_isCarriedIntoTheFilename() throws Exception {
+        Path wheel = wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nBuild: 1_abc\nTag: py3-none-any\n"));
+
+        ProcessResult result = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(result.exitCode).as("publisher output:\n%s", result.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-1_abc-py3-none-any.whl")).exists();
+    }
+
+    @Test
+    void buildTagThatDoesNotStartWithADigit_isRefused() throws Exception {
+        assertRefusedInBothModes(wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/WHEEL",
+                "Wheel-Version: 1.0\nBuild: abc\nTag: py3-none-any\n")), "0.4.0",
+                "has a malformed Build");
+    }
+
+    @Test
+    void wheelAlreadyInTheIndex_isRepublishedInPlace() throws Exception {
+        // Publishing the index's own copy again must not delete it first
+        Path wheel = wheel("vdp_py_bundle_bundle.whl", "company_user_proto", "0.4.0");
+        assertThat(runPublisher(wheel, "company_user_proto", "0.4.0").exitCode).isZero();
+        Path published = repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl");
+
+        ProcessResult again = runPublisher(published, "company_user_proto", "0.4.0");
+
+        assertThat(again.exitCode).as("publisher output:\n%s", again.output).isZero();
+        assertThat(published).exists().hasSameBinaryContentAs(wheel);
+        try (var files = Files.list(published.getParent())) {
+            assertThat(files.map(f -> f.getFileName().toString()).sorted())
+                    .containsExactly("company_user_proto-0.4.0-py3-none-any.whl", "index.html");
+        }
+    }
+
+    @Test
+    void normalizePep440_matchesPackagingCanonicalForms_asciiOnly() throws Exception {
+        // Expected values are packaging's str(Version(v)); None = InvalidVersion.
+        // The non-ASCII inputs are written as Python escapes so the command
+        // line stays ASCII whatever the JVM's argument encoding.
+        String check = String.join("\n",
+                "import sys",
+                "sys.path.insert(0, sys.argv[1])",
+                "import pypi_publisher_generated as p",
+                "cases = {",
+                "    '2.64.0': '2.64.0', '1.0.0-rc.1': '1.0.0rc1', '1.0.0.RC1': '1.0.0rc1',",
+                "    '2.60.0+g02c3': '2.60.0+g02c3', '1.0-1': '1.0.post1', '1.0a': '1.0a0',",
+                "    '1.0.post': '1.0.post0', '1.0.dev': '1.0.dev0', 'v1.0': '1.0',",
+                "    '1!2.0': '1!2.0', '0!1.0': '1.0', '2.064.0': '2.64.0',",
+                "    '1.0.0+Ubuntu-1_007': '1.0.0+ubuntu.1.7', '1.0-alpha.2.dev3': '1.0a2.dev3',",
+                "    ' 1.0 ': '1.0', '1.0.0~beta': None, 'latest': None, '': None,",
+                "    '1.0+\\u212a': None, '1.0po\\u017ft1': None,",
+                "}",
+                "bad = {v: (p.normalize_pep440(v), want) for v, want in cases.items()",
+                "       if p.normalize_pep440(v) != want}",
+                "print('MISMATCH ' + repr(bad) if bad else 'OK')");
+        Process process = new ProcessBuilder(python3(), "-c", check,
+                script.getParent().toString())
+                .directory(tempDir.toFile()).redirectErrorStream(true).start();
+        String output = new String(process.getInputStream().readAllBytes()).trim();
+        assertThat(process.waitFor(30, TimeUnit.SECONDS)).isTrue();
+        assertThat(output).isEqualTo("OK");
+    }
+
+    @Test
+    void readOnlyBazelOutput_canBePublishedTwiceAtTheSameVersion() throws Exception {
+        // Bazel outputs are read-only; a copy that kept the mode could not be
+        // overwritten by the next publish of the same version.
+        Path wheel = wheel("vdp_py_bundle_bundle.whl", "company_user_proto", "0.4.0");
+        Files.setPosixFilePermissions(wheel, PosixFilePermissions.fromString("r--r--r--"));
+
+        ProcessResult first = runPublisher(wheel, "company_user_proto", "0.4.0");
+        ProcessResult second = runPublisher(wheel, "company_user_proto", "0.4.0");
+
+        assertThat(first.exitCode).as("first publish:\n%s", first.output).isZero();
+        assertThat(second.exitCode).as("second publish:\n%s", second.output).isZero();
+        assertThat(repo.resolve("company-user-proto")
+                .resolve("company_user_proto-0.4.0-py3-none-any.whl"))
+                .hasSameBinaryContentAs(wheel);
+    }
+
+    @Test
+    void wheelWithoutDistInfo_isRefused() throws Exception {
+        assertRefusedInBothModes(wheelWith("user_bundle.whl",
+                entries("company/__init__.py", "")), "0.4.0",
+                "has 0 .dist-info directories, not one");
+    }
+
+    @Test
+    void wheelWithSeveralDistInfos_isRefused() throws Exception {
+        assertRefusedInBothModes(wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/WHEEL", "Tag: py3-none-any\n",
+                "other_proto-0.4.0.dist-info/WHEEL", "Tag: py3-none-any\n")), "0.4.0",
+                "has 2 .dist-info directories, not one");
+    }
+
+    @Test
+    void wheelWithoutWheelFile_isRefused() throws Exception {
+        assertRefusedInBothModes(wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/METADATA", "Name: company_user_proto\n")),
+                "0.4.0", "company_user_proto-0.4.0.dist-info has no WHEEL file");
+    }
+
+    @Test
+    void wheelWhoseWheelFileListsNoTag_isRefused() throws Exception {
+        assertRefusedInBothModes(wheelWith("user_bundle.whl", entries(
+                "company_user_proto-0.4.0.dist-info/WHEEL", "Wheel-Version: 1.0\n")),
+                "0.4.0", "WHEEL lists no Tag");
+    }
+
+    @Test
+    void wheelWhoseWheelFileIsNotUtf8_isRefused() throws Exception {
+        Path wheel = tempDir.resolve("user_bundle.whl");
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(wheel))) {
+            putEntry(zip, "company_user_proto-0.4.0.dist-info/WHEEL",
+                    new byte[] {'T', 'a', 'g', ':', ' ', (byte) 0xff, (byte) 0xfe});
+        }
+        assertRefusedInBothModes(wheel, "0.4.0", "is not a wheel");
+    }
+
+    @Test
+    void tagsThatDoNotCompress_areRefused() throws Exception {
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "0.4.0",
+                "py3-none-any", "cp312-cp312-manylinux_2_17_x86_64");
+        assertRefusedInBothModes(wheel, "0.4.0", "do not compress into one filename tag set");
+    }
+
+    @Test
+    void directoryInPlaceOfTheWheel_isRefused() throws Exception {
+        Path directory = Files.createDirectories(tempDir.resolve("user_bundle.whl"));
+        assertRefusedInBothModes(directory, "0.4.0", "is not a wheel");
+    }
+
+    @Test
+    void bundleVersionThatIsNotPep440_isRefused() throws Exception {
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "1.0.0");
+        assertRefusedInBothModes(wheel, "1.0.0~beta", "is not a PEP 440 version");
+    }
+
+    @Test
+    void wheelBuiltAtAnotherPreRelease_isRefusedNamingThePep440Form() throws Exception {
+        Path wheel = wheel("user_bundle.whl", "company_user_proto", "1.0.0rc1");
+        assertRefusedInBothModes(wheel, "1.0.0-rc.2",
+                "carries version '1.0.0rc1', but the bundle's version '1.0.0-rc.2'"
+                        + " is '1.0.0rc2' in PEP 440 form");
+    }
+
+    @Test
+    void wheelOfAnotherDistribution_isRefusedInRemoteModeToo() throws Exception {
+        Path wheel = wheel("user_bundle.whl", "other_proto", "0.4.0");
+        assertRefusedInBothModes(wheel, "0.4.0", "holds distribution 'other_proto'");
+    }
+
+    /**
+     * Runs a publish expected to be refused once into the local repo and once
+     * against a registry, and asserts the refusal message, that no traceback
+     * leaks, and that nothing was written or uploaded in either mode.
+     */
+    private void assertRefusedInBothModes(Path wheel, String bundleVersion, String message)
+            throws Exception {
+        ProcessResult local = runPublisher(wheel, "company_user_proto", bundleVersion);
+        assertThat(local.exitCode).as("local publish:\n%s", local.output).isNotZero();
+        assertThat(local.output).contains(message).doesNotContain("Traceback");
+        assertThat(repo).doesNotExist();
+
+        List<String> requests = new CopyOnWriteArrayList<>();
+        HttpServer server = HttpServer.create(
+                new InetSocketAddress(InetAddress.getLoopbackAddress(), 0), 0);
+        server.createContext("/", exchange -> {
+            exchange.getRequestBody().readAllBytes();
+            requests.add(exchange.getRequestURI().getPath());
+            exchange.sendResponseHeaders(200, -1);
+            exchange.close();
+        });
+        server.start();
+        try {
+            String url = "http://127.0.0.1:" + server.getAddress().getPort() + "/pypi";
+            Path emptyPath = Files.createDirectories(tempDir.resolve("empty-path"));
+            ProcessResult remote = run(wheel, "company_user_proto", bundleVersion, List.of(),
+                    Map.of("PYPI_REPO", url, "REGISTRY_TOKEN", "test-token",
+                            "PATH", emptyPath.toString()));
+            assertThat(remote.exitCode).as("remote publish:\n%s", remote.output).isNotZero();
+            assertThat(remote.output).contains(message).doesNotContain("Traceback");
+            assertThat(requests).isEmpty();
+        } finally {
+            server.stop(0);
+        }
+    }
+
+    /**
+     * A minimal wheel as setuptools lays one out: a module, and one
+     * {@code <distribution>-<version>.dist-info} holding METADATA, WHEEL (with
+     * its tags) and RECORD. Written under {@code fileName}, the name bazel gives it.
+     */
+    private Path wheel(String fileName, String distribution, String version, String... tags)
+            throws IOException {
+        String distInfo = distribution + "-" + version + ".dist-info/";
+        StringBuilder wheelFile = new StringBuilder(
+                "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\n");
+        for (String tag : tags.length == 0 ? new String[] {"py3-none-any"} : tags) {
+            wheelFile.append("Tag: ").append(tag).append('\n');
+        }
+        Path path = tempDir.resolve(fileName);
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(path))) {
+            putEntry(zip, "company/__init__.py", "");
+            putEntry(zip, distInfo + "METADATA",
+                    "Metadata-Version: 2.1\nName: " + distribution + "\nVersion: " + version + "\n");
+            putEntry(zip, distInfo + "WHEEL", wheelFile.toString());
+            putEntry(zip, distInfo + "RECORD", "");
+        }
+        return path;
+    }
+
+    /** A zip holding exactly {@code entries} (name → content), written under {@code fileName}. */
+    private Path wheelWith(String fileName, Map<String, String> entries) throws IOException {
+        Path path = tempDir.resolve(fileName);
+        try (ZipOutputStream zip = new ZipOutputStream(Files.newOutputStream(path))) {
+            for (Map.Entry<String, String> entry : entries.entrySet()) {
+                putEntry(zip, entry.getKey(), entry.getValue());
+            }
+        }
+        return path;
+    }
+
+    private static Map<String, String> entries(String... namesAndContents) {
+        Map<String, String> entries = new LinkedHashMap<>();
+        for (int i = 0; i < namesAndContents.length; i += 2) {
+            entries.put(namesAndContents[i], namesAndContents[i + 1]);
+        }
+        return entries;
+    }
+
+    private static void putEntry(ZipOutputStream zip, String name, String content)
+            throws IOException {
+        putEntry(zip, name, content.getBytes(StandardCharsets.UTF_8));
+    }
+
+    private static void putEntry(ZipOutputStream zip, String name, byte[] content)
+            throws IOException {
+        zip.putNextEntry(new ZipEntry(name));
+        zip.write(content);
+        zip.closeEntry();
     }
 
     private Path copyTemplate(String name, Path targetDir) throws IOException {
