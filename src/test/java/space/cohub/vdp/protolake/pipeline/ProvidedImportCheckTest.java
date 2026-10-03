@@ -109,6 +109,17 @@ class ProvidedImportCheckTest {
     }
 
     @Test
+    void check_importOfAPathThatIsNotUtf8_reachesNoFile() throws IOException {
+        // \uD83D alone spells bytes that are not UTF-8, so protoc finds no file for them. Read with
+        // replacement they would name lib/v1/\uFFFD.proto, which exists here and imports the options.
+        bundle("lib", "syntax = \"proto3\";\n", "proto_library(\n)\n");
+        Files.writeString(lake.resolve("lib/v1/\uFFFD.proto"), IMPORTING);
+        bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/\\uD83D.proto\";\n", "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, "app")).isEmpty();
+    }
+
+    @Test
     void check_bundleWhoseImportsNeverReachIt_isUntouched() throws IOException {
         bundle("lib", "syntax = \"proto3\";\nimport \"google/api/annotations.proto\";\n", "proto_library(\n)\n");
         bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/lib.proto\";\nimport \"missing/v1/x.proto\";\n",

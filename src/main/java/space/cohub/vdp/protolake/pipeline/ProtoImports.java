@@ -1,9 +1,13 @@
 package space.cohub.vdp.protolake.pipeline;
 
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
 /**
  * The import statements of a .proto file, read the way protoc reads them.
@@ -34,7 +38,10 @@ final class ProtoImports {
     private ProtoImports() {
     }
 
-    /** The imports of a .proto file's bytes, plain, public and weak, in source order. */
+    /**
+     * The imports of a .proto file's bytes, plain, public and weak, in source
+     * order; an import whose path is not UTF-8 is left out (strictUtf8).
+     */
     static List<Import> parse(byte[] source) {
         List<Token> tokens = new Lexer(source).tokens();
         List<Import> imports = new ArrayList<>();
@@ -86,7 +93,33 @@ final class ProtoImports {
             return null;
         }
         Token keyword = tokens.get(index);
-        return new Import(path.toString(StandardCharsets.UTF_8), keyword.line(), keyword.column());
+        return strictUtf8(path.toByteArray())
+                .map(name -> new Import(name, keyword.line(), keyword.column()))
+                .orElse(null);
+    }
+
+    /**
+     * The path an import's bytes spell, read as UTF-8 strictly; empty when
+     * they are not UTF-8, as a lone surrogate's three bytes are not. Such a
+     * path names no file this can resolve, and the import is left out:
+     * decoding it with replacement would turn it into U+FFFD and match a file
+     * of that name, which protoc would never open for it. On Linux, where a
+     * file name may be any bytes, protoc can open a path that is not UTF-8
+     * and no Java String names, so such a file is outside what this reads;
+     * for a path spelled with a Unicode escape the build fails regardless,
+     * since gazelle's import pattern has no Unicode-escape alternative and
+     * adds no dependency for the import.
+     */
+    private static Optional<String> strictUtf8(byte[] bytes) {
+        try {
+            return Optional.of(StandardCharsets.UTF_8.newDecoder()
+                    .onMalformedInput(CodingErrorAction.REPORT)
+                    .onUnmappableCharacter(CodingErrorAction.REPORT)
+                    .decode(ByteBuffer.wrap(bytes))
+                    .toString());
+        } catch (CharacterCodingException e) {
+            return Optional.empty();
+        }
     }
 
     private enum Kind { WORD, STRING, SYMBOL }

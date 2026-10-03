@@ -2,8 +2,6 @@ package space.cohub.vdp.protolake.pipeline;
 
 import org.junit.jupiter.api.Test;
 
-import java.io.ByteArrayOutputStream;
-import java.nio.charset.StandardCharsets;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -81,13 +79,16 @@ class ProtoImportsTest {
     }
 
     @Test
-    void parse_surrogatesLeftUnpaired_takeTheBytesProtocGivesThem() {
-        // As protoc 33 encodes them: an unpaired surrogate alone in three bytes, an uppercase-U
-        // trail never paired, and a value past U+10FFFF kept as its escape's text.
-        assertThat(paths("import \"lib/\\uD83D.proto\";")).containsExactly(utf8("lib/", 0xED, 0xA0, 0xBD, ".proto"));
-        assertThat(paths("import \"lib/\\uDE00.proto\";")).containsExactly(utf8("lib/", 0xED, 0xB8, 0x80, ".proto"));
-        assertThat(paths("import \"lib/\\uD83D\\U0000DE00.proto\";"))
-                .containsExactly(utf8("lib/", 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80, ".proto"));
+    void parse_pathsThatAreNotUtf8_nameNoFile() {
+        // protoc writes an unpaired surrogate as its own three bytes (\uD83D as ED A0 BD), and an
+        // uppercase-U trail is never paired; such bytes, like a stray \xff or a split sequence, are
+        // not UTF-8 and name no file, so the import resolves to nothing.
+        assertThat(paths("import \"lib/\\uD83D.proto\";")).isEmpty();
+        assertThat(paths("import \"lib/\\uDE00.proto\";")).isEmpty();
+        assertThat(paths("import \"lib/\\uD83D\\U0000DE00.proto\";")).isEmpty();
+        assertThat(paths("import \"lib/\\xff.proto\";")).isEmpty();
+        assertThat(paths("import \"lib/\\303\" \".proto\";")).isEmpty();
+        // Not a surrogate: a value past U+10FFFF stays as its escape's text, which a file can be named.
         assertThat(paths("import \"lib/\\U00110000.proto\";")).containsExactly("lib/\\U00110000.proto");
     }
 
@@ -141,18 +142,5 @@ class ProtoImportsTest {
 
     private static List<String> paths(String source) {
         return ProtoImports.parse(source).stream().map(ProtoImports.Import::path).toList();
-    }
-
-    /** Text and raw bytes joined, then read as UTF-8, as the parser reads a path. */
-    private static String utf8(Object... parts) {
-        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
-        for (Object part : parts) {
-            if (part instanceof Integer b) {
-                bytes.write(b);
-            } else {
-                bytes.writeBytes(part.toString().getBytes(StandardCharsets.UTF_8));
-            }
-        }
-        return bytes.toString(StandardCharsets.UTF_8);
     }
 }
