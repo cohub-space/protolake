@@ -249,10 +249,12 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         Path toolsPath = lakePath.resolve("tools");
         assertFileContains(toolsPath.resolve("api_specs.bzl"),
             "api_specs = aspect(",
-            "\"bundle_versions\": attr.string(",
+            "\"_tool\": attr.label(",
             "PROTOC_GEN_OPENAPIV2_VERSION = ",
             "PROTOC_GEN_CONNECT_OPENAPI_VERSION = "
         );
+        // Parameter-free, so the bundle rules and protolake apply the same aspect.
+        assertFileDoesNotContain(toolsPath.resolve("api_specs.bzl"), "bundle_versions");
         assertExecutableFile(toolsPath.resolve("api_specs/api_specs_generated.py"));
         assertFileExists(toolsPath, "api_specs/asyncapi_generated.py", "api_specs/protodesc_generated.py");
         assertFileContains(toolsPath.resolve("BUILD.bazel"),
