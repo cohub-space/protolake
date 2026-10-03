@@ -779,6 +779,24 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
     else
         fail "validation wrote $LAKE_DIR/cohub"
     fi
+    # A change that drops the lake's last import of the options: the baseline
+    # still imports them, and the breaking check must still resolve it.
+    LAKE_THINGS="$LAKE_DIR/api_demo/v1/things.proto"
+    grep -v 'cohub' fixtures/test-protos/api_demo/v1/things.proto > "$LAKE_THINGS"
+    DROP_LOG="${ABS_OUTPUT_DIR}/validate-dropped-options.log"
+    if lake_git commit -q -m "test: drop the cohub options" -- api_demo/v1/things.proto; then
+        (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "$DROP_LOG" 2>&1
+        DROP_EXIT=$?
+    else
+        DROP_EXIT=commit-failed
+    fi
+    if [ "$DROP_EXIT" = 0 ]; then
+        pass "protolakew validate passes on a change that drops the lake's last import of the options"
+    else
+        fail "protolakew validate ($DROP_EXIT) after dropping the options; see $DROP_LOG"
+    fi
+    cp fixtures/test-protos/api_demo/v1/things.proto "$LAKE_THINGS"
+    lake_git commit -q -m "test: import the cohub options again" -- api_demo/v1/things.proto
 else
     echo "  Skipping validation (the first build did not succeed)"
 fi
@@ -807,6 +825,27 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
     check_file_contains "$REF_LOG" "Bundle api_demo imports cohub/api/v1/exposure.proto and builds Java packages" \
         "the refusal names the bundle and the language"
     check_file_contains "$REF_LOG" "api_demo/v1/things.proto:5:1:" "the refusal points at the import"
+
+    # rest_demo builds packages and imports api_demo's protos, which import the
+    # options; the import is single-quoted, after another statement on its line.
+    sed -i.bak 's/^      enabled: true$/      enabled: false/' "$AD_YAML" && rm -f "$AD_YAML.bak"
+    NOTES="$LAKE_DIR/rest_demo/v1/notes.proto"
+    sed "s#^import \"google/api/annotations.proto\";\$#import \"google/api/annotations.proto\"; import 'api_demo/v1/things.proto';#" \
+        fixtures/test-protos/rest_demo/v1/notes.proto > "$NOTES"
+    check_file_contains "$NOTES" "; import 'api_demo/v1/things.proto';" "rest_demo imports api_demo's protos"
+    THROUGH_LOG="${ABS_OUTPUT_DIR}/build-imports-through-api-demo.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --skip-validation) > "$THROUGH_LOG" 2>&1
+    THROUGH_EXIT=$?
+    if [ $THROUGH_EXIT -ne 0 ]; then
+        pass "the build fails (exit $THROUGH_EXIT) for a bundle whose imports reach the options"
+    else
+        fail "the build succeeded for rest_demo, whose imports reach the cohub options"
+    fi
+    check_file_contains "$THROUGH_LOG" \
+        "rest_demo/v1/notes.proto imports api_demo/v1/things.proto, which imports cohub/api/v1/exposure.proto" \
+        "the refusal names the chain of imports"
+    check_file_contains "$THROUGH_LOG" "rest_demo/v1/notes.proto:5:40:" "the refusal points at rest_demo's import"
+    cp fixtures/test-protos/rest_demo/v1/notes.proto "$NOTES"
 else
     echo "  Skipping the refusal build (the first build did not succeed)"
 fi
