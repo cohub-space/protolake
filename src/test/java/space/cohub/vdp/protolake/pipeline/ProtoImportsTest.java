@@ -2,6 +2,10 @@ package space.cohub.vdp.protolake.pipeline;
 
 import org.junit.jupiter.api.Test;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 /**
@@ -67,6 +71,27 @@ class ProtoImportsTest {
     }
 
     @Test
+    void parse_surrogatePairEscapes_joinIntoOneCharacter() {
+        // protoc joins a head surrogate with a directly following lowercase-u trail surrogate.
+        String smile = "lib/😀.proto";
+
+        assertThat(paths("import \"lib/\\uD83D\\uDE00.proto\";")).containsExactly(smile);
+        assertThat(paths("import \"lib/\\U0000D83D\\uDE00.proto\";")).containsExactly(smile);
+        assertThat(paths("import \"lib/\\U0001F600.proto\";")).containsExactly(smile);
+    }
+
+    @Test
+    void parse_surrogatesLeftUnpaired_takeTheBytesProtocGivesThem() {
+        // As protoc 33 encodes them: an unpaired surrogate alone in three bytes, an uppercase-U
+        // trail never paired, and a value past U+10FFFF kept as its escape's text.
+        assertThat(paths("import \"lib/\\uD83D.proto\";")).containsExactly(utf8("lib/", 0xED, 0xA0, 0xBD, ".proto"));
+        assertThat(paths("import \"lib/\\uDE00.proto\";")).containsExactly(utf8("lib/", 0xED, 0xB8, 0x80, ".proto"));
+        assertThat(paths("import \"lib/\\uD83D\\U0000DE00.proto\";"))
+                .containsExactly(utf8("lib/", 0xED, 0xA0, 0xBD, 0xED, 0xB8, 0x80, ".proto"));
+        assertThat(paths("import \"lib/\\U00110000.proto\";")).containsExactly("lib/\\U00110000.proto");
+    }
+
+    @Test
     void parse_aCommentInAnotherEncoding_isSkippedLikeAnyComment() {
         byte[] latin1 = "syntax = \"proto3\";\n// café in Latin-1\nimport \"a.proto\";\n"
                 .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
@@ -112,5 +137,22 @@ class ProtoImportsTest {
         // protoc rejects both files; the parse only has to stop without failing.
         assertThat(ProtoImports.parse("import \"a.proto\";\n/* never closed")).hasSize(1);
         assertThat(ProtoImports.parse("import \"never closed\n")).isEmpty();
+    }
+
+    private static List<String> paths(String source) {
+        return ProtoImports.parse(source).stream().map(ProtoImports.Import::path).toList();
+    }
+
+    /** Text and raw bytes joined, then read as UTF-8, as the parser reads a path. */
+    private static String utf8(Object... parts) {
+        ByteArrayOutputStream bytes = new ByteArrayOutputStream();
+        for (Object part : parts) {
+            if (part instanceof Integer b) {
+                bytes.write(b);
+            } else {
+                bytes.writeBytes(part.toString().getBytes(StandardCharsets.UTF_8));
+            }
+        }
+        return bytes.toString(StandardCharsets.UTF_8);
     }
 }

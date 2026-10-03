@@ -191,8 +191,7 @@ final class ProtoImports {
                     case 't' -> value.write('\t');
                     case 'v' -> value.write(0x0B);
                     case 'x', 'X' -> value.write(number(16, 2, 0));
-                    case 'u' -> writeUtf8(value, number(16, 4, 0));
-                    case 'U' -> writeUtf8(value, number(16, 8, 0));
+                    case 'u', 'U' -> unicode(value, escape);
                     default -> {
                         if (escape >= '0' && escape <= '7') {
                             value.write(number(8, 2, escape - '0'));
@@ -218,10 +217,77 @@ final class ProtoImports {
             return value;
         }
 
-        /** A Unicode escape's code point, as UTF-8; one that is no code point, as '?'. */
-        private static void writeUtf8(ByteArrayOutputStream out, int codePoint) {
-            String text = Character.isValidCodePoint(codePoint) ? new String(Character.toChars(codePoint)) : "?";
-            out.writeBytes(text.getBytes(StandardCharsets.UTF_8));
+        /**
+         * A Unicode escape, the way protoc's tokenizer reads one: exactly four
+         * hex digits after a lowercase u, eight after an uppercase U. A head
+         * surrogate directly followed by a lowercase-u escape of a trail
+         * surrogate is one code point, as in UTF-16; protoc never pairs with
+         * an uppercase-U trail. protoc rejects an escape with too few digits,
+         * so what this keeps for one (the letter, and the digits as plain
+         * text) never reaches a build.
+         */
+        private void unicode(ByteArrayOutputStream value, int letter) {
+            int digits = letter == 'u' ? 4 : 8;
+            long codePoint = hexDigits(position, digits);
+            if (codePoint < 0) {
+                value.write(letter);
+                return;
+            }
+            skip(digits);
+            if (codePoint >= 0xD800 && codePoint <= 0xDBFF && peek(0) == '\\' && peek(1) == 'u') {
+                long trail = hexDigits(position + 2, 4);
+                if (trail >= 0xDC00 && trail <= 0xDFFF) {
+                    skip(6);
+                    codePoint = Character.toCodePoint((char) codePoint, (char) trail);
+                }
+            }
+            appendUtf8(value, codePoint);
+        }
+
+        /** The value of exactly count hex digits at index, or -1 when fewer follow. */
+        private long hexDigits(int index, int count) {
+            long value = 0;
+            for (int i = 0; i < count; i++) {
+                int digit = index + i < source.length ? Character.digit(source[index + i] & 0xFF, 16) : -1;
+                if (digit < 0) {
+                    return -1;
+                }
+                value = value * 16 + digit;
+            }
+            return value;
+        }
+
+        /**
+         * A code point in UTF-8 bytes as protoc's AppendUTF8 writes it: a
+         * surrogate left unpaired still takes its three bytes, which no valid
+         * file name holds, and a value past U+10FFFF is written as the text of
+         * an uppercase-U escape with eight lowercase hex digits.
+         */
+        private static void appendUtf8(ByteArrayOutputStream out, long codePoint) {
+            int cp = (int) codePoint;
+            if (codePoint <= 0x7F) {
+                out.write(cp);
+            } else if (codePoint <= 0x7FF) {
+                out.write(0xC0 | cp >> 6);
+                out.write(0x80 | cp & 0x3F);
+            } else if (codePoint <= 0xFFFF) {
+                out.write(0xE0 | cp >> 12);
+                out.write(0x80 | cp >> 6 & 0x3F);
+                out.write(0x80 | cp & 0x3F);
+            } else if (codePoint <= 0x10FFFF) {
+                out.write(0xF0 | cp >> 18);
+                out.write(0x80 | cp >> 12 & 0x3F);
+                out.write(0x80 | cp >> 6 & 0x3F);
+                out.write(0x80 | cp & 0x3F);
+            } else {
+                out.writeBytes(String.format("\\U%08x", codePoint).getBytes(StandardCharsets.US_ASCII));
+            }
+        }
+
+        private void skip(int count) {
+            for (int i = 0; i < count; i++) {
+                advance();
+            }
         }
 
         private static boolean isWordStart(int c) {
