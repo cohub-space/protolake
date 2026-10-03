@@ -278,7 +278,7 @@ public class ValidationRunner {
             return errors;
         }
         List<String> breakingOutput = overlay == null
-            ? bufCommand.breaking(directory, ".git#ref=" + baseline.get())
+            ? bufCommand.breaking(directory, gitRefInput(baseline.get()))
             : bufCommand.breaking(overlay.root(),
                 overlay.baseline(gitCommand, baseline.get(), cohubApiModule.path()).toString());
         for (String line : breakingOutput) {
@@ -300,7 +300,7 @@ public class ValidationRunner {
     }
 
     /**
-     * The buf input a branch's protos are compared against. A branch is
+     * The commit a branch's protos are compared against. A branch is
      * measured from where it left {@code origin/main} — the merge base —
      * so a breaking change two commits back is still a breaking change;
      * comparing against {@code HEAD~1} alone saw only the last commit and
@@ -308,22 +308,23 @@ public class ValidationRunner {
      * (no remote) compares against the previous commit; one with neither
      * (a depth-1 clone) has no baseline, and the caller reports that as a
      * WARNING rather than a clean check.
-     * Both are {@code ref=} inputs: buf's {@code branch=} takes a branch
-     * name, and {@code branch=HEAD~1} — the previous form — was rejected
-     * with "invalid refspec" on every run, which the runner read as a clean
-     * result.
      */
-    java.util.Optional<String> breakingBaseline(Path directory) {
-        return breakingBaseSha(directory).map(sha -> ".git#ref=" + sha);
-    }
-
-    /** The commit {@link #breakingBaseline} names, for inputs other than buf's git input. */
     java.util.Optional<String> breakingBaseSha(Path directory) {
         java.util.Optional<String> base = gitCommand.mergeBase(directory, BREAKING_BASE_REF);
         if (base.isEmpty()) {
             base = gitCommand.revParse(directory, "HEAD~1");
         }
         return base;
+    }
+
+    /**
+     * buf's git input at a commit. It is a {@code ref=} input: buf's
+     * {@code branch=} takes a branch name, and {@code branch=HEAD~1} — the
+     * previous form — was rejected with "invalid refspec" on every run,
+     * which the runner read as a clean result.
+     */
+    static String gitRefInput(String sha) {
+        return ".git#ref=" + sha;
     }
 
     /**
