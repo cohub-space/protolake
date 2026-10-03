@@ -7,6 +7,7 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -48,17 +49,68 @@ class ApiSpecPinsTest {
                 arg(dockerfile, "PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_ARM64"));
     }
 
+    /**
+     * One SHA-256 check of a downloaded plugin file: the shell variable the
+     * platform's case branch sets from its pin, the file, and the commands
+     * the check must come between, the download and the first use.
+     */
+    private record Check(String variable, String pin, String file, String download, String use) {
+    }
+
+    private static final List<Check> CHECKS = List.of(
+            new Check("OPENAPIV2_SHA256", "PROTOC_GEN_OPENAPIV2_SHA256", "/usr/local/bin/protoc-gen-openapiv2",
+                    "curl -fsSL -o /usr/local/bin/protoc-gen-openapiv2", "chmod +x /usr/local/bin/protoc-gen-openapiv2"),
+            new Check("CONNECT_SHA256", "PROTOC_GEN_CONNECT_OPENAPI_SHA256", "/tmp/protoc-gen-connect-openapi.tar.gz",
+                    "curl -fsSL -o /tmp/protoc-gen-connect-openapi.tar.gz",
+                    "tar -xzf /tmp/protoc-gen-connect-openapi.tar.gz"),
+            new Check("CONNECT_BINARY_SHA256", "PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256",
+                    "/usr/local/bin/protoc-gen-connect-openapi",
+                    "tar -xzf /tmp/protoc-gen-connect-openapi.tar.gz",
+                    "/usr/local/bin/protoc-gen-connect-openapi --version"));
+
     @Test
     void dockerfile_checksEveryPluginOnEveryPlatform() throws IOException {
         String dockerfile = Files.readString(Path.of("Dockerfile"));
+        String install = pluginInstall(dockerfile);
 
-        for (String pin : new String[] {"PROTOC_GEN_OPENAPIV2_SHA256", "PROTOC_GEN_CONNECT_OPENAPI_SHA256",
-                "PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256"}) {
-            for (String arch : new String[] {"AMD64", "ARM64"}) {
-                assertThat(arg(dockerfile, pin + "_" + arch)).matches("[0-9a-f]{64}");
+        for (String arch : List.of("amd64", "arm64")) {
+            String branch = caseBranch(install, arch);
+            for (Check check : CHECKS) {
+                String pin = check.pin() + "_" + arch.toUpperCase(java.util.Locale.ROOT);
+                assertThat(arg(dockerfile, pin)).as("ARG %s", pin).matches("[0-9a-f]{64}");
+                assertThat(branch).as("the %s branch sets %s from %s", arch, check.variable(), pin)
+                        .contains(check.variable() + "=\"${" + pin + "}\"");
             }
         }
-        assertThat(dockerfile).contains("sha256sum -c -");
+        for (Check check : CHECKS) {
+            String command = "echo \"${" + check.variable() + "}  " + check.file() + "\" | sha256sum -c -";
+            int at = install.indexOf(command);
+            assertThat(at).as("the install checks %s: %s", check.file(), command).isNotNegative();
+            assertThat(install.indexOf(command, at + 1)).as("one check of %s", check.file()).isNegative();
+            assertThat(install.indexOf(check.download())).as("%s is downloaded before its check", check.file())
+                    .isNotNegative().isLessThan(at);
+            assertThat(install.indexOf(check.use(), at)).as("%s is used only after its check", check.file())
+                    .isGreaterThan(at);
+            assertThat(install.substring(0, at)).as("%s is not used before its check", check.file())
+                    .doesNotContain(check.use());
+        }
+    }
+
+    /** The RUN instruction that installs the protoc plugins. */
+    private static String pluginInstall(String dockerfile) {
+        int marker = dockerfile.indexOf("OPENAPIV2_ARCH=");
+        assertThat(marker).as("the plugin install in the Dockerfile").isNotNegative();
+        int start = dockerfile.lastIndexOf("\nRUN ", marker);
+        int end = dockerfile.indexOf("\n\n", marker);
+        assertThat(start).isNotNegative();
+        return dockerfile.substring(start, end < 0 ? dockerfile.length() : end);
+    }
+
+    /** The case branch of the install for one TARGETARCH, up to its {@code ;;}. */
+    private static String caseBranch(String install, String arch) {
+        Matcher branch = Pattern.compile("(?s)\\b" + arch + "\\)(.*?);;").matcher(install);
+        assertThat(branch.find()).as("the %s branch of the plugin install", arch).isTrue();
+        return branch.group(1);
     }
 
     private static String arg(String dockerfile, String name) {

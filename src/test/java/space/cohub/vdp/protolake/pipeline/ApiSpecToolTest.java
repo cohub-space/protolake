@@ -84,6 +84,9 @@ class ApiSpecToolTest {
 
     private Path tool;
     private Path pluginState;
+    // The pins the tool is run with; null pins each fake plugin's own digest.
+    private String openapiv2Pins;
+    private String connectOpenapiPins;
 
     @BeforeEach
     void setUp() throws Exception {
@@ -310,6 +313,33 @@ class ApiSpecToolTest {
 
         assertThat(run.errors()).singleElement().satisfies(error -> assertThat(error.path("message").asText())
                 .contains("version 2.30.0", "expects 2.31.0"));
+    }
+
+    @Test
+    void openapi_pluginThatIsNotAPinnedBuild_failsWithoutRunningIt() throws Exception {
+        // The right version, but neither pinned binary: an asset re-upload, or a patched build.
+        openapiv2Pins = "1".repeat(64) + "," + "2".repeat(64);
+
+        Run run = runTool(demoFile(demoService(), null));
+
+        assertThat(run.errors()).singleElement().satisfies(error -> assertThat(error.path("message").asText())
+                .contains(OPENAPIV2, "not a pinned build of 2.31.0"));
+        assertThat(run.specs()).doesNotContain("demo.openapi.json");
+        assertThat(pluginState.resolve(OPENAPIV2 + ".calls")).as("the plugin never ran").doesNotExist();
+    }
+
+    @Test
+    void asyncapi_pluginThatIsNotAPinnedBuild_fallsBackToTheBuiltInGenerator() throws Exception {
+        connectOpenapiPins = "1".repeat(64);
+
+        Run run = runTool(demoFile(demoService(), null));
+
+        assertThat(run.root().path("asyncapi_generator").asText()).isEqualTo("built-in");
+        assertThat(run.warnings()).singleElement().satisfies(warning -> assertThat(warning.path("message").asText())
+                .contains("not a pinned build of 0.28.0", "built-in generator"));
+        assertThat(run.errors()).isEmpty();
+        assertThat(run.specs()).containsExactly("demo.openapi.json", "demo.asyncapi.json");
+        assertThat(pluginState.resolve(CONNECT_OPENAPI + ".calls")).as("the plugin never ran").doesNotExist();
     }
 
     @Test
@@ -730,10 +760,12 @@ class ApiSpecToolTest {
                 "--findings", findings.toString(),
                 "--openapiv2", pluginState.resolve(OPENAPIV2).toString(),
                 "--openapiv2-version", "2.31.0",
-                "--openapiv2-sha256", "0000," + sha256(pluginState.resolve(OPENAPIV2)),
+                "--openapiv2-sha256", openapiv2Pins != null ? openapiv2Pins
+                        : "0000," + sha256(pluginState.resolve(OPENAPIV2)),
                 "--connect-openapi", pluginState.resolve(CONNECT_OPENAPI).toString(),
                 "--connect-openapi-version", "0.28.0",
-                "--connect-openapi-sha256", sha256(pluginState.resolve(CONNECT_OPENAPI)) + ",0000"));
+                "--connect-openapi-sha256", connectOpenapiPins != null ? connectOpenapiPins
+                        : sha256(pluginState.resolve(CONNECT_OPENAPI)) + ",0000"));
         Process process = new ProcessBuilder(command).directory(tempDir.toFile())
                 .redirectErrorStream(true).start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
