@@ -55,6 +55,9 @@ class BuildOrchestratorApiSpecsTest {
     @InjectMock
     ApiSpecRunner apiSpecRunner;
 
+    @InjectMock
+    ProvidedImportCheck providedImportCheck;
+
     private final RecordingListener listener = new RecordingListener();
 
     @BeforeEach
@@ -88,6 +91,19 @@ class BuildOrchestratorApiSpecsTest {
 
         assertThatThrownBy(() -> build(true)).isInstanceOf(BuildOrchestrator.BuildException.class);
         verify(apiSpecRunner).run(any(), eq("."), any());
+    }
+
+    @Test
+    void buildTargetSync_bundleImportingCohubApiWithLanguagePackages_isRefusedBeforeBazel() throws Exception {
+        when(providedImportCheck.check(any(), anyString())).thenReturn(List.of(finding(
+                ValidationError.Severity.ERROR, "api/v1/api.proto", 5, "Bundle api imports cohub/api/v1/exposure.proto")));
+
+        assertThatThrownBy(() -> build(true))
+                .isInstanceOfSatisfying(BuildOrchestrator.BuildException.class, e ->
+                        assertThat(e.getErrors().getErrors()).extracting(ValidationError::getMessage)
+                                .containsExactly("Bundle api imports cohub/api/v1/exposure.proto"));
+        verify(bazelBuildRunner, never()).buildTarget(any(), anyString(), any());
+        verify(apiSpecRunner, never()).run(any(), anyString(), any());
     }
 
     @Test

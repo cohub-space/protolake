@@ -82,9 +82,18 @@ public class BufCommand {
      * @return list of lint violation lines from stdout
      */
     public List<String> lint(Path directory) throws IOException {
+        return lint(directory, List.of());
+    }
+
+    /**
+     * Runs buf lint, leaving some files out of the targets; they stay
+     * available as imports.
+     *
+     * @param excludePaths module-relative paths for {@code --exclude-path}
+     */
+    public List<String> lint(Path directory, List<String> excludePaths) throws IOException {
         LOG.debugf("Running buf lint in: %s", directory);
-        
-        return runWithOutput(directory, "lint");
+        return runWithOutput(directory, withExcludes(List.of("lint"), excludePaths));
     }
 
     /**
@@ -95,11 +104,20 @@ public class BufCommand {
      * @return list of breaking change descriptions from stdout
      */
     public List<String> breaking(Path directory, String against) throws IOException {
+        return breaking(directory, against, List.of());
+    }
+
+    /**
+     * Runs buf breaking, leaving some files out of the comparison.
+     *
+     * @param excludePaths module-relative paths for {@code --exclude-path}
+     */
+    public List<String> breaking(Path directory, String against, List<String> excludePaths) throws IOException {
         LOG.debugf("Running buf breaking in: %s against %s", directory, against);
         // buf v2: 100 = findings, 0 = none, 1 = the command itself failed
         // (an unresolvable --against input, a clone error). A failed
         // baseline must never read as "no breaking changes".
-        BufResult result = run(directory, "breaking", "--against", against);
+        BufResult result = run(directory, withExcludes(List.of("breaking", "--against", against), excludePaths));
         if (result.exitCode() == 1 && result.stdout().isEmpty()) {
             throw new IOException("buf breaking could not compare against " + against + ": "
                 + String.join("\n", result.stderr()));
@@ -165,6 +183,23 @@ public class BufCommand {
      */
     private List<String> runWithOutput(Path directory, String... args) throws IOException {
         return run(directory, args).stdout();
+    }
+
+    private List<String> runWithOutput(Path directory, List<String> args) throws IOException {
+        return run(directory, args.toArray(new String[0])).stdout();
+    }
+
+    private BufResult run(Path directory, List<String> args) throws IOException {
+        return run(directory, args.toArray(new String[0]));
+    }
+
+    private static List<String> withExcludes(List<String> args, List<String> excludePaths) {
+        List<String> all = new ArrayList<>(args);
+        for (String path : excludePaths) {
+            all.add("--exclude-path");
+            all.add(path);
+        }
+        return all;
     }
 
     private BufResult run(Path directory, String... args) throws IOException {

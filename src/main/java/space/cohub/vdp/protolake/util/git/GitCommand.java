@@ -142,6 +142,14 @@ public class GitCommand {
     }
 
     /**
+     * Writes the tree of a commit as a tar file, the way {@code git archive}
+     * does: paths relative to the directory, no working-tree changes.
+     */
+    public void archive(Path directory, String commit, Path tarFile) throws IOException {
+        executeGit(directory, "archive", "--format=tar", "-o", tarFile.toString(), commit);
+    }
+
+    /**
      * Gets the current commit hash.
      */
     public String getCurrentCommit(Path directory) throws IOException {

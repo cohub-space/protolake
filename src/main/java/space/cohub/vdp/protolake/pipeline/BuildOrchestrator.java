@@ -64,6 +64,9 @@ public class BuildOrchestrator {
     ApiSpecRunner apiSpecRunner;
 
     @Inject
+    ProvidedImportCheck providedImportCheck;
+
+    @Inject
     StorageService storageService;
 
     @Inject
@@ -201,6 +204,14 @@ public class BuildOrchestrator {
         String lakeRelativeTarget = LakeUtil.convertToLakeRelativePath(target, lake);
 
         LOG.debugf("Converting target from base-relative '%s' to lake-relative '%s'", target, lakeRelativeTarget);
+
+        // Before Bazel: such a bundle would fail to compile, or publish packages that fail to load.
+        List<ValidationError> refused = providedImportCheck.check(lakeRoot, lakeRelativeTarget);
+        if (!refused.isEmpty()) {
+            listener.onPhaseComplete("Building", false, refused.size() + " API exposure error(s)");
+            throw new BuildException("API exposure checks failed",
+                ValidationErrors.newBuilder().addAllErrors(refused).build());
+        }
 
         metadata = bazelBuildRunner.buildTarget(lakeRoot, lakeRelativeTarget, metadata);
         listener.onMetadataUpdate(metadata);

@@ -1,5 +1,6 @@
 package space.cohub.vdp.protolake.pipeline;
 
+import space.cohub.vdp.protolake.initializer.CohubApiModule;
 import space.cohub.vdp.protolake.model.ValidationError;
 import space.cohub.vdp.protolake.model.ValidationErrors;
 import space.cohub.vdp.protolake.model.ValidationResult;
@@ -28,7 +29,10 @@ import java.util.regex.Pattern;
  *
  * Buf provides compilation checking, linting, breaking change detection,
  * and format checking for proto files. It operates at the lake level to
- * ensure cross-bundle dependencies are properly validated.
+ * ensure cross-bundle dependencies are properly validated. A lake that
+ * imports a proto the protolake image provides (CohubApiModule) is checked
+ * on a copy that holds that proto too (ProvidedProtoOverlay), since buf
+ * resolves imports only from the lake and its buf.yaml deps.
  */
 @ApplicationScoped
 public class ValidationRunner {
@@ -44,6 +48,9 @@ public class ValidationRunner {
 
     @Inject
     GitCommand gitCommand;
+
+    @Inject
+    CohubApiModule cohubApiModule;
 
     /** The branch a lake's breaking-change check measures from. */
     static final String BREAKING_BASE_REF = "origin/main";
@@ -110,26 +117,39 @@ public class ValidationRunner {
 
         List<String> logs = new ArrayList<>();
         List<ValidationError> errors = new ArrayList<>();
+        ProvidedProtoOverlay overlay = null;
 
         try {
+            List<String> provided = ProvidedProtoOverlay.neededImports(lakePath, CohubApiModule.IMPORT_PATHS);
+            if (!provided.isEmpty()) {
+                overlay = ProvidedProtoOverlay.create(lakePath, cohubApiModule.path(), provided);
+                logs.add("buf checks a copy of the lake's protos that also holds " + String.join(", ", provided)
+                    + ", which the protolake image provides");
+            }
+            Path bufDir = overlay == null ? lakePath : overlay.root();
+            List<String> excluded = overlay == null ? List.of() : overlay.providedPaths();
+
             // Resolve buf module dependencies (googleapis, protovalidate, etc.)
             validationStatus.setSubPhase("Resolving proto dependencies");
-            bufCommand.modUpdate(lakePath);
+            bufCommand.modUpdate(bufDir);
+            if (overlay != null) {
+                overlay.copyLockBack();
+            }
 
             // Run buf build (compilation check)
             validationStatus.setSubPhase("Running proto compilation checks");
-            List<ValidationError> buildErrors = runBufBuild(lakePath, logs);
+            List<ValidationError> buildErrors = runBufBuild(bufDir, logs);
             errors.addAll(buildErrors);
 
             // Run buf lint
             validationStatus.setSubPhase("Running lint checks");
-            List<ValidationError> lintErrors = runBufLint(lakePath, logs);
+            List<ValidationError> lintErrors = runBufLint(bufDir, excluded, logs);
             errors.addAll(lintErrors);
 
             // Run buf breaking (if there's a previous version to compare against)
             if (hasGitHistory(lakePath)) {
                 validationStatus.setSubPhase("Running breaking change detection");
-                List<ValidationError> breakingErrors = runBufBreaking(lakePath, logs);
+                List<ValidationError> breakingErrors = runBufBreaking(lakePath, overlay, logs);
                 errors.addAll(breakingErrors);
             }
 
@@ -181,6 +201,14 @@ public class ValidationRunner {
                 .addAllLogLines(logs);
 
             throw new IOException("Validation failed", e);
+        } finally {
+            if (overlay != null) {
+                try {
+                    overlay.close();
+                } catch (IOException e) {
+                    LOG.warnf("Could not delete buf's temporary copy of the lake: %s", e.getMessage());
+                }
+            }
         }
     }
 
@@ -206,12 +234,14 @@ public class ValidationRunner {
     }
 
     /**
-     * Runs buf lint and returns validation errors.
+     * Runs buf lint and returns validation errors; excluded files are the
+     * provided protos, which are not the lake's to lint.
      */
-    private List<ValidationError> runBufLint(Path directory, List<String> logs) throws IOException {
+    private List<ValidationError> runBufLint(Path directory, List<String> excluded, List<String> logs)
+            throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
-        List<String> lintOutput = bufCommand.lint(directory);
+        List<String> lintOutput = bufCommand.lint(directory, excluded);
         for (String line : lintOutput) {
             ValidationError error = parseBufLintLine(line);
             if (error != null) {
@@ -227,12 +257,14 @@ public class ValidationRunner {
     }
 
     /**
-     * Runs buf breaking to detect breaking changes.
+     * Runs buf breaking to detect breaking changes. With an overlay, both
+     * sides hold the provided protos and leave them out of the comparison.
      */
-    private List<ValidationError> runBufBreaking(Path directory, List<String> logs) throws IOException {
+    private List<ValidationError> runBufBreaking(Path directory, ProvidedProtoOverlay overlay, List<String> logs)
+            throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
-        java.util.Optional<String> baseline = breakingBaseline(directory);
+        java.util.Optional<String> baseline = breakingBaseSha(directory);
         if (baseline.isEmpty()) {
             LOG.warn(NO_BASELINE_MESSAGE);
             logs.add(NO_BASELINE_MESSAGE);
@@ -243,7 +275,11 @@ public class ValidationRunner {
                 .build());
             return errors;
         }
-        List<String> breakingOutput = bufCommand.breaking(directory, baseline.get());
+        List<String> breakingOutput = overlay == null
+            ? bufCommand.breaking(directory, ".git#ref=" + baseline.get())
+            : bufCommand.breaking(overlay.root(),
+                overlay.baseline(gitCommand, baseline.get(), cohubApiModule.path()).toString(),
+                overlay.providedPaths());
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
                 errors.add(ValidationError.newBuilder()
@@ -277,11 +313,16 @@ public class ValidationRunner {
      * result.
      */
     java.util.Optional<String> breakingBaseline(Path directory) {
+        return breakingBaseSha(directory).map(sha -> ".git#ref=" + sha);
+    }
+
+    /** The commit {@link #breakingBaseline} names, for inputs other than buf's git input. */
+    java.util.Optional<String> breakingBaseSha(Path directory) {
         java.util.Optional<String> base = gitCommand.mergeBase(directory, BREAKING_BASE_REF);
         if (base.isEmpty()) {
             base = gitCommand.revParse(directory, "HEAD~1");
         }
-        return base.map(sha -> ".git#ref=" + sha);
+        return base;
     }
 
     /**
