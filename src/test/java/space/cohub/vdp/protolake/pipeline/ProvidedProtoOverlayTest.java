@@ -9,12 +9,16 @@ import org.junit.jupiter.api.io.TempDir;
 import java.io.IOException;
 import java.io.OutputStream;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.DirectoryStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
+import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
  * The copy of a lake that buf checks when the lake imports a proto the
@@ -99,6 +103,7 @@ class ProvidedProtoOverlayTest {
 
     @Test
     void copyLockBack_writesOnlyAChangedLock() throws IOException {
+        assumeTrue(secureDirectoryStreams(), "no SecureDirectoryStream on this platform; the write is refused");
         write(lake.resolve("buf.lock"), "version: v1\n");
         try (ProvidedProtoOverlay overlay = ProvidedProtoOverlay.create(lake, module, PROVIDED)) {
             write(overlay.root().resolve("buf.lock"), "version: v1\ndeps: []\n");
@@ -140,6 +145,7 @@ class ProvidedProtoOverlayTest {
 
     @Test
     void copyLockBack_aLockWhoseDirectoryBecameALinkOutOfTheLake_isRefused() throws IOException {
+        assumeTrue(secureDirectoryStreams(), "no SecureDirectoryStream on this platform; the write is refused");
         write(lake.resolve("sub/buf.lock"), "version: v1\n");
         Path outside = Files.createDirectories(tmp.resolve("outside"));
         write(outside.resolve("buf.lock"), "version: v1\n");
@@ -151,10 +157,54 @@ class ProvidedProtoOverlayTest {
             Files.createSymbolicLink(lake.resolve("sub"), outside);
 
             assertThatThrownBy(overlay::copyLockBack).isInstanceOf(IOException.class)
-                    .hasMessageContaining("sits behind a symbolic link");
+                    .hasMessageContaining("protolake opens sub without following a symbolic link");
         }
 
         assertThat(outside.resolve("buf.lock")).hasContent("version: v1");
+    }
+
+    @Test
+    void copyLockBack_aDirectorySwappedForALinkAfterTheCheck_cannotRedirectTheWrite() throws IOException {
+        assumeTrue(secureDirectoryStreams(), "no SecureDirectoryStream on this platform; the write is refused");
+        write(lake.resolve("sub/buf.lock"), "version: v1\n");
+        Path otherLake = Files.createDirectories(tmp.resolve("other-lake"));
+        write(otherLake.resolve("buf.lock"), "version: v1\n");
+
+        try (ProvidedProtoOverlay overlay = ProvidedProtoOverlay.create(lake, module, PROVIDED)) {
+            write(overlay.root().resolve("sub/buf.lock"), "version: v1\ndeps: []\n");
+            // Between the check of sub and the write, sub becomes a link to another lake.
+            overlay.beforeLockWrite(lock -> {
+                Files.move(lake.resolve("sub"), lake.resolve("sub-moved"));
+                Files.createSymbolicLink(lake.resolve("sub"), otherLake);
+            });
+            overlay.copyLockBack();
+        }
+
+        assertThat(otherLake.resolve("buf.lock")).as("the other lake's lock").hasContent("version: v1");
+        assertThat(lake.resolve("sub-moved/buf.lock")).as("the directory that was checked")
+                .hasContent("version: v1\ndeps: []");
+    }
+
+    @Test
+    void copyLockBack_withoutSecureDirectoryStreams_refusesTheWriteRatherThanRacing() throws IOException {
+        assumeFalse(secureDirectoryStreams(), "this platform has SecureDirectoryStream");
+        write(lake.resolve("buf.lock"), "version: v1\n");
+
+        try (ProvidedProtoOverlay overlay = ProvidedProtoOverlay.create(lake, module, PROVIDED)) {
+            write(overlay.root().resolve("buf.lock"), "version: v1\ndeps: []\n");
+
+            assertThatThrownBy(overlay::copyLockBack).isInstanceOf(IOException.class)
+                    .hasMessageContaining("buf.lock changed", "no SecureDirectoryStream", "buf dep update");
+        }
+
+        assertThat(lake.resolve("buf.lock")).hasContent("version: v1");
+    }
+
+    /** Whether the JDK opens this platform's directories as SecureDirectoryStreams (Linux yes, macOS no). */
+    private boolean secureDirectoryStreams() throws IOException {
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(tmp)) {
+            return stream instanceof SecureDirectoryStream;
+        }
     }
 
     @Test

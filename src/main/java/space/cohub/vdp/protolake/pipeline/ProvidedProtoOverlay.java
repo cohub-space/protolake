@@ -7,10 +7,14 @@ import space.cohub.vdp.protolake.util.git.GitCommand;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.nio.ByteBuffer;
+import java.nio.channels.SeekableByteChannel;
+import java.nio.file.DirectoryStream;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
 import java.nio.file.Path;
+import java.nio.file.SecureDirectoryStream;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
@@ -118,33 +122,97 @@ final class ProvidedProtoOverlay implements AutoCloseable {
      * Writes back each buf.lock {@code buf dep update} changed in the copy,
      * keeping the lake file's permissions. A lock that did not change is
      * never written. One that did is refused, with the reason, when the lake's
-     * buf.lock is a symbolic link or sits behind one: the link may lead out of
-     * the lake, to another lake's lock, and protolake writes only regular
-     * files inside the lake.
+     * buf.lock is a symbolic link: the link may lead out of the lake, to
+     * another lake's lock, and protolake writes only regular files inside the
+     * lake. The write itself follows no link below the lake (writeInsideLake).
      */
     void copyLockBack() throws IOException {
-        Path lakeDirectory = lake.toRealPath();
         for (Path copy : bufInputs(root)) {
             if (!"buf.lock".equals(copy.getFileName().toString())) {
                 continue;
             }
-            Path original = lake.resolve(root.relativize(copy).toString());
+            Path relative = root.relativize(copy);
+            Path original = lake.resolve(relative.toString());
             byte[] updated = Files.readAllBytes(copy);
             if (Files.exists(original) && Arrays.equals(Files.readAllBytes(original), updated)) {
                 continue;
             }
             if (Files.isSymbolicLink(original)) {
-                throw new IOException(lake.relativize(original) + " is a symbolic link, and buf dep update changed "
-                        + "the lock it resolves to. protolake writes a lake's buf.lock only as a regular file inside "
-                        + "the lake, never through a link that may lead out of it: replace the link with a copy of "
-                        + "the file it points to, or run buf dep update in the lake yourself.");
+                throw new IOException(relative + " is a symbolic link, and buf dep update changed the lock it "
+                        + "resolves to. protolake writes a lake's buf.lock only as a regular file inside the lake, "
+                        + "never through a link that may lead out of it: replace the link with a copy of the file it "
+                        + "points to, or run buf dep update in the lake yourself.");
             }
-            if (!original.getParent().toRealPath().startsWith(lakeDirectory)) {
-                throw new IOException(lake.relativize(original) + " sits behind a symbolic link that leads out of "
-                        + "the lake, and buf dep update changed it; protolake writes only inside the lake.");
+            writeInsideLake(relative, updated);
+        }
+    }
+
+    /**
+     * Runs when a lock's directories are open and the lock is about to be
+     * written: the moment a check-then-write race would strike. A seam for the
+     * test that swaps a directory there; validation never sets it.
+     */
+    interface LockWriteHook {
+        void run(Path lock) throws IOException;
+    }
+
+    private LockWriteHook beforeLockWrite = lock -> { };
+
+    void beforeLockWrite(LockWriteHook hook) {
+        this.beforeLockWrite = hook;
+    }
+
+    /**
+     * Writes a file at a path inside the lake without following a symbolic
+     * link at any step below the lake root. Checking the path and then writing
+     * it would leave a window in which a directory swapped for a link
+     * redirects the write; instead each directory is opened relative to the
+     * one before it, refusing links (SecureDirectoryStream), and the file
+     * relative to the last, so the write lands in the directories that were
+     * opened. Without SecureDirectoryStream (macOS has none in the JDK) the
+     * write is refused rather than raced.
+     */
+    private void writeInsideLake(Path relative, byte[] content) throws IOException {
+        try (DirectoryStream<Path> lakeStream = Files.newDirectoryStream(lake)) {
+            if (!(lakeStream instanceof SecureDirectoryStream<Path> lakeDirectory)) {
+                throw new IOException(relative + " changed, but this platform cannot open the lake's directories "
+                        + "without following symbolic links (the JDK offers no SecureDirectoryStream here), so "
+                        + "protolake does not write it back: a directory swapped for a link mid-write could send the "
+                        + "write out of the lake. Run buf dep update in the lake yourself, or validate in the "
+                        + "protolake image.");
             }
-            Files.write(original, updated, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
-                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
+            writeBelow(lakeDirectory, relative, 0, content);
+        }
+    }
+
+    /** Opens relative's directory at index below an open one, refusing links, or writes the file there. */
+    private void writeBelow(SecureDirectoryStream<Path> directory, Path relative, int index, byte[] content)
+            throws IOException {
+        if (index == relative.getNameCount() - 1) {
+            beforeLockWrite.run(relative);
+            try (SeekableByteChannel channel = directory.newByteChannel(relative.getFileName(), Set.of(
+                    StandardOpenOption.WRITE, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                    LinkOption.NOFOLLOW_LINKS))) {
+                ByteBuffer buffer = ByteBuffer.wrap(content);
+                while (buffer.hasRemaining()) {
+                    channel.write(buffer);
+                }
+            } catch (IOException e) {
+                throw new IOException(relative + " could not be written in place: protolake writes it without "
+                        + "following a symbolic link, and the write failed (" + e.getMessage() + ").", e);
+            }
+            return;
+        }
+        SecureDirectoryStream<Path> child;
+        try {
+            child = directory.newDirectoryStream(relative.getName(index), LinkOption.NOFOLLOW_LINKS);
+        } catch (IOException e) {
+            throw new IOException(relative + " could not be reached: protolake opens " + relative.subpath(0, index + 1)
+                    + " without following a symbolic link, so that a link cannot lead the write out of the lake, and "
+                    + "the open failed (" + e.getMessage() + ").", e);
+        }
+        try (child) {
+            writeBelow(child, relative, index + 1, content);
         }
     }
 
