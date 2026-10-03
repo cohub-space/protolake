@@ -52,6 +52,61 @@ class ProvidedImportCheckTest {
     }
 
     @Test
+    void check_singleQuotedImportAfterAnotherStatement_isRefusedAtItsKeyword() throws IOException {
+        bundle("api", "syntax = \"proto3\"; import 'cohub/api/v1/exposure.proto';\n", "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, ".")).singleElement().satisfies(error -> {
+            assertThat(error.getLine()).isEqualTo(1);
+            assertThat(error.getColumn()).isEqualTo(20);
+        });
+    }
+
+    @Test
+    void check_importInsideABlockComment_isNotRefused() throws IOException {
+        bundle("api", "syntax = \"proto3\";\n/*\nimport \"cohub/api/v1/exposure.proto\";\n*/\n",
+                "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, ".")).isEmpty();
+    }
+
+    @Test
+    void check_bundleImportingAProtoThatImportsIt_isRefusedAtItsOwnImport() throws IOException {
+        // lib builds no packages, so only app's packages would carry lib's generated code.
+        bundle("lib", IMPORTING, "proto_library(\n)\n");
+        bundle("app", "syntax = \"proto3\";\npackage app.v1;\nimport \"lib/v1/lib.proto\";\n", "python_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, ".")).singleElement().satisfies(error -> {
+            assertThat(error.getFile()).isEqualTo("app/v1/app.proto");
+            assertThat(error.getLine()).isEqualTo(3);
+            assertThat(error.getColumn()).isEqualTo(1);
+            assertThat(error.getMessage()).contains("Bundle app builds Python packages",
+                    "app/v1/app.proto imports lib/v1/lib.proto, which imports cohub/api/v1/exposure.proto",
+                    "app/bundle.yaml");
+        });
+    }
+
+    @Test
+    void check_bundleImportingASiblingOfAProtoThatImportsIt_isRefused() throws IOException {
+        // Gazelle compiles lib/v1 as one target, so app's packages carry lib.proto's code too.
+        bundle("lib", IMPORTING, "proto_library(\n)\n");
+        Files.writeString(lake.resolve("lib/v1/types.proto"), "syntax = \"proto3\";\npackage api.v1;\n");
+        bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/types.proto\";\n", "es_proto_compile(\n)\n");
+
+        assertThat(check.check(lake, "app")).singleElement().satisfies(error -> assertThat(error.getMessage())
+                .contains("app/v1/app.proto imports lib/v1/types.proto, which Bazel compiles with lib/v1/lib.proto, "
+                        + "which imports cohub/api/v1/exposure.proto"));
+    }
+
+    @Test
+    void check_bundleWhoseImportsNeverReachIt_isUntouched() throws IOException {
+        bundle("lib", "syntax = \"proto3\";\nimport \"google/api/annotations.proto\";\n", "proto_library(\n)\n");
+        bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/lib.proto\";\nimport \"missing/v1/x.proto\";\n",
+                "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, ".")).isEmpty();
+    }
+
+    @Test
     void check_importingBundleWithoutLanguagePackages_buildsItsSpecs() throws IOException {
         bundle("api", IMPORTING, "proto_library(\n    name = \"api_all_protos\",\n)\n");
 

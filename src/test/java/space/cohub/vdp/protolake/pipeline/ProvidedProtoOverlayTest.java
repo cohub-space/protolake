@@ -14,6 +14,7 @@ import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
  * The copy of a lake that buf checks when the lake imports a proto the
@@ -55,6 +56,20 @@ class ProvidedProtoOverlayTest {
     }
 
     @Test
+    void neededImports_singleQuotedImportAfterAnotherStatement_isFound() throws IOException {
+        write(lake.resolve("demo/v1/demo.proto"), "syntax = \"proto3\"; import '" + EXPOSURE + "';\n");
+
+        assertThat(ProvidedProtoOverlay.neededImports(lake, PROVIDED)).containsExactly(EXPOSURE);
+    }
+
+    @Test
+    void neededImports_anImportInsideABlockComment_isNotOne() throws IOException {
+        write(lake.resolve("demo/v1/demo.proto"), "syntax = \"proto3\";\n/*\nimport \"" + EXPOSURE + "\";\n*/\n");
+
+        assertThat(ProvidedProtoOverlay.neededImports(lake, PROVIDED)).isEmpty();
+    }
+
+    @Test
     void neededImports_aLakeThatHoldsItsOwnCopy_resolvesItItself() throws IOException {
         write(lake.resolve("demo/v1/demo.proto"), "import \"" + EXPOSURE + "\";\n");
         write(lake.resolve(EXPOSURE), "syntax = \"proto3\";\n");
@@ -91,6 +106,55 @@ class ProvidedProtoOverlayTest {
         }
 
         assertThat(lake.resolve("buf.lock")).hasContent("version: v1\ndeps: []");
+    }
+
+    @Test
+    void copyLockBack_aLockThatIsALink_isRefusedAndItsTargetLeftAlone() throws IOException {
+        Path otherLake = Files.createDirectories(tmp.resolve("other-lake"));
+        write(otherLake.resolve("buf.lock"), "version: v1\n");
+        Files.createSymbolicLink(lake.resolve("buf.lock"), otherLake.resolve("buf.lock"));
+
+        try (ProvidedProtoOverlay overlay = ProvidedProtoOverlay.create(lake, module, PROVIDED)) {
+            write(overlay.root().resolve("buf.lock"), "version: v1\ndeps: []\n");
+
+            assertThatThrownBy(overlay::copyLockBack).isInstanceOf(IOException.class)
+                    .hasMessageContaining("buf.lock is a symbolic link");
+        }
+
+        assertThat(otherLake.resolve("buf.lock")).hasContent("version: v1");
+        assertThat(lake.resolve("buf.lock")).isSymbolicLink();
+    }
+
+    @Test
+    void copyLockBack_anUnchangedLockBehindALink_needsNoWrite() throws IOException {
+        Path otherLake = Files.createDirectories(tmp.resolve("other-lake"));
+        write(otherLake.resolve("buf.lock"), "version: v1\n");
+        Files.createSymbolicLink(lake.resolve("buf.lock"), otherLake.resolve("buf.lock"));
+
+        try (ProvidedProtoOverlay overlay = ProvidedProtoOverlay.create(lake, module, PROVIDED)) {
+            overlay.copyLockBack();
+        }
+
+        assertThat(otherLake.resolve("buf.lock")).hasContent("version: v1");
+    }
+
+    @Test
+    void copyLockBack_aLockWhoseDirectoryBecameALinkOutOfTheLake_isRefused() throws IOException {
+        write(lake.resolve("sub/buf.lock"), "version: v1\n");
+        Path outside = Files.createDirectories(tmp.resolve("outside"));
+        write(outside.resolve("buf.lock"), "version: v1\n");
+
+        try (ProvidedProtoOverlay overlay = ProvidedProtoOverlay.create(lake, module, PROVIDED)) {
+            write(overlay.root().resolve("sub/buf.lock"), "version: v1\ndeps: []\n");
+            Files.delete(lake.resolve("sub/buf.lock"));
+            Files.delete(lake.resolve("sub"));
+            Files.createSymbolicLink(lake.resolve("sub"), outside);
+
+            assertThatThrownBy(overlay::copyLockBack).isInstanceOf(IOException.class)
+                    .hasMessageContaining("sits behind a symbolic link");
+        }
+
+        assertThat(outside.resolve("buf.lock")).hasContent("version: v1");
     }
 
     @Test

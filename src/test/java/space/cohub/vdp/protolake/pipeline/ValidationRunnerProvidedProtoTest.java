@@ -130,6 +130,58 @@ class ValidationRunnerProvidedProtoTest {
         assertThat(errors(result)).isEmpty();
     }
 
+    @Test
+    void validateLake_afterDroppingTheLastImport_comparesAgainstABaselineThatResolves() throws Exception {
+        git("init", "-q");
+        git("add", ".");
+        git("commit", "-q", "-m", "with the options");
+        // The author drops the WebSocket option and, as buf's IMPORT_USED lint asks, its import.
+        Files.writeString(lake.resolve("demo/v1/demo.proto"), DEMO
+                .replace("import \"cohub/api/v1/exposure.proto\";\n", "")
+                .replace("    option (cohub.api.v1.exposure) = {websocket: true};\n", ""));
+        assertThat(Files.readString(lake.resolve("demo/v1/demo.proto"))).doesNotContain("cohub");
+        git("commit", "-q", "-am", "without the options");
+
+        ValidationResult result = validate();
+
+        assertThat(errors(result)).isEmpty();
+    }
+
+    @Test
+    void validateLake_afterStartingToVendorTheProto_comparesAgainstABaselineThatResolves() throws Exception {
+        git("init", "-q");
+        git("add", ".");
+        git("commit", "-q", "-m", "imports the provided copy");
+        Path vendored = lake.resolve("cohub/api/v1/exposure.proto");
+        Files.createDirectories(vendored.getParent());
+        Files.copy(Path.of("src/main/proto/cohub/api/v1/exposure.proto"), vendored);
+        git("add", ".");
+        git("commit", "-q", "-m", "vendors it");
+
+        ValidationResult result = validate();
+
+        assertThat(errors(result)).isEmpty();
+    }
+
+    @Test
+    void validateLake_aLakeThatNeverImportsIt_comparesAgainstTheCommitAsBefore() throws Exception {
+        String plain = "syntax = \"proto3\";\n\npackage demo.v1;\n\nmessage Note {\n  string text = 1;\n"
+                + "  string room = 2;\n}\n";
+        Files.writeString(lake.resolve("demo/v1/demo.proto"), plain);
+        git("init", "-q");
+        git("add", ".");
+        git("commit", "-q", "-m", "one");
+        Files.writeString(lake.resolve("demo/v1/demo.proto"), plain.replace("  string room = 2;\n", ""));
+        git("commit", "-q", "-am", "drop room");
+
+        ValidationResult result = validate();
+
+        assertThat(errors(result)).singleElement()
+                .satisfies(error -> assertThat(error.getMessage()).contains("demo/v1/demo.proto", "room"));
+        assertThat(result.getMetadata().getPhaseStatuses().getValidation().getLogLinesList())
+                .noneMatch(line -> line.contains("protolake image's copy"));
+    }
+
     private ValidationResult validate() throws Exception {
         return runner.validateLake(Lake.newBuilder().setName("lakes/lake").build(), false,
                 BuildOperationMetadata.getDefaultInstance());

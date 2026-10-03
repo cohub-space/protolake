@@ -10,15 +10,18 @@ import java.io.InputStream;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.LinkOption;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashSet;
 import java.util.List;
+import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Pattern;
 
 /**
  * A temporary copy of a lake's buf inputs that also holds the protos the
@@ -28,13 +31,13 @@ import java.util.regex.Pattern;
  * <p>buf resolves a module's imports from its own files and its buf.yaml deps.
  * Lakes get the provided protos from a Bazel module in the image, which buf
  * cannot see, and a lake's buf.yaml is the user's after init, so protolake
- * cannot add a dep to it. A lake that imports a provided proto is validated in
- * this copy instead: its buf.yaml, buf.lock and protos, plus the provided
- * files, which lint leaves out ({@link #providedPaths()}) and the breaking
- * check finds unchanged, its baseline holding the same files
- * ({@link #baseline}). The lake is never written, except for the
- * buf.lock that {@code buf dep update} refreshes, which validation does for
- * every lake ({@link #copyLockBack()}).
+ * cannot add a dep to it. A lake that imports a provided proto it does not
+ * hold is validated in this copy instead: its buf.yaml, buf.lock and protos,
+ * plus the provided files, which lint leaves out ({@link #providedPaths()}).
+ * The breaking check compares such copies whenever the lake or the commit it
+ * is measured from needs a provided proto ({@link #breakingInputs}). The lake
+ * is never written, except for the buf.lock that {@code buf dep update}
+ * refreshes, which validation does for every lake ({@link #copyLockBack()}).
  */
 final class ProvidedProtoOverlay implements AutoCloseable {
 
@@ -48,48 +51,34 @@ final class ProvidedProtoOverlay implements AutoCloseable {
     private final Path lake;
     private final Path root;
     private final List<String> provided;
-    private final List<Path> temporaryDirectories = new ArrayList<>();
 
     private ProvidedProtoOverlay(Path lake, Path root, List<String> provided) {
         this.lake = lake;
         this.root = root;
         this.provided = provided;
-        temporaryDirectories.add(root);
     }
 
     /**
-     * The provided import paths a lake needs from the image: those its protos
-     * import that it does not hold itself. Empty when buf can run in the lake.
+     * The provided import paths a tree of protos needs: those its protos
+     * import, as protoc reads the imports (ProtoImports), that it does not
+     * hold itself. Empty when buf can run on the tree as it is.
      */
-    static List<String> neededImports(Path lake, List<String> importPaths) throws IOException {
+    static List<String> neededImports(Path tree, List<String> importPaths) throws IOException {
         List<String> missing = importPaths.stream()
-                .filter(path -> !Files.exists(lake.resolve(path)))
+                .filter(path -> !Files.exists(tree.resolve(path)))
                 .toList();
         if (missing.isEmpty()) {
             return List.of();
         }
-        List<String> needed = new ArrayList<>();
-        for (Path proto : bufInputs(lake)) {
-            if (!proto.toString().endsWith(".proto")) {
-                continue;
-            }
-            String content = Files.readString(proto, StandardCharsets.UTF_8);
-            for (String path : missing) {
-                if (!needed.contains(path) && importPattern(path).matcher(content).find()) {
-                    needed.add(path);
+        Set<String> imported = new HashSet<>();
+        for (Path proto : bufInputs(tree)) {
+            if (proto.toString().endsWith(".proto")) {
+                for (ProtoImports.Import use : ProtoImports.parse(Files.readString(proto, StandardCharsets.UTF_8))) {
+                    imported.add(use.path());
                 }
             }
         }
-        return needed;
-    }
-
-    /**
-     * Matches an import statement of one proto, plain, public or weak. The
-     * match starts on the line of the {@code import} keyword: the indent
-     * before it never spans lines.
-     */
-    static Pattern importPattern(String importPath) {
-        return Pattern.compile("(?m)^[ \\t]*import\\s+(?:public\\s+|weak\\s+)?\"" + Pattern.quote(importPath) + "\"");
+        return missing.stream().filter(imported::contains).toList();
     }
 
     /**
@@ -108,7 +97,7 @@ final class ProvidedProtoOverlay implements AutoCloseable {
                 Files.createDirectories(target.getParent());
                 Files.copy(input, target);
             }
-            overlay.copyProvided(providedRoot, overlay.root);
+            copyProvided(providedRoot, overlay.root, overlay.provided);
             return overlay;
         } catch (IOException | RuntimeException e) {
             overlay.close();
@@ -128,64 +117,150 @@ final class ProvidedProtoOverlay implements AutoCloseable {
 
     /**
      * Writes back each buf.lock {@code buf dep update} changed in the copy,
-     * keeping the lake file's permissions.
+     * keeping the lake file's permissions. A lock that did not change is
+     * never written. One that did is refused, with the reason, when the lake's
+     * buf.lock is a symbolic link or sits behind one: the link may lead out of
+     * the lake, to another lake's lock, and protolake writes only regular
+     * files inside the lake.
      */
     void copyLockBack() throws IOException {
+        Path lakeDirectory = lake.toRealPath();
         for (Path copy : bufInputs(root)) {
             if (!"buf.lock".equals(copy.getFileName().toString())) {
                 continue;
             }
             Path original = lake.resolve(root.relativize(copy).toString());
             byte[] updated = Files.readAllBytes(copy);
-            if (!Files.exists(original) || !Arrays.equals(Files.readAllBytes(original), updated)) {
-                Files.write(original, updated);
+            if (Files.exists(original) && Arrays.equals(Files.readAllBytes(original), updated)) {
+                continue;
             }
+            if (Files.isSymbolicLink(original)) {
+                throw new IOException(lake.relativize(original) + " is a symbolic link, and buf dep update changed "
+                        + "the lock it resolves to. protolake writes a lake's buf.lock only as a regular file inside "
+                        + "the lake, never through a link that may lead out of it: replace the link with a copy of "
+                        + "the file it points to, or run buf dep update in the lake yourself.");
+            }
+            if (!original.getParent().toRealPath().startsWith(lakeDirectory)) {
+                throw new IOException(lake.relativize(original) + " sits behind a symbolic link that leads out of "
+                        + "the lake, and buf dep update changed it; protolake writes only inside the lake.");
+            }
+            Files.write(original, updated, StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING,
+                    StandardOpenOption.WRITE, LinkOption.NOFOLLOW_LINKS);
         }
     }
 
     /**
-     * The lake's buf inputs at a commit, plus the provided protos: the
-     * breaking check's baseline. A git input cannot carry the provided
-     * protos, so the commit's files are extracted from {@code git archive}.
+     * The breaking check's inputs when the lake, or the commit it is compared
+     * against, imports a provided proto it does not hold. Both sides then
+     * hold the image's copy of every such proto, so buf resolves each side's
+     * imports and finds the provided protos unchanged: a change that drops
+     * the last import of one, starts vendoring it, or stops, still compares
+     * against a baseline that resolves. The commit's files come from
+     * {@code git archive}, since buf's git input cannot carry the provided
+     * protos. Empty when neither side needs one; buf then compares against
+     * the commit itself.
      */
-    Path baseline(GitCommand git, String sha, Path providedRoot) throws IOException {
-        Path dir = Files.createTempDirectory("protolake-buf-baseline-");
-        temporaryDirectories.add(dir);
-        Path tar = Files.createTempFile("protolake-buf-baseline-", ".tar");
+    static Optional<BreakingInputs> breakingInputs(Path lake, GitCommand git, String sha, Path providedRoot,
+                                                   List<String> importPaths) throws IOException {
+        Path baseline = Files.createTempDirectory("protolake-buf-baseline-");
+        ProvidedProtoOverlay copy = null;
         try {
-            git.archive(lake, sha, tar);
-            extractBufInputs(tar, dir);
-        } finally {
-            Files.deleteIfExists(tar);
+            extractCommit(git, lake, sha, baseline);
+            Set<String> needed = new HashSet<>(neededImports(lake, importPaths));
+            needed.addAll(neededImports(baseline, importPaths));
+            List<String> paths = importPaths.stream().filter(needed::contains).toList();
+            if (paths.isEmpty()) {
+                deleteTree(baseline);
+                return Optional.empty();
+            }
+            List<String> lakeLacks = paths.stream().filter(path -> !Files.exists(lake.resolve(path))).toList();
+            if (!lakeLacks.isEmpty()) {
+                copy = create(lake, providedRoot, lakeLacks);
+            }
+            // A copy the commit vendored is replaced too: the check covers the lake's own files.
+            copyProvided(providedRoot, baseline, paths);
+            return Optional.of(new BreakingInputs(lake, copy, baseline, paths));
+        } catch (IOException | RuntimeException e) {
+            if (copy != null) {
+                try {
+                    copy.close();
+                } catch (IOException suppressed) {
+                    e.addSuppressed(suppressed);
+                }
+            }
+            try {
+                deleteTree(baseline);
+            } catch (IOException suppressed) {
+                e.addSuppressed(suppressed);
+            }
+            throw e;
         }
-        copyProvided(providedRoot, dir);
-        return dir;
     }
 
-    /** Deletes the temporary directories; they hold only regular files this class wrote. */
-    @Override
-    public void close() throws IOException {
-        IOException failure = null;
-        for (Path dir : temporaryDirectories) {
+    /**
+     * The two inputs of a breaking check that involves provided protos: the
+     * lake, or a copy of it holding the provided protos the lake lacks, and
+     * the baseline commit's buf inputs holding the image's copy of each.
+     */
+    static final class BreakingInputs implements AutoCloseable {
+        private final Path lake;
+        private final ProvidedProtoOverlay copy;
+        private final Path baseline;
+        private final List<String> providedPaths;
+
+        private BreakingInputs(Path lake, ProvidedProtoOverlay copy, Path baseline, List<String> providedPaths) {
+            this.lake = lake;
+            this.copy = copy;
+            this.baseline = baseline;
+            this.providedPaths = providedPaths;
+        }
+
+        /** The directory to run buf breaking in. */
+        Path input() {
+            return copy == null ? lake : copy.root();
+        }
+
+        /** The directory to pass as {@code --against}. */
+        Path against() {
+            return baseline;
+        }
+
+        /** The provided protos both sides hold. */
+        List<String> providedPaths() {
+            return providedPaths;
+        }
+
+        /** Deletes the temporary directories; they hold only regular files written here. */
+        @Override
+        public void close() throws IOException {
+            IOException failure = null;
+            if (copy != null) {
+                try {
+                    copy.close();
+                } catch (IOException e) {
+                    failure = e;
+                }
+            }
             try {
-                deleteTree(dir);
+                deleteTree(baseline);
             } catch (IOException e) {
                 failure = failure == null ? e : failure;
             }
-        }
-        temporaryDirectories.clear();
-        if (failure != null) {
-            throw failure;
+            if (failure != null) {
+                throw failure;
+            }
         }
     }
 
-    /**
-     * Copies the provided protos in. A copy a baseline commit held at the same
-     * path, from a lake that vendored it before, is replaced: the breaking
-     * check covers the lake's own files, not the image's.
-     */
-    private void copyProvided(Path providedRoot, Path target) throws IOException {
-        for (String path : provided) {
+    /** Deletes the copy; it holds only regular files this class wrote. */
+    @Override
+    public void close() throws IOException {
+        deleteTree(root);
+    }
+
+    /** Copies the provided protos into target, replacing whatever target held at their paths. */
+    private static void copyProvided(Path providedRoot, Path target, List<String> paths) throws IOException {
+        for (String path : paths) {
             Path source = providedRoot.resolve(path);
             if (!Files.isRegularFile(source)) {
                 throw new IOException("The protolake image provides " + path + " at " + source
@@ -194,6 +269,17 @@ final class ProvidedProtoOverlay implements AutoCloseable {
             Path destination = target.resolve(path);
             Files.createDirectories(destination.getParent());
             Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    /** Extracts a commit's regular buf-input files, from {@code git archive}, into dir. */
+    private static void extractCommit(GitCommand git, Path lake, String sha, Path dir) throws IOException {
+        Path tar = Files.createTempFile("protolake-buf-baseline-", ".tar");
+        try {
+            git.archive(lake, sha, tar);
+            extractBufInputs(tar, dir);
+        } finally {
+            Files.deleteIfExists(tar);
         }
     }
 
@@ -257,7 +343,7 @@ final class ProvidedProtoOverlay implements AutoCloseable {
 
     /** Deletes a tree without following links: a link is removed, never its target. */
     private static void deleteTree(Path dir) throws IOException {
-        if (!Files.exists(dir, java.nio.file.LinkOption.NOFOLLOW_LINKS)) {
+        if (!Files.exists(dir, LinkOption.NOFOLLOW_LINKS)) {
             return;
         }
         Files.walkFileTree(dir, new SimpleFileVisitor<>() {

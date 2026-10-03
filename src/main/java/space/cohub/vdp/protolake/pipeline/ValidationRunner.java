@@ -149,7 +149,7 @@ public class ValidationRunner {
             // Run buf breaking (if there's a previous version to compare against)
             if (hasGitHistory(lakePath)) {
                 validationStatus.setSubPhase("Running breaking change detection");
-                List<ValidationError> breakingErrors = runBufBreaking(lakePath, overlay, logs);
+                List<ValidationError> breakingErrors = runBufBreaking(lakePath, logs);
                 errors.addAll(breakingErrors);
             }
 
@@ -203,11 +203,7 @@ public class ValidationRunner {
             throw new IOException("Validation failed", e);
         } finally {
             if (overlay != null) {
-                try {
-                    overlay.close();
-                } catch (IOException e) {
-                    LOG.warnf("Could not delete buf's temporary copy of the lake: %s", e.getMessage());
-                }
+                closeQuietly(overlay);
             }
         }
     }
@@ -257,13 +253,15 @@ public class ValidationRunner {
     }
 
     /**
-     * Runs buf breaking to detect breaking changes. With an overlay, the
-     * baseline holds the same provided protos, so they show no change; buf's
-     * {@code --exclude-path} cannot leave them out here, since buf rejects the
-     * path for an {@code --against} directory outside the input.
+     * Runs buf breaking to detect breaking changes. When the lake or the
+     * commit it is measured from imports a provided proto it does not hold,
+     * buf compares directories that both hold it, the baseline the image's
+     * copy (ProvidedProtoOverlay#breakingInputs): the commit's git input alone
+     * could not resolve the import. buf's {@code --exclude-path} cannot leave
+     * the provided protos out instead, since buf rejects the path for an
+     * {@code --against} directory outside the input.
      */
-    private List<ValidationError> runBufBreaking(Path directory, ProvidedProtoOverlay overlay, List<String> logs)
-            throws IOException {
+    private List<ValidationError> runBufBreaking(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
         java.util.Optional<String> baseline = breakingBaseSha(directory);
@@ -277,10 +275,21 @@ public class ValidationRunner {
                 .build());
             return errors;
         }
-        List<String> breakingOutput = overlay == null
-            ? bufCommand.breaking(directory, gitRefInput(baseline.get()))
-            : bufCommand.breaking(overlay.root(),
-                overlay.baseline(gitCommand, baseline.get(), cohubApiModule.path()).toString());
+        List<String> breakingOutput;
+        java.util.Optional<ProvidedProtoOverlay.BreakingInputs> provided = ProvidedProtoOverlay.breakingInputs(
+            directory, gitCommand, baseline.get(), cohubApiModule.path(), CohubApiModule.IMPORT_PATHS);
+        if (provided.isEmpty()) {
+            breakingOutput = bufCommand.breaking(directory, gitRefInput(baseline.get()));
+        } else {
+            ProvidedProtoOverlay.BreakingInputs inputs = provided.get();
+            try {
+                logs.add("buf breaking compares against " + baseline.get() + ", both sides holding "
+                    + String.join(", ", inputs.providedPaths()) + " (the baseline the protolake image's copy)");
+                breakingOutput = bufCommand.breaking(inputs.input(), inputs.against().toString());
+            } finally {
+                closeQuietly(inputs);
+            }
+        }
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
                 errors.add(ValidationError.newBuilder()
@@ -315,6 +324,15 @@ public class ValidationRunner {
             base = gitCommand.revParse(directory, "HEAD~1");
         }
         return base;
+    }
+
+    /** Deletes a temporary copy of the lake; a failure is logged, never fails the validation. */
+    private static void closeQuietly(AutoCloseable copy) {
+        try {
+            copy.close();
+        } catch (Exception e) {
+            LOG.warnf("Could not delete buf's temporary copy of the lake: %s", e.getMessage());
+        }
     }
 
     /**
