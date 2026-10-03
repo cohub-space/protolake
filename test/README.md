@@ -38,10 +38,10 @@ test/
 ├── e2e/                   native Karate @e2e features (none yet)
 ├── legacy/                full-pipeline bash suites, run on the host by `run.py e2e`
 │   ├── test_protolake.sh         gRPC API path through full build pipeline
-│   ├── test_cli.sh               CLI path through protolakew wrapper
+│   ├── test_cli.sh               CLI path through protolakew wrapper, API specs included
 │   └── test_remote_publish.sh    remote publish flow with mock server
 ├── fixtures/
-│   └── test-protos/       proto fixtures (company_a + company_b)
+│   └── test-protos/       proto fixtures (company_a + company_b, api_demo for the API specs)
 └── runner/
     └── Dockerfile         karate-runner image build context
 ```
@@ -57,7 +57,9 @@ publish checks see only that run's artifacts and your own `~/.m2`, pip
 cache and protolake db stay untouched. A failed run keeps its output
 directory (`test-*-output/`, gitignored) for the logs; the next run clears
 it. They leave the `protolake-proto-lake:latest` image and each lake's
-`protolake-disk-cache-<lake>` volume behind as the next run's build cache.
+`protolake-disk-cache-<lake>` volume behind as the next run's build cache;
+`PROTOLAKE_E2E_IMAGE` gives `test_cli.sh` a branch-scoped tag to build and run
+instead.
 They also drop every publishing setting a developer's shell may carry
 (`MAVEN_REPO`, `PYPI_REPO`, tokens, npm modes), so no run reaches a real
 registry. Native Karate equivalents, for clearer per-area assertions, would
