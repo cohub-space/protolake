@@ -744,6 +744,26 @@ echo ""
 echo "Phase 7.8: buf validation resolves the cohub options the lake imports..."
 
 if [ "$BUILD_SUCCEEDED" = true ]; then
+    # The first validation resolves buf's deps in its copy of the lake and
+    # writes buf.lock back, as it does for every lake; its breaking check has no
+    # usable baseline yet, so only the lock file is checked.
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "${ABS_OUTPUT_DIR}/validate-first.log" 2>&1
+    check_file "$LAKE_DIR/buf.lock" "validation writes buf.lock back into the lake"
+    # A history the breaking check can compare: the fixtures and buf.lock, then a
+    # change that breaks nothing, so the baseline (HEAD~1, as the lake has no
+    # origin/main) also imports the cohub options.
+    lake_git() {
+        git -C "$LAKE_DIR" -c user.name=e2e -c user.email=e2e@example.com \
+            -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+    }
+    if lake_git add --all -- api_demo company_a company_b rest_demo buf.lock \
+        && lake_git commit -q -m "test: the fixture protos and buf.lock" \
+        && printf '\n// A comment, which breaks nothing.\n' >> "$LAKE_DIR/rest_demo/v1/notes.proto" \
+        && lake_git commit -q -m "test: a change that breaks nothing" -- rest_demo/v1/notes.proto; then
+        pass "the lake commits its protos, then a change that breaks nothing"
+    else
+        fail "could not commit the lake's protos"
+    fi
     VAL_LOG="${ABS_OUTPUT_DIR}/validate.log"
     (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "$VAL_LOG" 2>&1
     VAL_EXIT=$?
@@ -752,6 +772,8 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
     else
         fail "protolakew validate (exit $VAL_EXIT) did not resolve the import; see $VAL_LOG"
     fi
+    check_file_contains "$VAL_LOG" "breaking --against /tmp/protolake-buf-baseline-" \
+        "the breaking check compares against a baseline that also holds the options"
     if [ ! -e "$LAKE_DIR/cohub" ]; then
         pass "validation leaves no copy of the options in the lake"
     else
