@@ -218,6 +218,30 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
     }
     
     @Test
+    void testInitializeWorkspaceCreatesApiSpecRules() throws IOException {
+        Lake lake = createTestLake("specs-lake");
+        Path lakePath = basePath.resolve("specs-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // The aspect ApiSpecRunner applies to every bundle, and the tool its actions run.
+        Path toolsPath = lakePath.resolve("tools");
+        assertFileContains(toolsPath.resolve("api_specs.bzl"),
+            "api_specs = aspect(",
+            "\"bundle_versions\": attr.string(",
+            "PROTOC_GEN_OPENAPIV2_VERSION = ",
+            "PROTOC_GEN_CONNECT_OPENAPI_VERSION = "
+        );
+        assertExecutableFile(toolsPath.resolve("api_specs/api_specs_generated.py"));
+        assertFileExists(toolsPath, "api_specs/asyncapi_generated.py", "api_specs/protodesc_generated.py");
+        assertFileContains(toolsPath.resolve("BUILD.bazel"),
+            "name = \"api_specs_tool\"",
+            "main = \"api_specs/api_specs_generated.py\""
+        );
+    }
+
+    @Test
     void testInitializeWorkspaceCreatesBufConfiguration() throws IOException {
         // Create a lake  
         Lake lake = createTestLake("buf-lake");

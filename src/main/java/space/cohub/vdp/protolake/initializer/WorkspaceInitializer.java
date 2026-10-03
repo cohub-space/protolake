@@ -61,6 +61,9 @@ public class WorkspaceInitializer {
         // Create Connect-ES codegen rule
         createEsProtoRules(lake);
 
+        // Create the API spec aspect and its tool
+        createApiSpecRules(lake);
+
         // Create npm workspace (package.json + pnpm-lock.yaml for protoc-gen-es)
         createNpmWorkspace(lake);
 
@@ -266,6 +269,24 @@ public class WorkspaceInitializer {
         toolsPath.resolve("protoc-gen-es-wrapper_generated.sh").toFile().setExecutable(true);
         String lakeName = LakeUtil.extractLakeId(lake.getName());
         LOG.debugf("Created es_proto.bzl rules for lake: %s", lakeName);
+    }
+
+    /**
+     * Creates the API spec aspect (api_specs.bzl) and the stdlib-only Python
+     * tool its actions run. ApiSpecRunner applies the aspect to every bundle
+     * after the build; the files are static and regenerated with the other tools.
+     */
+    private void createApiSpecRules(Lake lake) throws IOException {
+        Path toolsPath = LakeUtil.getLocalPath(lake, basePath).resolve("tools");
+        templateEngine.copyResource("tools/api_specs.bzl", toolsPath.resolve("api_specs.bzl"));
+        Path specsPath = toolsPath.resolve("api_specs");
+        copyAndMakeExecutable("tools/api_specs/api_specs_generated.py",
+                specsPath.resolve("api_specs_generated.py"));
+        templateEngine.copyResource("tools/api_specs/asyncapi_generated.py",
+                specsPath.resolve("asyncapi_generated.py"));
+        templateEngine.copyResource("tools/api_specs/protodesc_generated.py",
+                specsPath.resolve("protodesc_generated.py"));
+        LOG.debugf("Created API spec rules for lake: %s", LakeUtil.extractLakeId(lake.getName()));
     }
 
     /**

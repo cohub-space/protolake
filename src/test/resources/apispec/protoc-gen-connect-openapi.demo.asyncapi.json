@@ -1,0 +1,340 @@
+{
+  "asyncapi": "3.1.0",
+  "info": {
+    "title": "ThingService WebSockets",
+    "version": "1.0.0",
+    "description": "Things, served every way cohub exposes an RPC."
+  },
+  "channels": {
+    "ThingServiceCollaborateChannel": {
+      "address": "/ws/demo.v1.ThingService/Collaborate",
+      "messages": {
+        "CollaborateRequest": {
+          "name": "CollaborateRequest",
+          "payload": {
+            "$ref": "#/components/schemas/demo.v1.CollaborateRequest"
+          },
+          "title": "CollaborateRequest"
+        },
+        "CollaborateResponse": {
+          "name": "CollaborateResponse",
+          "payload": {
+            "$ref": "#/components/schemas/demo.v1.CollaborateResponse"
+          },
+          "title": "CollaborateResponse"
+        }
+      },
+      "description": "Edits a thing together with other editors."
+    },
+    "ThingServiceUploadChunksChannel": {
+      "address": "/ws/demo.v1.ThingService/UploadChunks",
+      "messages": {
+        "UploadChunksRequest": {
+          "name": "UploadChunksRequest",
+          "payload": {
+            "$ref": "#/components/schemas/demo.v1.UploadChunksRequest"
+          },
+          "title": "UploadChunksRequest"
+        },
+        "UploadChunksResponse": {
+          "name": "UploadChunksResponse",
+          "payload": {
+            "$ref": "#/components/schemas/demo.v1.UploadChunksResponse"
+          },
+          "title": "UploadChunksResponse"
+        }
+      },
+      "description": "Uploads chunks of a thing."
+    },
+    "ThingServiceWatchThingsChannel": {
+      "address": "/ws/demo.v1.ThingService/WatchThings",
+      "messages": {
+        "Thing": {
+          "name": "Thing",
+          "payload": {
+            "$ref": "#/components/schemas/demo.v1.Thing"
+          },
+          "title": "Thing",
+          "description": "A thing."
+        },
+        "WatchThingsRequest": {
+          "name": "WatchThingsRequest",
+          "payload": {
+            "$ref": "#/components/schemas/demo.v1.WatchThingsRequest"
+          },
+          "title": "WatchThingsRequest"
+        }
+      },
+      "description": "Streams things as they change."
+    }
+  },
+  "operations": {
+    "ThingServiceCollaborateReceive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/ThingServiceCollaborateChannel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/ThingServiceCollaborateChannel/messages/CollaborateResponse"
+        }
+      ],
+      "summary": "Receive: Collaborate",
+      "description": "Edits a thing together with other editors."
+    },
+    "ThingServiceCollaborateSend": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/ThingServiceCollaborateChannel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/ThingServiceCollaborateChannel/messages/CollaborateRequest"
+        }
+      ],
+      "summary": "Send: Collaborate",
+      "description": "Edits a thing together with other editors."
+    },
+    "ThingServiceUploadChunksReceive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/ThingServiceUploadChunksChannel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/ThingServiceUploadChunksChannel/messages/UploadChunksResponse"
+        }
+      ],
+      "summary": "Receive: UploadChunks",
+      "description": "Uploads chunks of a thing."
+    },
+    "ThingServiceUploadChunksSend": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/ThingServiceUploadChunksChannel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/ThingServiceUploadChunksChannel/messages/UploadChunksRequest"
+        }
+      ],
+      "summary": "Send: UploadChunks",
+      "description": "Uploads chunks of a thing."
+    },
+    "ThingServiceWatchThingsReceive": {
+      "action": "receive",
+      "channel": {
+        "$ref": "#/channels/ThingServiceWatchThingsChannel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/ThingServiceWatchThingsChannel/messages/Thing"
+        }
+      ],
+      "summary": "Receive: WatchThings",
+      "description": "Streams things as they change."
+    },
+    "ThingServiceWatchThingsSend": {
+      "action": "send",
+      "channel": {
+        "$ref": "#/channels/ThingServiceWatchThingsChannel"
+      },
+      "messages": [
+        {
+          "$ref": "#/channels/ThingServiceWatchThingsChannel/messages/WatchThingsRequest"
+        }
+      ],
+      "summary": "Send: WatchThings",
+      "description": "Streams things as they change."
+    }
+  },
+  "components": {
+    "schemas": {
+      "demo.v1.CollaborateRequest": {
+        "anyOf": [
+          {
+            "properties": {
+              "deleteCount": {
+                "format": "int32",
+                "title": "delete_count",
+                "type": "integer"
+              }
+            },
+            "title": "delete_count",
+            "type": "object"
+          },
+          {
+            "properties": {
+              "insertText": {
+                "title": "insert_text",
+                "type": "string"
+              }
+            },
+            "title": "insert_text",
+            "type": "object"
+          }
+        ],
+        "not": {
+          "allOf": [
+            {
+              "anyOf": [
+                {
+                  "required": [
+                    "deleteCount"
+                  ]
+                },
+                {
+                  "required": [
+                    "insertText"
+                  ]
+                }
+              ]
+            },
+            {
+              "not": {
+                "oneOf": [
+                  {
+                    "required": [
+                      "deleteCount"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "insertText"
+                    ]
+                  }
+                ]
+              }
+            }
+          ]
+        },
+        "properties": {
+          "name": {
+            "title": "name",
+            "type": "string"
+          }
+        },
+        "title": "CollaborateRequest",
+        "type": "object",
+        "unevaluatedProperties": false
+      },
+      "demo.v1.CollaborateResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "editors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "editors",
+            "type": "array"
+          },
+          "thing": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/demo.v1.Thing"
+              }
+            ],
+            "title": "thing"
+          }
+        },
+        "title": "CollaborateResponse",
+        "type": "object"
+      },
+      "demo.v1.Kind": {
+        "description": "The kind of a thing.",
+        "enum": [
+          "KIND_UNSPECIFIED",
+          "KIND_SMALL",
+          "KIND_LARGE"
+        ],
+        "title": "Kind",
+        "type": "string"
+      },
+      "demo.v1.Thing": {
+        "additionalProperties": false,
+        "description": "A thing.",
+        "properties": {
+          "displayName": {
+            "description": "A label.",
+            "title": "display_name",
+            "type": "string"
+          },
+          "editCount": {
+            "description": "How many edits so far.",
+            "format": "int64",
+            "title": "edit_count",
+            "type": "string"
+          },
+          "kind": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/demo.v1.Kind"
+              }
+            ],
+            "description": "Its kind.",
+            "title": "kind"
+          },
+          "name": {
+            "description": "The resource name, things/{thing}.",
+            "title": "name",
+            "type": "string"
+          },
+          "note": {
+            "description": "An optional note.",
+            "title": "note",
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tags": {
+            "additionalProperties": {
+              "title": "value",
+              "type": "string"
+            },
+            "description": "Tags on the thing.",
+            "title": "tags",
+            "type": "object"
+          }
+        },
+        "title": "Thing",
+        "type": "object"
+      },
+      "demo.v1.UploadChunksRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk": {
+            "format": "byte",
+            "title": "chunk",
+            "type": "string"
+          }
+        },
+        "title": "UploadChunksRequest",
+        "type": "object"
+      },
+      "demo.v1.UploadChunksResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "size": {
+            "format": "int64",
+            "title": "size",
+            "type": "string"
+          }
+        },
+        "title": "UploadChunksResponse",
+        "type": "object"
+      },
+      "demo.v1.WatchThingsRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "filter": {
+            "title": "filter",
+            "type": "string"
+          }
+        },
+        "title": "WatchThingsRequest",
+        "type": "object"
+      }
+    }
+  }
+}

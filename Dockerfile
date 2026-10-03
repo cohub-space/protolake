@@ -42,6 +42,37 @@ RUN BUF_ARCH=$(case "${TARGETARCH}" in arm64) echo "Linux-aarch64";; amd64) echo
     && curl -sSL "https://github.com/bufbuild/buf/releases/download/v1.56.0/buf-${BUF_ARCH}" -o /usr/local/bin/buf \
     && chmod +x /usr/local/bin/buf
 
+# protoc plugins for the API specs a bundle build writes: OpenAPI 2.0 from the
+# google.api.http bindings, AsyncAPI 3.1 for WebSocket-marked RPCs. Pinned by
+# version and per-platform SHA-256, since release assets are mutable. The
+# versions also sit in templates/tools/api_specs.bzl, where they key Bazel's
+# cache and are checked against the installed binaries; ApiSpecPinsTest keeps
+# the two files in step.
+ARG PROTOC_GEN_OPENAPIV2_VERSION=2.31.0
+ARG PROTOC_GEN_OPENAPIV2_SHA256_AMD64=a05f17a2a934692cc9d0b46a5a597f23cf2f1e34c76e0a457943aa5afffa33ba
+ARG PROTOC_GEN_OPENAPIV2_SHA256_ARM64=6240a03543695ed7dfad404765cc681c7bcc7760773c479d37cdd80f7840e000
+ARG PROTOC_GEN_CONNECT_OPENAPI_VERSION=0.28.0
+ARG PROTOC_GEN_CONNECT_OPENAPI_SHA256_AMD64=1bc500494b835efa00487d9685ca8e6f74b5a427bdb6f5a456f3287e5f3b336a
+ARG PROTOC_GEN_CONNECT_OPENAPI_SHA256_ARM64=679816cf64acee93a19c6100f16b5144b5b17e59fa697b8a29cbf73eede5ec80
+RUN case "${TARGETARCH}" in \
+      amd64) OPENAPIV2_ARCH=linux-x86_64; OPENAPIV2_SHA256="${PROTOC_GEN_OPENAPIV2_SHA256_AMD64}"; \
+             CONNECT_ARCH=linux_amd64; CONNECT_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_SHA256_AMD64}";; \
+      arm64) OPENAPIV2_ARCH=linux-arm64; OPENAPIV2_SHA256="${PROTOC_GEN_OPENAPIV2_SHA256_ARM64}"; \
+             CONNECT_ARCH=linux_arm64; CONNECT_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_SHA256_ARM64}";; \
+      *) echo "no pinned protoc plugins for ${TARGETARCH}" >&2; exit 1;; \
+    esac \
+    && curl -fsSL -o /usr/local/bin/protoc-gen-openapiv2 \
+      "https://github.com/grpc-ecosystem/grpc-gateway/releases/download/v${PROTOC_GEN_OPENAPIV2_VERSION}/protoc-gen-openapiv2-v${PROTOC_GEN_OPENAPIV2_VERSION}-${OPENAPIV2_ARCH}" \
+    && echo "${OPENAPIV2_SHA256}  /usr/local/bin/protoc-gen-openapiv2" | sha256sum -c - \
+    && chmod +x /usr/local/bin/protoc-gen-openapiv2 \
+    && curl -fsSL -o /tmp/protoc-gen-connect-openapi.tar.gz \
+      "https://github.com/sudorandom/protoc-gen-connect-openapi/releases/download/v${PROTOC_GEN_CONNECT_OPENAPI_VERSION}/protoc-gen-connect-openapi_${PROTOC_GEN_CONNECT_OPENAPI_VERSION}_${CONNECT_ARCH}.tar.gz" \
+    && echo "${CONNECT_SHA256}  /tmp/protoc-gen-connect-openapi.tar.gz" | sha256sum -c - \
+    && tar -xzf /tmp/protoc-gen-connect-openapi.tar.gz -C /usr/local/bin protoc-gen-connect-openapi \
+    && rm /tmp/protoc-gen-connect-openapi.tar.gz \
+    && /usr/local/bin/protoc-gen-openapiv2 --version \
+    && /usr/local/bin/protoc-gen-connect-openapi --version
+
 # Stage 3: Final runtime image
 FROM eclipse-temurin:21-jdk-noble
 
@@ -56,9 +87,11 @@ RUN apt-get update && apt-get install -y \
     unzip \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Bazel and Buf from tools stage
+# Copy Bazel, Buf and the API spec plugins from tools stage
 COPY --from=tools /usr/local/bin/bazel /usr/local/bin/bazel
 COPY --from=tools /usr/local/bin/buf /usr/local/bin/buf
+COPY --from=tools /usr/local/bin/protoc-gen-openapiv2 /usr/local/bin/protoc-gen-openapiv2
+COPY --from=tools /usr/local/bin/protoc-gen-connect-openapi /usr/local/bin/protoc-gen-connect-openapi
 
 # Install twine for remote PyPI publishing
 RUN pip3 install twine --break-system-packages

@@ -2,6 +2,7 @@ package space.cohub.vdp.protolake.pipeline;
 
 import org.junit.jupiter.api.Test;
 
+import java.nio.file.Path;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -50,6 +51,19 @@ class BazelBuildRunnerTest {
                 List.of(MAVEN, PYPI), null);
 
         assertThat(selected).containsExactly(MAVEN, PYPI);
+    }
+
+    @Test
+    void bazelBinFrom_takesThePathAfterWarningsThatQuotePaths() {
+        String output = """
+                (02:01:15) WARNING: /proto-lake/lake/BUILD.bazel:94:19: target is deprecated
+                Starting local Bazel server and connecting to it...
+                /home/protolake/.cache/bazel/execroot/_main/bazel-out/aarch64-fastbuild/bin
+                """;
+
+        assertThat(BazelBuildRunner.bazelBinFrom(output))
+                .contains(Path.of("/home/protolake/.cache/bazel/execroot/_main/bazel-out/aarch64-fastbuild/bin"));
+        assertThat(BazelBuildRunner.bazelBinFrom("ERROR: no MODULE.bazel\n")).isEmpty();
     }
 
     @Test

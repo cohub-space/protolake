@@ -15,11 +15,18 @@ public class ConsoleProgressListener implements BuildProgressListener {
 
     @Override
     public void onPhaseComplete(String phase, boolean success, String message) {
-        if (success) {
+        if (success && message != null && !message.isEmpty()) {
+            System.out.printf("[protolake] %s: OK - %s%n", phase, message);
+        } else if (success) {
             System.out.printf("[protolake] %s: OK%n", phase);
         } else {
             System.out.printf("[protolake] %s: FAILED - %s%n", phase, message);
         }
+    }
+
+    @Override
+    public void onWarning(String warning) {
+        System.out.printf("[protolake] WARNING: %s%n", warning);
     }
 
     @Override

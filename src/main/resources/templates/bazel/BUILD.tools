@@ -111,3 +111,16 @@ py_binary(
     srcs = ["bundler/npm_bundler_generated.py"],
     main = "bundler/npm_bundler_generated.py",
 )
+
+# API specs: run by the api_specs aspect (api_specs.bzl), one action per bundle.
+# Not named after its directory: rules_python writes the sources' bytecode under
+# bin/tools/api_specs/, which an executable called api_specs would collide with.
+py_binary(
+    name = "api_specs_tool",
+    srcs = [
+        "api_specs/api_specs_generated.py",
+        "api_specs/asyncapi_generated.py",
+        "api_specs/protodesc_generated.py",
+    ],
+    main = "api_specs/api_specs_generated.py",
+)
