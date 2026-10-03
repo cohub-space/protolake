@@ -35,6 +35,9 @@ public class WorkspaceInitializer {
 
     @Inject
     ReleasePleaseScaffolding releasePleaseScaffolding;
+
+    @Inject
+    CohubApiModule cohubApiModule;
     
     @ConfigProperty(name = "protolake.storage.base-path")
     String basePath;
@@ -86,6 +89,8 @@ public class WorkspaceInitializer {
      */
     private void createModuleBazel(Lake lake) throws IOException {
         Map<String, Object> context = buildTemplateContext(lake);
+        context.put("cohub_api_version", CohubApiModule.VERSION);
+        context.put("cohub_api_module_path", cohubApiModule.path().toString());
         
         // Configure protolake-gazelle source
         // Priority: explicit commit > explicit tag > local path > default tag

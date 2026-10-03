@@ -218,6 +218,26 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
     }
     
     @Test
+    void testInitializeWorkspaceProvidesTheCohubApiModule() throws IOException {
+        Lake lake = createTestLake("cohub-api-lake");
+        Path lakePath = basePath.resolve("cohub-api-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // Lakes import cohub/api/v1/exposure.proto from the module in the protolake
+        // image, the way they import googleapis and protovalidate from the BCR.
+        assertFileContains(lakePath.resolve("MODULE.bazel"),
+            "bazel_dep(name = \"cohub_api\", version = \"1.0.0\")",
+            "module_name = \"cohub_api\"",
+            "path = \"/opt/protolake/bazel/cohub_api\""
+        );
+        assertFileContains(lakePath.resolve("BUILD.bazel"),
+            "# gazelle:resolve proto cohub/api/v1/exposure.proto @cohub_api//cohub/api/v1:exposure_proto"
+        );
+    }
+
+    @Test
     void testInitializeWorkspaceCreatesApiSpecRules() throws IOException {
         Lake lake = createTestLake("specs-lake");
         Path lakePath = basePath.resolve("specs-lake");

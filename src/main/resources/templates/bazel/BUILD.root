@@ -48,6 +48,8 @@ gazelle_binary(
 # gazelle:resolve proto google/longrunning/operations.proto @googleapis//google/longrunning:operations_proto
 # protovalidate (buf/validate/*)
 # gazelle:resolve proto buf/validate/validate.proto @protovalidate//proto/protovalidate/buf/validate:validate_proto
+# cohub_api (cohub/api/*), the module the protolake image ships
+# gazelle:resolve proto cohub/api/v1/exposure.proto @cohub_api//cohub/api/v1:exposure_proto
 
 # Main Gazelle target for proto generation
 gazelle(
