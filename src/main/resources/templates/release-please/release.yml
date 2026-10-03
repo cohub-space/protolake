@@ -80,14 +80,34 @@ jobs:
             fi
           done
 
-      # Every open release PR that is a draft now needs its branch
-      # regenerated: one release-please opened or moved, or one an earlier
-      # failed run left held.
+      # The release PRs whose branch needs regenerating: each one
+      # release-please opened or moved in this run, read from its own
+      # outputs, and every other open release PR that is a draft (one an
+      # earlier failed run left held), from the label list. The list
+      # cannot stand in for the outputs: it is search-backed, and GitHub
+      # indexes a PR release-please has just opened, and its label, a
+      # moment later. A reported PR the outputs cannot name fails the step
+      # instead of leaving the regenerate matrix empty.
       - name: List the release PRs to regenerate
         id: drafts
+        env:
+          REPORTED: ${{ steps.release.outputs.prs }}
+          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
         run: |
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" --label 'autorelease: pending' --state open \
-            --json number,isDraft,headRefName --jq '[.[] | select(.isDraft)] | tojson')
+          [ -n "$REPORTED" ] || REPORTED='[]'
+          reported=$(printf '%s' "$REPORTED" | jq -c '
+            map(with_entries(select(.key == "number" or .key == "headBranchName")
+              | if .key == "headBranchName" then .key = "headRefName" else . end))
+            | if any(.[]; (.number | type) != "number" or (.headRefName | type) != "string")
+              then error("release-please reported a release PR without its number or head branch")
+              else . end')
+          if [ "$PRS_CREATED" = true ] && [ "$reported" = '[]' ]; then
+            echo "::error::release-please reported a release PR, but its prs output names none"
+            exit 1
+          fi
+          listed=$(gh pr list -R "$GITHUB_REPOSITORY" --label 'autorelease: pending' --state open \
+            --json number,isDraft,headRefName --jq '[.[] | select(.isDraft) | del(.isDraft)] | tojson')
+          prs=$(printf '%s\n%s' "$reported" "$listed" | jq -cs 'add | unique_by(.number)')
           echo "prs=$prs" >> "$GITHUB_OUTPUT"
 
   # Gazelle bakes each bundle's version into its BUILD files from bundle.yaml

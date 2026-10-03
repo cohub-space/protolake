@@ -2,6 +2,7 @@ package space.cohub.vdp.protolake.initializer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.quarkus.qute.Engine;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,12 +11,16 @@ import protolake.v1.Lake;
 import protolake.v1.LakeConfig;
 import space.cohub.vdp.protolake.util.LakeUtil;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
+import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * The release-please birth contract (the engine's ReleasePleaseEntryManager
@@ -36,6 +41,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
 
     @Inject
     ReleasePleaseScaffolding scaffolding;
+
+    @Inject
+    Engine qute;
 
     private Lake lake;
     private Path lakePath;
@@ -74,8 +82,10 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
      * A release PR must not merge before its branch carries the regenerated
      * BUILD files: release-please opens it as a draft; release.yml holds a
      * ready one as a draft before release-please can move it, readies again
-     * the ones it left alone, and regenerates every draft, marking it ready
-     * only after pushing.
+     * the ones it left alone, and regenerates each one release-please opened
+     * or moved (from the action's outputs) and every other draft, marking it
+     * ready only after pushing. ReleaseWorkflowDraftsStepTest runs that
+     * matrix step.
      */
     @Test
     void releasePrsStayDraftsUntilTheirBranchIsRegenerated() throws Exception {
@@ -95,12 +105,15 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
         int readyAgain = releasePlease.indexOf(
                 "if [ \"$head\" = \"$(echo \"$entry\" | cut -d: -f2)\" ]; then");
-        int drafts = releasePlease.indexOf("select(.isDraft)] | tojson");
+        int reported = releasePlease.indexOf("REPORTED: ${{ steps.release.outputs.prs }}");
+        int drafts = releasePlease.indexOf("select(.isDraft) | del(.isDraft)] | tojson");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
         assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);
         assertThat(releasePlease).contains("if: always() && steps.hold.outputs.held != ''");
-        assertThat(drafts).as("every draft is regenerated").isGreaterThan(readyAgain);
+        assertThat(reported).as("each PR release-please reported is regenerated")
+                .isGreaterThan(readyAgain);
+        assertThat(drafts).as("every other draft is regenerated").isGreaterThan(reported);
         assertThat(releasePlease).contains("drafts:           ${{ steps.drafts.outputs.prs }}");
 
         String regenerate = release.substring(regenerateJob, release.indexOf("\n  publish:", regenerateJob));
@@ -111,6 +124,24 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int ready = regenerate.indexOf("gh pr ready \"$RELEASE_PR\"");
         assertThat(push).isPositive();
         assertThat(ready).as("marked ready only after the push").isGreaterThan(push);
+    }
+
+    /**
+     * The Quarkus build parses every file under {@code templates/} as a Qute
+     * template, and a parse error fails it. The workflows the scaffold copies
+     * raw therefore avoid single-brace shell parameter expansions with an
+     * operator (such as a default or a prefix strip) and jq object literals.
+     */
+    @Test
+    void releasePleaseWorkflowsParseAsQuteTemplates() throws Exception {
+        for (String workflow : List.of("release.yml", "publish-bundle.yml", "pr-title-lint.yml")) {
+            String content;
+            try (InputStream in = getClass().getResourceAsStream("/templates/release-please/" + workflow)) {
+                assertThat(in).as(workflow).isNotNull();
+                content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            assertThatCode(() -> qute.parse(content)).as(workflow).doesNotThrowAnyException();
+        }
     }
 
     @Test
