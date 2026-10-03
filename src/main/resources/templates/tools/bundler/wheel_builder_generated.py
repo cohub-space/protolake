@@ -3,13 +3,25 @@
 """Creates Python wheels for proto bundles"""
 
 import argparse
+import base64
+import hashlib
 import os
 import re
 import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
+
+# Run from protolake's templates/, bytecode beside the helper would read as a template.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from api_spec_files_generated import api_spec_files  # noqa: E402
+
+# Where the wheel carries the bundle's API specs: its .dist-info directory,
+# which importlib.metadata reads without the specs being an importable module.
+API_SPECS_DIR = "api-specs"
 
 
 def read_bundle_version(bundle_yaml_path):
@@ -89,6 +101,42 @@ global-exclude *.pyo
 """
 
 
+def add_dist_info_files(wheel_path, files):
+    """Adds files under the wheel's .dist-info/api-specs/ and records them in RECORD.
+
+    A wheel's RECORD lists every file with its hash, and installers check it,
+    so the wheel is rewritten with the new entries and a new RECORD.
+    """
+    if not files:
+        return []
+    with zipfile.ZipFile(wheel_path) as wheel:
+        infos = wheel.infolist()
+        contents = {info.filename: wheel.read(info.filename) for info in infos}
+    records = [name for name in contents if name.endswith(".dist-info/RECORD") and name.count("/") == 1]
+    if len(records) != 1:
+        print(f"Error: {wheel_path} has {len(records)} .dist-info/RECORD files, not one", file=sys.stderr)
+        sys.exit(1)
+    record = records[0]
+    dist_info = record[:-len("RECORD")]
+    added = [(dist_info + API_SPECS_DIR + "/" + name, data) for name, data in files]
+    lines = [line for line in contents[record].decode("utf-8").splitlines()
+             if line and not line.startswith(record + ",")]
+    for name, data in added:
+        digest = base64.urlsafe_b64encode(hashlib.sha256(data).digest()).rstrip(b"=").decode("ascii")
+        lines.append(f"{name},sha256={digest},{len(data)}")
+    lines.append(record + ",,")
+    rewritten = wheel_path + ".tmp"
+    with zipfile.ZipFile(rewritten, "w", zipfile.ZIP_DEFLATED) as wheel:
+        for info in infos:
+            if info.filename != record:
+                wheel.writestr(info, contents[info.filename])
+        for name, data in added:
+            wheel.writestr(name, data)
+        wheel.writestr(record, "\n".join(lines) + "\n")
+    os.replace(rewritten, wheel_path)
+    return [name for name, _ in added]
+
+
 def strip_bazel_path(path):
     """Strip Bazel-specific prefixes from paths to get clean proto paths"""
     original = path
@@ -132,6 +180,8 @@ def main():
                         help="Path to the bundle's bundle.yaml; the version is read from it at build time")
     parser.add_argument('--py-files', nargs='*', default=[], help='Python files')
     parser.add_argument('--proto-sources', nargs='*', default=[], help='Proto source files')
+    parser.add_argument('--api-specs-dir', nargs='*', default=[],
+                        help="Directories holding the bundle's API specs, packed in the .dist-info directory")
 
     args = parser.parse_args()
 
@@ -226,6 +276,10 @@ def main():
         if not wheels:
             print("Error: No wheel file generated", file=sys.stderr)
             sys.exit(1)
+
+        # Pack the API specs in the .dist-info directory, stamped with the bundle version
+        for name in add_dist_info_files(str(wheels[0]), api_spec_files(args.api_specs_dir, args.version)):
+            print(f"  Packed API spec {name}")
 
         # Copy to output location
         output_path = Path(args.output)

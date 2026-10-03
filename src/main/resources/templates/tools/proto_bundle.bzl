@@ -4,11 +4,25 @@
 load("@rules_java//java:defs.bzl", "JavaInfo")
 # ProtoInfo is available from protobuf directly
 load("@com_google_protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
+load(":api_specs.bzl", "api_specs")
 
 # Helper function for map_each - must be at top level
 def _proto_source_mapper(f):
     """Map proto file to src=dest pair for bundler tools"""
     return f.path + "=" + f.path
+
+def _api_specs_dirs(proto_deps):
+    """The directories the api_specs aspect wrote the bundle's spec documents to.
+
+    The bundlers pack the documents beside the generated code, so a consumer
+    pins the specs with the package; a directory may be empty, for a bundle
+    with neither REST bindings nor WebSocket RPCs.
+    """
+    dirs = []
+    for dep in proto_deps:
+        if OutputGroupInfo in dep and hasattr(dep[OutputGroupInfo], "api_specs"):
+            dirs.extend([f for f in dep[OutputGroupInfo].api_specs.to_list() if f.is_directory])
+    return dirs
 
 def _java_proto_bundle_impl(ctx):
     """Create a JAR containing generated Java proto classes.
@@ -57,6 +71,10 @@ def _java_proto_bundle_impl(ctx):
     # Add proto sources
     args.add_all("--proto-sources", proto_sources)
 
+    # API specs, packed as META-INF/api-specs/<bundle>.{openapi,asyncapi}.json
+    spec_dirs = _api_specs_dirs(ctx.attr.proto_deps)
+    args.add_all("--api-specs-dir", spec_dirs, expand_directories = False)
+
     # Jandex index generation for Quarkus gRPC service discovery
     jandex_files = ctx.attr._jandex[DefaultInfo].files.to_list()
     if jandex_files:
@@ -73,7 +91,7 @@ def _java_proto_bundle_impl(ctx):
 
     ctx.actions.run(
         outputs = [output_jar],
-        inputs = depset(direct = jandex_files + descriptor_files + [ctx.file.bundle_yaml], transitive = [runtime_jars, proto_sources]),
+        inputs = depset(direct = jandex_files + descriptor_files + spec_dirs + [ctx.file.bundle_yaml], transitive = [runtime_jars, proto_sources]),
         executable = ctx.executable._jar_bundler,
         arguments = [args],
         mnemonic = "JavaProtoBundle",
@@ -92,7 +110,8 @@ java_proto_bundle = rule(
     attrs = {
         "proto_deps": attr.label_list(
             providers = [ProtoInfo],
-            doc = "Proto library dependencies",
+            aspects = [api_specs],
+            doc = "Proto library dependencies; the api_specs aspect writes the bundle's API specs from them",
         ),
         "java_deps": attr.label_list(
             providers = [JavaInfo],
@@ -180,10 +199,12 @@ def _py_proto_bundle_impl(ctx):
     # Pass proto sources as src=dest pairs using top-level function
     args.add_all("--proto-sources", proto_sources,
                  map_each = _proto_source_mapper)
+    spec_dirs = _api_specs_dirs(ctx.attr.proto_deps)
+    args.add_all("--api-specs-dir", spec_dirs, expand_directories = False)
 
     ctx.actions.run(
         outputs = [output_whl],
-        inputs = depset(direct = py_files + [ctx.file.bundle_yaml], transitive = [proto_sources]),
+        inputs = depset(direct = py_files + spec_dirs + [ctx.file.bundle_yaml], transitive = [proto_sources]),
         executable = ctx.executable._wheel_builder,
         arguments = [args],
         mnemonic = "PyProtoBundle",
@@ -197,7 +218,8 @@ py_proto_bundle = rule(
     attrs = {
         "proto_deps": attr.label_list(
             providers = [ProtoInfo],
-            doc = "Proto library dependencies",
+            aspects = [api_specs],
+            doc = "Proto library dependencies; the api_specs aspect writes the bundle's API specs from them",
         ),
         "py_deps": attr.label_list(
             doc = "Python proto library dependencies",
@@ -251,10 +273,12 @@ def _js_proto_bundle_impl(ctx):
     args.add_all("--es-files", es_files)
     args.add_all("--proto-sources", proto_sources,
                  map_each = _proto_source_mapper)
+    spec_dirs = _api_specs_dirs(ctx.attr.proto_deps)
+    args.add_all("--api-specs-dir", spec_dirs, expand_directories = False)
 
     ctx.actions.run(
         outputs = [output_tgz],
-        inputs = depset(direct = es_files + [ctx.file.bundle_yaml], transitive = [proto_sources]),
+        inputs = depset(direct = es_files + spec_dirs + [ctx.file.bundle_yaml], transitive = [proto_sources]),
         executable = ctx.executable._npm_bundler,
         arguments = [args],
         mnemonic = "JsProtoBundle",
@@ -268,7 +292,8 @@ js_proto_bundle = rule(
     attrs = {
         "proto_deps": attr.label_list(
             providers = [ProtoInfo],
-            doc = "Proto library dependencies",
+            aspects = [api_specs],
+            doc = "Proto library dependencies; the api_specs aspect writes the bundle's API specs from them",
         ),
         "es_deps": attr.label_list(
             doc = "es_proto_compile targets (Connect-ES generated _pb.js + _pb.d.ts)",

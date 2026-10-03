@@ -11,7 +11,6 @@ import space.cohub.vdp.protolake.model.ValidationError;
 import space.cohub.vdp.protolake.util.bazel.BazelCommand;
 
 import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -22,9 +21,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
 import java.util.Set;
-import java.util.regex.Matcher;
 import java.util.regex.Pattern;
-import java.util.stream.Collectors;
 
 /**
  * Checks each bundle's exposure annotations and writes its API specs.
@@ -33,9 +30,10 @@ import java.util.stream.Collectors;
  * aspect (templates/tools/api_specs.bzl) to the {@code <bundle>_all_protos}
  * target gazelle emits for every bundle in scope. The aspect's tool writes the
  * bundle's OpenAPI and AsyncAPI documents and a findings file, which this reads
- * back. The checks belong to building a bundle, not to buf validation, so
- * {@code --skip-validation} does not skip them; the orchestrator fails the build
- * on an ERROR finding before anything is published.
+ * back; the bundle rules pack the same documents into the bundle's jar, wheel
+ * and npm package. The checks belong to building a bundle, not to buf
+ * validation, so {@code --skip-validation} does not skip them; the orchestrator
+ * fails the build on an ERROR finding before anything is published.
  */
 @ApplicationScoped
 public class ApiSpecRunner {
@@ -48,14 +46,6 @@ public class ApiSpecRunner {
     /** Directories that never hold bundles: VCS metadata, Bazel symlinks, npm trees. */
     private static final Set<String> SKIPPED_DIRECTORIES =
             Set.of(".git", ".bazel", "node_modules", ".aspect_rules_js");
-
-    /**
-     * The bundlers' reading of a bundle.yaml version (jar_bundler_generated.py),
-     * so the specs carry the version the libraries are published under. The
-     * character set also keeps a version safe inside the aspect parameter.
-     */
-    private static final Pattern VERSION_LINE = Pattern.compile("^version:\\s*['\"]?([^'\"\\s]+)");
-    private static final Pattern VERSION = Pattern.compile("[0-9A-Za-z.+~-]+");
 
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final YAMLMapper YAML = new YAMLMapper();
@@ -72,9 +62,8 @@ public class ApiSpecRunner {
      *
      * @param packagePath the bundle's lake-relative directory, its Bazel package
      * @param name        the bundle.yaml {@code name}, which gazelle names targets after
-     * @param version     the bundle.yaml {@code version}
      */
-    public record BundleTarget(String packagePath, String name, String version) {
+    public record BundleTarget(String packagePath, String name) {
         /** The gazelle-emitted target the aspect is applied to. */
         public String label() {
             return "//" + packagePath + ":" + name + ALL_PROTOS_SUFFIX;
@@ -124,8 +113,8 @@ public class ApiSpecRunner {
         }
         List<String> labels = bundles.stream().map(BundleTarget::label).toList();
         LOG.infof("Writing API specs for %d bundle(s): %s", bundles.size(), labels);
-        BazelCommand.CommandResult build = bazelBuildRunner.buildAspect(lakeRoot, ASPECT,
-                "bundle_versions=" + versionsParameter(bundles), OUTPUT_GROUP, labels, metadata);
+        BazelCommand.CommandResult build = bazelBuildRunner.buildAspect(lakeRoot, ASPECT, OUTPUT_GROUP, labels,
+                metadata);
         if (!build.isSuccess()) {
             throw new IOException("Writing the API specs failed (bazel exit " + build.exitCode + "):\n"
                     + tail(build.output, 60));
@@ -177,16 +166,15 @@ public class ApiSpecRunner {
                 continue; // a lake root is never a bundle
             }
             Optional<String> name = bundleName(bundleYaml);
-            Optional<String> version = bundleVersion(bundleYaml);
-            if (name.isEmpty() || version.isEmpty()) {
-                LOG.warnf("Skipping API specs for %s: no usable name or version", bundleYaml);
+            if (name.isEmpty()) {
+                LOG.warnf("Skipping API specs for %s: it names no bundle", bundleYaml);
                 continue;
             }
             if (!declaresTarget(dir, name.get() + ALL_PROTOS_SUFFIX)) {
                 LOG.debugf("Bundle %s has no protos yet; no API specs", packagePath);
                 continue;
             }
-            bundles.add(new BundleTarget(packagePath, name.get(), version.get()));
+            bundles.add(new BundleTarget(packagePath, name.get()));
         }
         return bundles;
     }
@@ -195,17 +183,6 @@ public class ApiSpecRunner {
         JsonNode name = YAML.readTree(bundleYaml.toFile()).path("name");
         return name.isValueNode() && !name.asText().isBlank()
                 ? Optional.of(name.asText().trim()) : Optional.empty();
-    }
-
-    private static Optional<String> bundleVersion(Path bundleYaml) throws IOException {
-        for (String line : Files.readAllLines(bundleYaml, StandardCharsets.UTF_8)) {
-            Matcher matcher = VERSION_LINE.matcher(line);
-            if (matcher.find()) {
-                String version = matcher.group(1);
-                return VERSION.matcher(version).matches() ? Optional.of(version) : Optional.empty();
-            }
-        }
-        return Optional.empty();
     }
 
     private static boolean declaresTarget(Path dir, String target) throws IOException {
@@ -217,13 +194,6 @@ public class ApiSpecRunner {
             }
         }
         return false;
-    }
-
-    /** The aspect's {@code bundle_versions}: {@code <package>=<version>} entries joined by {@code ;}. */
-    static String versionsParameter(List<BundleTarget> bundles) {
-        return bundles.stream()
-                .map(b -> b.packagePath() + "=" + b.version())
-                .collect(Collectors.joining(";"));
     }
 
     /** Reads one bundle's findings file and spec paths from the aspect's outputs. */

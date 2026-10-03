@@ -115,7 +115,7 @@ echo ""
 echo "Phase 0: Checking prerequisites..."
 
 PREREQ_FAIL=false
-for cmd in docker jq; do
+for cmd in docker jq unzip; do
     if command -v "$cmd" &> /dev/null; then
         echo "  Found: $cmd"
     else
@@ -597,8 +597,7 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
 
     # OpenAPI 2.0, from the google.api.http bindings
     check_json "$OPENAPI" '.swagger == "2.0"' "OpenAPI: a Swagger 2.0 document"
-    check_json "$OPENAPI" ".info.title == \"api_demo\" and .info.version == \"$AD_VERSION\"" \
-        "OpenAPI: titled and versioned after the bundle ($AD_VERSION)"
+    check_json "$OPENAPI" '.info.title == "api_demo"' "OpenAPI: titled after the bundle"
     check_json "$OPENAPI" '.paths["/v1/{name}"].get.operationId == "ThingService_GetThing"' \
         "OpenAPI: the REST-bound unary RPC"
     check_json "$OPENAPI" '.paths["/v1/things:watch"].get.responses["200"]
@@ -641,6 +640,39 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
 
     # service_a has no bindings and no WebSocket RPCs: no specs, which is fine
     check_json "$SA_FINDINGS" '.findings == [] and .specs == []' "service_a gets no API specs"
+
+    # The specs ship inside api_demo's packages, stamped with the version each is published under
+    AD_JAR=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/api-demo-proto" -name "*.jar" 2>/dev/null | head -1)
+    AD_WHEEL=$(find "$LOCAL_ROOT/pip/simple" -name "company_api_demo_proto-*.whl" 2>/dev/null | head -1)
+    AD_NPM_SPEC=$(find "$LOCAL_ROOT/npm-packages" -path "*api-demo-proto*" -name "api_demo.openapi.json" 2>/dev/null | head -1)
+    PACKAGED="$SPECS_DIR/packaged"
+    mkdir -p "$PACKAGED"
+    if [ -n "$AD_JAR" ]; then
+        unzip -p "$AD_JAR" META-INF/api-specs/api_demo.openapi.json > "$PACKAGED/jar.openapi.json" 2>/dev/null
+        unzip -p "$AD_JAR" META-INF/api-specs/api_demo.asyncapi.json > "$PACKAGED/jar.asyncapi.json" 2>/dev/null
+    fi
+    if [ -n "$AD_WHEEL" ]; then
+        unzip -p "$AD_WHEEL" "*.dist-info/api-specs/api_demo.openapi.json" > "$PACKAGED/wheel.openapi.json" 2>/dev/null
+        unzip -p "$AD_WHEEL" "*.dist-info/RECORD" > "$PACKAGED/wheel.RECORD" 2>/dev/null
+    fi
+    [ -n "$AD_NPM_SPEC" ] && cp "$AD_NPM_SPEC" "$PACKAGED/npm.openapi.json"
+    check_json "$PACKAGED/jar.openapi.json" ".info.version == \"$AD_VERSION\" and (.paths | has(\"/v1/{name}\"))" \
+        "jar: META-INF/api-specs/api_demo.openapi.json, version $AD_VERSION"
+    check_json "$PACKAGED/jar.asyncapi.json" ".info.version == \"$AD_VERSION\" and .asyncapi == \"3.1.0\"" \
+        "jar: META-INF/api-specs/api_demo.asyncapi.json, version $AD_VERSION"
+    check_json "$PACKAGED/wheel.openapi.json" ".info.version == \"$AD_VERSION\"" \
+        "wheel: .dist-info/api-specs/api_demo.openapi.json, version $AD_VERSION"
+    check_file_contains "$PACKAGED/wheel.RECORD" "dist-info/api-specs/api_demo.openapi.json,sha256=" \
+        "wheel: RECORD lists the spec with its hash"
+    check_json "$PACKAGED/npm.openapi.json" ".info.version == \"$AD_VERSION\"" \
+        "npm: api-specs/api_demo.openapi.json, version $AD_VERSION"
+    # service_a has no specs, so its jar carries none
+    SA_JAR_FILE=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/service-a-proto" -name "*.jar" 2>/dev/null | head -1)
+    if [ -n "$SA_JAR_FILE" ] && ! unzip -l "$SA_JAR_FILE" | grep -q "api-specs/"; then
+        pass "service_a's jar carries no API specs"
+    else
+        fail "service_a's jar carries API specs, or is missing ($SA_JAR_FILE)"
+    fi
 else
     echo "  Skipping API spec checks (build did not succeed)"
 fi

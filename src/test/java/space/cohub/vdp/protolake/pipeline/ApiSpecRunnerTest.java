@@ -16,8 +16,8 @@ import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 
 /**
- * How the API spec step finds a lake's bundles, hands their versions to the
- * aspect, and reads back what the aspect's tool left.
+ * How the API spec step finds a lake's bundles, applies the aspect to them,
+ * and reads back what the aspect's tool left.
  */
 class ApiSpecRunnerTest {
 
@@ -32,8 +32,8 @@ class ApiSpecRunnerTest {
         bundle("empty", "empty", "version: \"0.1.0\"", false);
 
         assertThat(ApiSpecRunner.findBundles(lake, ".")).containsExactly(
-                new ApiSpecRunner.BundleTarget("company_a/platform/service_a", "service_a", "1.4.0"),
-                new ApiSpecRunner.BundleTarget("company_b/apps/service_b", "service_b", "2.0.0"));
+                new ApiSpecRunner.BundleTarget("company_a/platform/service_a", "service_a"),
+                new ApiSpecRunner.BundleTarget("company_b/apps/service_b", "service_b"));
     }
 
     @Test
@@ -58,23 +58,16 @@ class ApiSpecRunnerTest {
     }
 
     @Test
-    void findBundles_versionTheBundlersCannotPublish_isSkipped() throws IOException {
-        bundle("odd", "odd", "version: \"1.0;rm\"", true);
+    void findBundles_bundleYamlWithoutAName_isSkipped() throws IOException {
+        Path dir = Files.createDirectories(lake.resolve("nameless"));
+        Files.writeString(dir.resolve("bundle.yaml"), "version: \"1.0.0\"\n");
 
         assertThat(ApiSpecRunner.findBundles(lake, ".")).isEmpty();
     }
 
     @Test
-    void versionsParameter_pairsEachBundleDirectoryWithItsVersion() {
-        assertThat(ApiSpecRunner.versionsParameter(List.of(
-                new ApiSpecRunner.BundleTarget("company_a/platform/service_a", "service_a", "1.4.0"),
-                new ApiSpecRunner.BundleTarget("api", "api", "2.0.0-rc.1"))))
-                .isEqualTo("company_a/platform/service_a=1.4.0;api=2.0.0-rc.1");
-    }
-
-    @Test
     void readSpecs_mapsFindingsAndSpecPaths() throws IOException {
-        ApiSpecRunner.BundleTarget bundle = new ApiSpecRunner.BundleTarget("api", "api", "1.0.0");
+        ApiSpecRunner.BundleTarget bundle = new ApiSpecRunner.BundleTarget("api", "api");
         Path bin = lake.resolve("bin");
         findings(bin, bundle, """
                 {"bundle": "api",
@@ -106,7 +99,7 @@ class ApiSpecRunnerTest {
 
     @Test
     void readSpecs_noFindingsFile_throws() {
-        ApiSpecRunner.BundleTarget bundle = new ApiSpecRunner.BundleTarget("api", "api", "1.0.0");
+        ApiSpecRunner.BundleTarget bundle = new ApiSpecRunner.BundleTarget("api", "api");
 
         assertThatThrownBy(() -> ApiSpecRunner.readSpecs(lake.resolve("bin"), bundle))
                 .isInstanceOf(IOException.class)
@@ -118,10 +111,10 @@ class ApiSpecRunnerTest {
         bundle("company_a/platform/service_a", "service_a", "version: \"1.4.0\"", true);
         bundle("api", "api", "version: \"2.0.0\"", true);
         Path bin = lake.resolve("bin");
-        findings(bin, new ApiSpecRunner.BundleTarget("api", "api", "2.0.0"), """
+        findings(bin, new ApiSpecRunner.BundleTarget("api", "api"), """
                 {"findings": [{"severity": "WARNING", "message": "w"}], "specs": ["api.openapi.json"]}
                 """);
-        findings(bin, new ApiSpecRunner.BundleTarget("company_a/platform/service_a", "service_a", "1.4.0"),
+        findings(bin, new ApiSpecRunner.BundleTarget("company_a/platform/service_a", "service_a"),
                 "{\"findings\": [], \"specs\": []}");
         FakeBazel bazel = new FakeBazel(0, bin);
 
@@ -129,8 +122,6 @@ class ApiSpecRunnerTest {
 
         assertThat(bazel.aspect).isEqualTo("//tools:api_specs.bzl%api_specs");
         assertThat(bazel.outputGroup).isEqualTo("api_specs");
-        assertThat(bazel.aspectParameter)
-                .isEqualTo("bundle_versions=api=2.0.0;company_a/platform/service_a=1.4.0");
         assertThat(bazel.labels).containsExactly(
                 "//api:api_all_protos", "//company_a/platform/service_a:service_a_all_protos");
         assertThat(result.findings(ValidationError.Severity.WARNING)).hasSize(1);
@@ -179,7 +170,6 @@ class ApiSpecRunnerTest {
         private final int exitCode;
         private final Path bin;
         String aspect;
-        String aspectParameter;
         String outputGroup;
         List<String> labels = new ArrayList<>();
 
@@ -189,11 +179,9 @@ class ApiSpecRunnerTest {
         }
 
         @Override
-        public BazelCommand.CommandResult buildAspect(Path lakeRoot, String aspect, String aspectParameter,
-                                                      String outputGroup, List<String> labels,
-                                                      BuildOperationMetadata metadata) {
+        public BazelCommand.CommandResult buildAspect(Path lakeRoot, String aspect, String outputGroup,
+                                                      List<String> labels, BuildOperationMetadata metadata) {
             this.aspect = aspect;
-            this.aspectParameter = aspectParameter;
             this.outputGroup = outputGroup;
             this.labels = labels;
             return new BazelCommand.CommandResult(exitCode == 0 ? "" : "ERROR: an action failed\n", exitCode);

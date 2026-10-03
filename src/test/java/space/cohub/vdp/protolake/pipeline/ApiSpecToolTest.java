@@ -279,6 +279,15 @@ class ApiSpecToolTest {
     }
 
     @Test
+    void specs_withoutABundleVersion_leaveThePlaceholderForTheBundlers() throws Exception {
+        // The aspect has no bundle.yaml; the jar, wheel and npm bundlers stamp the version.
+        runTool(demoSet(demoFile(demoService(), null)), "demo", false);
+
+        assertThat(openApi().path("info").path("version").asText()).isEqualTo("version not set");
+        assertThat(asyncApi().path("info").path("version").asText()).isEqualTo("version not set");
+    }
+
+    @Test
     void openapi_streamInAnUnknownShape_failsInsteadOfPublishing() throws Exception {
         // A future plugin that frames streams some other way must not be published unrewritten.
         String swagger = resource("apispec/protoc-gen-openapiv2.demo.swagger.json")
@@ -703,11 +712,19 @@ class ApiSpecToolTest {
     }
 
     private Run runTool(FileDescriptorSet set, String packagePath) throws Exception {
+        return runTool(set, packagePath, true);
+    }
+
+    private Run runTool(FileDescriptorSet set, String packagePath, boolean withVersion) throws Exception {
         Path descriptor = tempDir.resolve("demo_api_descriptor.pb");
         Files.write(descriptor, set.toByteArray());
         Path findings = tempDir.resolve("demo_api_findings.json");
-        List<String> command = List.of(python3(), tool.toString(),
-                "--bundle", "demo", "--package", packagePath, "--bundle-version", "1.4.0",
+        List<String> command = new ArrayList<>(List.of(python3(), tool.toString(),
+                "--bundle", "demo", "--package", packagePath));
+        if (withVersion) {
+            command.addAll(List.of("--bundle-version", "1.4.0"));
+        }
+        command.addAll(List.of(
                 "--descriptor-set", descriptor.toString(),
                 "--out-dir", tempDir.resolve("demo_api_specs").toString(),
                 "--findings", findings.toString(),
@@ -716,7 +733,7 @@ class ApiSpecToolTest {
                 "--openapiv2-sha256", "0000," + sha256(pluginState.resolve(OPENAPIV2)),
                 "--connect-openapi", pluginState.resolve(CONNECT_OPENAPI).toString(),
                 "--connect-openapi-version", "0.28.0",
-                "--connect-openapi-sha256", sha256(pluginState.resolve(CONNECT_OPENAPI)) + ",0000");
+                "--connect-openapi-sha256", sha256(pluginState.resolve(CONNECT_OPENAPI)) + ",0000"));
         Process process = new ProcessBuilder(command).directory(tempDir.toFile())
                 .redirectErrorStream(true).start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);

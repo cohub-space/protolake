@@ -149,7 +149,8 @@ Proto Lake consists of several services packaged in a single Docker image:
 - **Build Orchestrator** — runs the pipeline (gazelle → buf →
   bazel build → API specs → publish); the API spec step checks each
   bundle's exposure annotations and writes its OpenAPI and AsyncAPI
-  documents
+  documents, which ship inside the bundle's jar (`META-INF/api-specs/`),
+  wheel (`.dist-info/api-specs/`) and npm package (`api-specs/`)
 - **Workspace Initializer** — generates `MODULE.bazel`, `BUILD.bazel`,
   `tools/`, `protolakew`, and the release-please scaffolding
 - **Storage** — SQLite at `~/.proto-lake/protolake.db` for lake/bundle

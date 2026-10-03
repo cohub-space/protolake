@@ -110,7 +110,7 @@ class BuildOrchestratorApiSpecsTest {
     }
 
     private static ApiSpecRunner.Result result(ValidationError finding) {
-        ApiSpecRunner.BundleTarget bundle = new ApiSpecRunner.BundleTarget("api", "api", "1.0.0");
+        ApiSpecRunner.BundleTarget bundle = new ApiSpecRunner.BundleTarget("api", "api");
         return new ApiSpecRunner.Result(List.of(new ApiSpecRunner.BundleSpecs(bundle, List.of(finding),
                 List.of(Path.of("/bin/api/api_api_specs/api.openapi.json")), "")));
     }

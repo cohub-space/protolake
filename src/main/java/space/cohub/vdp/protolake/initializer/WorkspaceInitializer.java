@@ -381,7 +381,8 @@ public class WorkspaceInitializer {
     }
 
     /**
-     * Creates bundler tools (jar_bundler, wheel_builder, npm_bundler).
+     * Creates bundler tools (jar_bundler, wheel_builder, npm_bundler) and the
+     * module they share to pack a bundle's API specs.
      * These are static Python scripts with no template variables.
      */
     private void createBundlerTools(Path toolsPath) throws IOException {
@@ -395,6 +396,8 @@ public class WorkspaceInitializer {
                 bundlerPath.resolve("wheel_builder_generated.py"));
         copyAndMakeExecutable("tools/bundler/npm_bundler_generated.py",
                 bundlerPath.resolve("npm_bundler_generated.py"));
+        templateEngine.copyResource("tools/bundler/api_spec_files_generated.py",
+                bundlerPath.resolve("api_spec_files_generated.py"));
     }
 
     /**

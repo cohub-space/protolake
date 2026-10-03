@@ -93,23 +93,31 @@ py_binary(
     deps = [":pkg_editor"],
 )
 
-# Bundler tools
+# Bundler tools. Each packs the bundle's API specs (api_specs.bzl) beside the code.
+py_library(
+    name = "bundler_api_spec_files",
+    srcs = ["bundler/api_spec_files_generated.py"],
+)
+
 py_binary(
     name = "jar_bundler",
     srcs = ["bundler/jar_bundler_generated.py"],
     main = "bundler/jar_bundler_generated.py",
+    deps = [":bundler_api_spec_files"],
 )
 
 py_binary(
     name = "wheel_builder",
     srcs = ["bundler/wheel_builder_generated.py"],
     main = "bundler/wheel_builder_generated.py",
+    deps = [":bundler_api_spec_files"],
 )
 
 py_binary(
     name = "npm_bundler",
     srcs = ["bundler/npm_bundler_generated.py"],
     main = "bundler/npm_bundler_generated.py",
+    deps = [":bundler_api_spec_files"],
 )
 
 # API specs: run by the api_specs aspect (api_specs.bzl), one action per bundle.

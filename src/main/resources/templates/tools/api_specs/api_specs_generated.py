@@ -59,6 +59,9 @@ STREAM_FRAMING = "newline-delimited"
 # generator's stream shape and says the framing is theirs.
 AUTHOR_DEFINED_FRAMING = "author-defined"
 
+# protoc-gen-openapiv2's version placeholder; the bundlers replace it.
+UNSET_VERSION = "version not set"
+
 
 class Findings:
     """The checks' findings and what the tool wrote, for protolake to read."""
@@ -380,12 +383,14 @@ def stamp_info(doc, bundle, version):
 
     protoc-gen-openapiv2 titles a merged document after its first file and
     leaves the version unset; an openapiv2_swagger option overrides both.
+    Without a version the placeholder stays, for the bundlers to stamp the
+    one in bundle.yaml when they pack the document.
     """
     info = doc.setdefault("info", {})
     title = str(info.get("title", ""))
     if not title or title.endswith(".proto"):
         info["title"] = bundle
-    if info.get("version") in (None, "", "version not set"):
+    if version and info.get("version") in (None, "", UNSET_VERSION):
         info["version"] = version
 
 
@@ -462,7 +467,7 @@ def generate_asyncapi(args, pool, files, rpcs, findings):
         base = asyncapi.builtin(pool, marked)
         findings.asyncapi_generator = "built-in"
     try:
-        doc = asyncapi.document(args.bundle, args.bundle_version, base)
+        doc = asyncapi.document(args.bundle, args.bundle_version or UNSET_VERSION, base)
     except asyncapi.DocumentError as exc:
         findings.error("The AsyncAPI document for bundle %s is not publishable: %s" % (args.bundle, exc))
         return
@@ -499,7 +504,8 @@ def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--bundle", required=True, help="Bundle name (bundle.yaml name)")
     parser.add_argument("--package", required=True, help="The bundle's lake-relative directory")
-    parser.add_argument("--bundle-version", required=True, help="The bundle's version")
+    parser.add_argument("--bundle-version", default=None,
+                        help="The bundle's version; the bundlers stamp it when they pack the specs")
     parser.add_argument("--descriptor-set", required=True, action="append",
                         help="FileDescriptorSet with the bundle's files and their imports")
     parser.add_argument("--out-dir", required=True, help="Directory for the spec documents")

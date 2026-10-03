@@ -1,21 +1,25 @@
 # GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
 """API specs and exposure checks for each bundle.
 
-protolake applies the aspect to every bundle's `<bundle>_all_protos` target
-after the main build (ApiSpecRunner), with each bundle's version:
-
-    bazel build --aspects=//tools:api_specs.bzl%api_specs \\
-        --aspects_parameters=bundle_versions=<bundle dir>=<version>;... \\
-        --output_groups=api_specs -- //<bundle dir>:<bundle>_all_protos ...
-
-and reads, beside the bundle's other outputs:
+The aspect runs on a bundle's `<bundle>_all_protos` target and writes,
+beside the bundle's other outputs:
 
     <bundle>_api_specs/<bundle>.openapi.json    the google.api.http bindings
     <bundle>_api_specs/<bundle>.asyncapi.json   the WebSocket-marked RPCs
     <bundle>_api_findings.json                  the exposure checks' findings
 
-An aspect keeps the specs out of the BUILD files gazelle writes, so every
-lake gets them with the protolake image, without a gazelle release.
+The bundle rules (proto_bundle.bzl) apply it through `proto_deps` and pack
+the specs into the jar, wheel and npm package, stamped with the bundle's
+version. protolake also applies it after the main build (ApiSpecRunner),
+so the checks run for a bundle without language packages too:
+
+    bazel build --aspects=//tools:api_specs.bzl%api_specs \\
+        --output_groups=api_specs -- //<bundle dir>:<bundle>_all_protos ...
+
+Both applications are the same aspect on the same target, so Bazel runs its
+actions once. An aspect keeps the specs out of the BUILD files gazelle
+writes, so every lake gets them with the protolake image, without a gazelle
+release.
 """
 
 load("@com_google_protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
@@ -40,14 +44,6 @@ PROTOC_GEN_CONNECT_OPENAPI_SHA256 = [
 
 _SUFFIX = "_all_protos"
 
-def _versions(value):
-    versions = {}
-    for entry in value.split(";"):
-        if "=" in entry:
-            package, version = entry.split("=", 1)
-            versions[package] = version
-    return versions
-
 def _import_path(source, root):
     if root and root != "." and source.path.startswith(root + "/"):
         return source.path[len(root) + 1:]
@@ -57,10 +53,6 @@ def _api_specs_impl(target, ctx):
     if ctx.rule.kind != "proto_library" or not ctx.label.name.endswith(_SUFFIX):
         return []
     bundle = ctx.label.name[:-len(_SUFFIX)]
-    version = _versions(ctx.attr.bundle_versions).get(ctx.label.package)
-    if not version:
-        fail("protolake passes each bundle's version through bundle_versions; %s has none. " % ctx.label +
-             "Build the lake with protolakew.")
 
     # Bazel's own descriptor sets carry no comments, which the specs' descriptions
     # come from, so the bundle's files are compiled again with source info; their
@@ -101,7 +93,6 @@ def _api_specs_impl(target, ctx):
     args = ctx.actions.args()
     args.add("--bundle", bundle)
     args.add("--package", ctx.label.package)
-    args.add("--bundle-version", version)
     args.add("--descriptor-set", descriptor)
     args.add("--out-dir", specs.path)
     args.add("--findings", findings.path)
@@ -127,10 +118,6 @@ def _api_specs_impl(target, ctx):
 api_specs = aspect(
     implementation = _api_specs_impl,
     attrs = {
-        "bundle_versions": attr.string(
-            default = "",
-            doc = "<bundle dir>=<version> entries separated by ';', from protolake.",
-        ),
         "_protoc": attr.label(
             default = "@com_google_protobuf//:protoc",
             executable = True,
