@@ -119,6 +119,10 @@ class ProvidedProtoOverlayTest {
             link.setLinkName("/etc/passwd");
             entries.putArchiveEntry(link);
             entries.closeArchiveEntry();
+            TarArchiveEntry hardLink = new TarArchiveEntry("demo/v1/hard.proto", TarArchiveEntry.LF_LINK);
+            hardLink.setLinkName("demo/v1/demo.proto");
+            entries.putArchiveEntry(hardLink);
+            entries.closeArchiveEntry();
         }
         Path target = Files.createDirectories(tmp.resolve("baseline"));
 
@@ -128,6 +132,7 @@ class ProvidedProtoOverlayTest {
         assertThat(target.resolve("demo/v1/demo.proto")).exists();
         assertThat(target.resolve("README.md")).doesNotExist();
         assertThat(target.resolve("demo/v1/link.proto")).doesNotExist();
+        assertThat(target.resolve("demo/v1/hard.proto")).doesNotExist();
         assertThat(tmp.resolve("escape.proto")).doesNotExist();
     }
 

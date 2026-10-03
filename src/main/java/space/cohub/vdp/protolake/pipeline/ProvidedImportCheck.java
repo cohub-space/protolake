@@ -117,9 +117,9 @@ public class ProvidedImportCheck {
             for (String importPath : CohubApiModule.IMPORT_PATHS) {
                 Matcher matcher = ProvidedProtoOverlay.importPattern(importPath).matcher(content);
                 if (matcher.find()) {
-                    int line = 1 + (int) content.substring(0, matcher.start()).chars().filter(c -> c == '\n').count();
-                    int lineStart = content.lastIndexOf('\n', matcher.start()) + 1;
-                    int column = 1 + content.indexOf("import", lineStart) - lineStart;
+                    int keyword = matcher.start() + matcher.group().indexOf("import");
+                    int line = 1 + (int) content.substring(0, keyword).chars().filter(c -> c == '\n').count();
+                    int column = keyword - content.lastIndexOf('\n', keyword - 1);
                     return Optional.of(new Import(proto, line, column, importPath));
                 }
             }

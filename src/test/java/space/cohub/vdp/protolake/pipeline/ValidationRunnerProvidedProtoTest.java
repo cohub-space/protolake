@@ -110,6 +110,26 @@ class ValidationRunnerProvidedProtoTest {
         });
     }
 
+    @Test
+    void validateLake_afterDroppingAVendoredCopy_comparesOnlyTheLakesOwnFiles() throws Exception {
+        // A lake that vendored the options before they were provided; its copy
+        // has a field the image's lacks, a deletion buf would call breaking.
+        Path vendored = lake.resolve("cohub/api/v1/exposure.proto");
+        Files.createDirectories(vendored.getParent());
+        Files.writeString(vendored, Files.readString(Path.of("src/main/proto/cohub/api/v1/exposure.proto"))
+                .replace("  optional bool custom = 2;\n", "  optional bool custom = 2;\n  bool legacy = 3;\n"));
+        assertThat(Files.readString(vendored)).contains("bool legacy = 3;");
+        git("init", "-q");
+        git("add", ".");
+        git("commit", "-q", "-m", "vendored");
+        git("rm", "-q", "-r", "cohub");
+        git("commit", "-q", "-m", "import the provided copy");
+
+        ValidationResult result = validate();
+
+        assertThat(errors(result)).isEmpty();
+    }
+
     private ValidationResult validate() throws Exception {
         return runner.validateLake(Lake.newBuilder().setName("lakes/lake").build(), false,
                 BuildOperationMetadata.getDefaultInstance());

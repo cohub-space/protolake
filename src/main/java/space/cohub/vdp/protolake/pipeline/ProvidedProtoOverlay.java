@@ -2,6 +2,7 @@ package space.cohub.vdp.protolake.pipeline;
 
 import org.apache.commons.compress.archivers.tar.TarArchiveEntry;
 import org.apache.commons.compress.archivers.tar.TarArchiveInputStream;
+import org.apache.commons.compress.archivers.tar.TarConstants;
 import space.cohub.vdp.protolake.util.git.GitCommand;
 
 import java.io.IOException;
@@ -11,6 +12,7 @@ import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.BasicFileAttributes;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -28,8 +30,9 @@ import java.util.regex.Pattern;
  * cannot see, and a lake's buf.yaml is the user's after init, so protolake
  * cannot add a dep to it. A lake that imports a provided proto is validated in
  * this copy instead: its buf.yaml, buf.lock and protos, plus the provided
- * files, which lint and the breaking check leave out
- * ({@link #providedPaths()}). The lake is never written, except for the
+ * files, which lint leaves out ({@link #providedPaths()}) and the breaking
+ * check finds unchanged, its baseline holding the same files
+ * ({@link #baseline}). The lake is never written, except for the
  * buf.lock that {@code buf dep update} refreshes, which validation does for
  * every lake ({@link #copyLockBack()}).
  */
@@ -80,9 +83,13 @@ final class ProvidedProtoOverlay implements AutoCloseable {
         return needed;
     }
 
-    /** Matches an import statement of one proto, plain, public or weak. */
+    /**
+     * Matches an import statement of one proto, plain, public or weak. The
+     * match starts on the line of the {@code import} keyword: the indent
+     * before it never spans lines.
+     */
     static Pattern importPattern(String importPath) {
-        return Pattern.compile("(?m)^\\s*import\\s+(?:public\\s+|weak\\s+)?\"" + Pattern.quote(importPath) + "\"");
+        return Pattern.compile("(?m)^[ \\t]*import\\s+(?:public\\s+|weak\\s+)?\"" + Pattern.quote(importPath) + "\"");
     }
 
     /**
@@ -114,7 +121,7 @@ final class ProvidedProtoOverlay implements AutoCloseable {
         return root;
     }
 
-    /** The provided protos' paths, for buf's {@code --exclude-path}. */
+    /** The provided protos' paths, for buf lint's {@code --exclude-path}. */
     List<String> providedPaths() {
         return provided;
     }
@@ -172,6 +179,11 @@ final class ProvidedProtoOverlay implements AutoCloseable {
         }
     }
 
+    /**
+     * Copies the provided protos in. A copy a baseline commit held at the same
+     * path, from a lake that vendored it before, is replaced: the breaking
+     * check covers the lake's own files, not the image's.
+     */
     private void copyProvided(Path providedRoot, Path target) throws IOException {
         for (String path : provided) {
             Path source = providedRoot.resolve(path);
@@ -180,10 +192,8 @@ final class ProvidedProtoOverlay implements AutoCloseable {
                         + ", but the file is missing");
             }
             Path destination = target.resolve(path);
-            if (!Files.exists(destination)) {
-                Files.createDirectories(destination.getParent());
-                Files.copy(source, destination);
-            }
+            Files.createDirectories(destination.getParent());
+            Files.copy(source, destination, StandardCopyOption.REPLACE_EXISTING);
         }
     }
 
@@ -221,7 +231,7 @@ final class ProvidedProtoOverlay implements AutoCloseable {
             TarArchiveEntry entry;
             while ((entry = entries.getNextEntry()) != null) {
                 Path name = Path.of(entry.getName());
-                if (!entry.isFile() || name.getFileName() == null
+                if (!isRegularFile(entry) || name.getFileName() == null
                         || !isBufInput(name.getFileName().toString())) {
                     continue;
                 }
@@ -233,6 +243,16 @@ final class ProvidedProtoOverlay implements AutoCloseable {
                 Files.copy(entries, target);
             }
         }
+    }
+
+    /**
+     * Whether a tar entry is a regular file. {@link TarArchiveEntry#isFile()}
+     * also admits symbolic and hard links, devices and FIFOs.
+     */
+    private static boolean isRegularFile(TarArchiveEntry entry) {
+        byte flag = entry.getLinkFlag();
+        return (flag == TarConstants.LF_NORMAL || flag == TarConstants.LF_OLDNORM || flag == TarConstants.LF_CONTIG)
+                && !entry.getName().endsWith("/");
     }
 
     /** Deletes a tree without following links: a link is removed, never its target. */

@@ -41,6 +41,17 @@ class ProvidedImportCheckTest {
     }
 
     @Test
+    void check_indentedPublicImport_isReportedAtItsKeyword() throws IOException {
+        bundle("api", "syntax = \"proto3\";\n\n\n  import public \"cohub/api/v1/exposure.proto\";\n",
+                "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, ".")).singleElement().satisfies(error -> {
+            assertThat(error.getLine()).isEqualTo(4);
+            assertThat(error.getColumn()).isEqualTo(3);
+        });
+    }
+
+    @Test
     void check_importingBundleWithoutLanguagePackages_buildsItsSpecs() throws IOException {
         bundle("api", IMPORTING, "proto_library(\n    name = \"api_all_protos\",\n)\n");
 

@@ -257,8 +257,10 @@ public class ValidationRunner {
     }
 
     /**
-     * Runs buf breaking to detect breaking changes. With an overlay, both
-     * sides hold the provided protos and leave them out of the comparison.
+     * Runs buf breaking to detect breaking changes. With an overlay, the
+     * baseline holds the same provided protos, so they show no change; buf's
+     * {@code --exclude-path} cannot leave them out here, since buf rejects the
+     * path for an {@code --against} directory outside the input.
      */
     private List<ValidationError> runBufBreaking(Path directory, ProvidedProtoOverlay overlay, List<String> logs)
             throws IOException {
@@ -278,8 +280,7 @@ public class ValidationRunner {
         List<String> breakingOutput = overlay == null
             ? bufCommand.breaking(directory, ".git#ref=" + baseline.get())
             : bufCommand.breaking(overlay.root(),
-                overlay.baseline(gitCommand, baseline.get(), cohubApiModule.path()).toString(),
-                overlay.providedPaths());
+                overlay.baseline(gitCommand, baseline.get(), cohubApiModule.path()).toString());
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
                 errors.add(ValidationError.newBuilder()
