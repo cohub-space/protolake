@@ -607,6 +607,11 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
         "OpenAPI: the server stream is newline-delimited bare ThingEvent messages"
     check_json "$OPENAPI" '.paths["/v1/{name}:export"].post.operationId == "ThingService_ExportThing"' \
         "OpenAPI: the custom RPC is in the spec"
+    check_json "$OPENAPI" '.paths["/v1/{name}:tail"].get.responses["200"]
+        | ."x-stream-framing" == "author-defined" and .schema.properties.result["$ref"] == "#/definitions/v1ThingLogLine"' \
+        "OpenAPI: the custom server stream keeps the generator's framing, marked author-defined"
+    check_json "$OPENAPI" '.paths | has("/v1/{name}:upload") | not' \
+        "OpenAPI: the client stream's binding is left out"
     check_json "$OPENAPI" '[.. | .operationId? // empty]
         | index("ThingService_PingThings") == null and index("ThingService_CollaborateOnThing") == null' \
         "OpenAPI: neither the unannotated nor the WebSocket RPC"
@@ -614,22 +619,25 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
         "OpenAPI: none of the unannotated RPC's messages"
 
     # AsyncAPI 3.1, for the WebSocket-marked RPCs
-    CHANNEL=api_demo_v1_ThingService_CollaborateOnThing
+    CHANNEL=api_demo-v1-ThingService-CollaborateOnThing
     check_json "$ASYNCAPI" '.asyncapi == "3.1.0"' "AsyncAPI: a 3.1 document"
     check_json "$ASYNCAPI" ".channels | keys == [\"$CHANNEL\"]" "AsyncAPI: only the WebSocket RPC has a channel"
-    check_json "$ASYNCAPI" ".channels.$CHANNEL.address == \"/ws/api_demo.v1.ThingService/CollaborateOnThing\"" \
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].address == \"/ws/api_demo.v1.ThingService/CollaborateOnThing\"" \
         "AsyncAPI: the channel sits at the bridge's address"
-    check_json "$ASYNCAPI" ".channels.$CHANNEL.messages
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].messages
         | .request.payload.properties.data[\"\$ref\"] == \"#/components/schemas/api_demo.v1.CollaborateOnThingRequest\"
           and .response.payload.properties.data[\"\$ref\"] == \"#/components/schemas/api_demo.v1.CollaborateOnThingResponse\"
           and .end[\"\$ref\"] == \"#/components/messages/End\" and .status[\"\$ref\"] == \"#/components/messages/Status\"" \
         "AsyncAPI: the channel carries the bridge's Data, End and Status frames"
-    check_json "$ASYNCAPI" ".channels.$CHANNEL.bindings.ws.headers.required == [\"Sec-WebSocket-Protocol\"]" \
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].bindings.ws.headers.required == [\"Sec-WebSocket-Protocol\"]" \
         "AsyncAPI: the WebSocket binding declares the subprotocol handshake"
     check_json "$ASYNCAPI" '.components.schemas | has("api_demo.v1.PingThingsResponse") | not' \
         "AsyncAPI: none of the unannotated RPC's messages"
-    check_json "$FINDINGS" '.findings == [] and (.asyncapi_generator | startswith("protoc-gen-connect-openapi"))' \
+    check_json "$FINDINGS" '.asyncapi_generator | startswith("protoc-gen-connect-openapi")' \
         "AsyncAPI: protoc-gen-connect-openapi's output passed protolake's check"
+    check_json "$FINDINGS" '[.findings[] | [.severity, .rpc]] == [["WARNING", "api_demo.v1.ThingService.UploadThingChunks"]]' \
+        "the client stream's binding is the one finding, a WARNING"
+    check_file_contains "$BUILD_LOG" "WARNING: api_demo/v1/things.proto:" "the build prints the WARNING with its location"
 
     # service_a has no bindings and no WebSocket RPCs: no specs, which is fine
     check_json "$SA_FINDINGS" '.findings == [] and .specs == []' "service_a gets no API specs"

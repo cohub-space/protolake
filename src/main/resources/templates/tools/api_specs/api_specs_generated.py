@@ -9,7 +9,10 @@ bundle's descriptor set. It
      google.api.http binding on a client- or bidi-streaming RPC a WARNING;
   2. writes <bundle>.openapi.json from the google.api.http bindings, with
      protoc-gen-openapiv2, its server-streaming responses rewritten to the
-     framing Envoy's transcoder sends;
+     framing Envoy's transcoder sends. Bindings on client- and
+     bidi-streaming RPCs stay out (after the WARNING), since REST cannot
+     carry them; a custom RPC's stream keeps the generator's shape, since
+     its author serves the wire;
   3. writes <bundle>.asyncapi.json for the RPCs that carry the WebSocket
      option, framed as the WebSocket bridge frames them (asyncapi_generated).
 A bundle without bindings gets no OpenAPI document, one without WebSocket
@@ -22,6 +25,7 @@ ERROR there fails the build, before anything is published. The tool exits
 """
 
 import argparse
+import hashlib
 import json
 import os
 import posixpath
@@ -38,8 +42,10 @@ import asyncapi_generated as asyncapi  # noqa: E402
 import protodesc_generated as protodesc  # noqa: E402
 
 METHOD_OPTIONS = "google.protobuf.MethodOptions"
+SERVICE_OPTIONS = "google.protobuf.ServiceOptions"
 HTTP_OPTION = "google.api.http"
 EXPOSURE_OPTION = "cohub.api.v1.exposure"
+SERVICE_EXPOSURE_OPTION = "cohub.api.v1.service_exposure"
 
 _HTTP_PATTERNS = ("get", "put", "post", "delete", "patch")
 
@@ -49,6 +55,9 @@ _HTTP_PATTERNS = ("get", "put", "post", "delete", "patch")
 # rewritten response carries this in a vendor extension as well as in prose.
 STREAM_FRAMING_EXTENSION = "x-stream-framing"
 STREAM_FRAMING = "newline-delimited"
+# A custom RPC's author serves its REST binding, so the document keeps the
+# generator's stream shape and says the framing is theirs.
+AUTHOR_DEFINED_FRAMING = "author-defined"
 
 
 class Findings:
@@ -93,13 +102,15 @@ class Findings:
 class Rpc:
     """One RPC of the bundle, with the exposure its annotations declare."""
 
-    def __init__(self, pool, file, service, method):
+    def __init__(self, pool, file, service, method, service_custom):
         self.file = file
         self.service = service
         self.method = method
         self.http = pool.option(method.options, HTTP_OPTION, METHOD_OPTIONS)
         exposure = pool.option(method.options, EXPOSURE_OPTION, METHOD_OPTIONS) or {}
         self.websocket = bool(exposure.get("websocket", False))
+        # custom has explicit presence: unset inherits the service's default.
+        self.custom = bool(exposure["custom"]) if "custom" in exposure else service_custom
         self._extension_numbers = {
             name: pool.extensions[name].number
             for name in (HTTP_OPTION, EXPOSURE_OPTION) if name in pool.extensions
@@ -118,6 +129,16 @@ class Rpc:
             (True, False): "client-streaming",
             (True, True): "bidi-streaming",
         }[streaming]
+
+    @property
+    def transcoded(self):
+        """Whether the REST bindings reach the OpenAPI document: REST cannot carry a request stream."""
+        return bool(self.binding_count) and not self.method.client_streaming
+
+    @property
+    def author_served_stream(self):
+        """A custom server stream with a binding: its author, not the transcoder, frames it."""
+        return self.transcoded and self.custom and self.method.server_streaming
 
     @property
     def binding_count(self):
@@ -148,11 +169,16 @@ def _has_pattern(rule):
 def collect_rpcs(pool, files):
     """The RPCs of the given files, in declaration order.
 
-    Whether an RPC is custom changes nothing here: its author serves it, so
-    it stays in the specs like any other.
+    A custom RPC stays in the specs like any other, since its consumers
+    still need the contract; only the framing of a custom stream differs.
     """
-    return [Rpc(pool, file, service, method)
-            for file in files for service in file.services for method in service.methods]
+    rpcs = []
+    for file in files:
+        for service in file.services:
+            exposure = pool.option(service.options, SERVICE_EXPOSURE_OPTION, SERVICE_OPTIONS) or {}
+            for method in service.methods:
+                rpcs.append(Rpc(pool, file, service, method, bool(exposure.get("custom", False))))
+    return rpcs
 
 
 def check_rpcs(rpcs, findings):
@@ -167,8 +193,9 @@ def check_rpcs(rpcs, findings):
         if rpc.binding_count and rpc.method.client_streaming:
             findings.warning(
                 "%s is a %s RPC with a google.api.http binding; REST transcoding cannot carry a "
-                "request stream. Mark it (cohub.api.v1.exposure).websocket = true to serve it to "
-                "browsers." % (rpc.full_name, rpc.kind), rpc, rpc.location(HTTP_OPTION))
+                "request stream, so the OpenAPI document leaves the binding out. Mark it "
+                "(cohub.api.v1.exposure).websocket = true to serve it to browsers."
+                % (rpc.full_name, rpc.kind), rpc, rpc.location(HTTP_OPTION))
 
 
 # ---------------------------------------------------------------------------
@@ -186,12 +213,14 @@ def plugin_version(executable):
     return match.group(1) if match else None
 
 
-def require_plugin(executable, expected):
-    """Raises PluginError unless the plugin is installed at the expected version.
+def require_plugin(executable, expected, sha256s):
+    """Raises PluginError unless the installed plugin is the pinned build.
 
-    The expected version is part of the Bazel action's command line, so a
-    plugin upgrade re-runs the action; this guards the other half, that the
-    image installed the version the templates name.
+    The expected version and digests are part of the Bazel action's command
+    line, so a re-pin re-runs the action, even at the same version; this
+    guards the other half, that the image installed the build the templates
+    name. sha256s holds the binary's digest on each platform the image is
+    built for.
     """
     actual = plugin_version(executable)
     if actual is None:
@@ -199,6 +228,13 @@ def require_plugin(executable, expected):
     if actual != expected:
         raise protodesc.PluginError("%s is version %s; protolake expects %s"
                                     % (executable, actual, expected))
+    digest = hashlib.sha256()
+    with open(executable, "rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    if digest.hexdigest() not in sha256s:
+        raise protodesc.PluginError("%s has SHA-256 %s, not a pinned build of %s"
+                                    % (executable, digest.hexdigest(), expected))
 
 
 # ---------------------------------------------------------------------------
@@ -239,14 +275,16 @@ def _schema_name(schema):
     return ref.rsplit("/", 1)[-1] if ref else "JSON"
 
 
-def rewrite_server_streams(doc):
+def rewrite_server_streams(doc, author_defined=frozenset()):
     """Rewrites each server-streaming response to newline-delimited bare messages.
 
     protoc-gen-openapiv2 describes a stream in grpc-gateway's framing, each
     message wrapped as {"result": ...} with an in-band "error". Envoy's
     transcoder writes each message bare, one per line, and a status that
-    arrives after the first message travels only in HTTP trailers. Returns
-    the operations rewritten, as (path, method, operationId).
+    arrives after the first message travels only in HTTP trailers. The
+    operations in author_defined, (path, method) pairs of custom streams,
+    keep the generator's shape and say their framing is the author's.
+    Returns the operations rewritten, as (path, method, operationId).
     """
     rewritten = []
     for path, verb, operation in _operations(doc):
@@ -255,6 +293,9 @@ def rewrite_server_streams(doc):
             continue
         result = _stream_result(response.get("schema"))
         if result is None:
+            continue
+        if (path, verb) in author_defined:
+            response[STREAM_FRAMING_EXTENSION] = AUTHOR_DEFINED_FRAMING
             continue
         response["schema"] = result
         response["description"] = (
@@ -291,7 +332,7 @@ def check_openapi(doc, rpcs, rewritten):
     rewritten_ids = set(operation_id for _, _, operation_id in rewritten)
     by_id = dict((operation.get("operationId"), operation) for _, _, operation in _operations(doc))
     for rpc in rpcs:
-        if not (rpc.binding_count and rpc.method.server_streaming):
+        if not (rpc.transcoded and rpc.method.server_streaming) or rpc.author_served_stream:
             continue
         for operation_id in _default_operation_ids(rpc):
             if operation_id in by_id and operation_id not in rewritten_ids:
@@ -348,17 +389,43 @@ def stamp_info(doc, bundle, version):
         info["version"] = version
 
 
-def generate_openapi(args, pool, files, rpcs, findings):
-    require_plugin(args.openapiv2, args.openapiv2_version)
+def _openapi_document(args, pool, files, rpcs, left_out):
+    """protoc-gen-openapiv2's document, with the bindings of the RPCs in left_out removed."""
+    by_file = {}
+    for rpc in left_out:
+        by_file.setdefault(rpc.file.name, set()).add((rpc.service.path[1], rpc.method.path[-1]))
+    http_number = pool.extensions[HTTP_OPTION].number if HTTP_OPTION in pool.extensions else None
+    raws = []
+    for file in pool.files:
+        methods = by_file.get(file.name)
+        raws.append(protodesc.strip_method_options(file.raw, methods, http_number)
+                    if methods and http_number is not None else file.raw)
     request = protodesc.code_generator_request(
-        [file.name for file in files], openapi_parameter(args.bundle, pool), pool.files)
+        [file.name for file in files], openapi_parameter(args.bundle, pool), raws)
     outputs = protodesc.run_plugin(args.openapiv2, request)
     name = args.bundle + ".swagger.json"
     if name not in outputs:
         raise protodesc.PluginError("%s wrote %s, not %s"
                                     % (args.openapiv2, sorted(outputs) or "nothing", name))
-    doc = json.loads(outputs[name])
-    rewritten = rewrite_server_streams(doc)
+    return json.loads(outputs[name])
+
+
+def _operation_keys(doc):
+    return set((path, verb) for path, verb, _ in _operations(doc))
+
+
+def generate_openapi(args, pool, files, rpcs, findings):
+    require_plugin(args.openapiv2, args.openapiv2_version, args.openapiv2_sha256)
+    request_streams = [rpc for rpc in rpcs if rpc.binding_count and rpc.method.client_streaming]
+    doc = _openapi_document(args, pool, files, rpcs, request_streams)
+    # The generator cannot say which RPC an operation came from, so the custom
+    # streams' operations are the ones that disappear without their bindings.
+    author_served = [rpc for rpc in rpcs if rpc.author_served_stream]
+    author_defined = frozenset()
+    if author_served:
+        without = _openapi_document(args, pool, files, rpcs, request_streams + author_served)
+        author_defined = frozenset(_operation_keys(doc) - _operation_keys(without))
+    rewritten = rewrite_server_streams(doc, author_defined)
     stamp_info(doc, args.bundle, args.bundle_version)
     problems = check_openapi(doc, rpcs, rewritten)
     if problems:
@@ -381,10 +448,10 @@ def generate_asyncapi(args, pool, files, rpcs, findings):
     marked = [rpc for rpc in rpcs if rpc.websocket]
     services = sorted(set(rpc.service.full_name for rpc in marked))
     try:
-        require_plugin(args.connect_openapi, args.connect_openapi_version)
+        require_plugin(args.connect_openapi, args.connect_openapi_version, args.connect_openapi_sha256)
         request = protodesc.code_generator_request(
             [file.name for file in files], asyncapi.plugin_parameter(args.bundle, services),
-            pool.files)
+            [file.raw for file in pool.files])
         outputs = protodesc.run_plugin(args.connect_openapi, request)
         base = asyncapi.from_plugin(pool, marked, outputs.get(asyncapi.plugin_output(args.bundle)))
         findings.asyncapi_generator = "protoc-gen-connect-openapi " + args.connect_openapi_version
@@ -394,7 +461,11 @@ def generate_asyncapi(args, pool, files, rpcs, findings):
                          "instead." % (args.bundle, exc, args.bundle))
         base = asyncapi.builtin(pool, marked)
         findings.asyncapi_generator = "built-in"
-    doc = asyncapi.document(args.bundle, args.bundle_version, base)
+    try:
+        doc = asyncapi.document(args.bundle, args.bundle_version, base)
+    except asyncapi.DocumentError as exc:
+        findings.error("The AsyncAPI document for bundle %s is not publishable: %s" % (args.bundle, exc))
+        return
     problems = unresolved_refs(doc) + asyncapi.check_document(doc)
     if problems:
         findings.error("The AsyncAPI document for bundle %s is not publishable: %s"
@@ -420,6 +491,10 @@ def bundle_files(pool, package):
     return [file for file in pool.files if file.name.startswith(prefix)]
 
 
+def _digests(value):
+    return frozenset(part.strip().lower() for part in value.split(",") if part.strip())
+
+
 def parse_args(argv):
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument("--bundle", required=True, help="Bundle name (bundle.yaml name)")
@@ -431,9 +506,13 @@ def parse_args(argv):
     parser.add_argument("--findings", required=True, help="Findings file to write")
     parser.add_argument("--openapiv2", required=True, help="protoc-gen-openapiv2 executable")
     parser.add_argument("--openapiv2-version", required=True)
+    parser.add_argument("--openapiv2-sha256", required=True, type=_digests,
+                        help="The pinned binary's SHA-256 per platform, comma-separated")
     parser.add_argument("--connect-openapi", required=True,
                         help="protoc-gen-connect-openapi executable")
     parser.add_argument("--connect-openapi-version", required=True)
+    parser.add_argument("--connect-openapi-sha256", required=True, type=_digests,
+                        help="The pinned binary's SHA-256 per platform, comma-separated")
     return parser.parse_args(argv)
 
 
@@ -446,7 +525,7 @@ def main(argv=None):
     rpcs = collect_rpcs(pool, files)
     check_rpcs(rpcs, findings)
     if not findings.has_errors:
-        if any(rpc.binding_count for rpc in rpcs):
+        if any(rpc.transcoded for rpc in rpcs):
             try:
                 generate_openapi(args, pool, files, rpcs, findings)
             except (protodesc.PluginError, ValueError) as exc:

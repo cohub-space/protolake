@@ -34,6 +34,21 @@ service ThingService {
     option (cohub.api.v1.exposure) = {custom: true};
   }
 
+  // Tails a thing's log; the service serves this REST stream itself.
+  rpc TailThingLog(TailThingLogRequest) returns (stream ThingLogLine) {
+    option (google.api.http) = {get: "/v1/{name=things/*}:tail"};
+    option (cohub.api.v1.exposure) = {custom: true};
+  }
+
+  // Uploads a thing in chunks. REST cannot carry a request stream: the build
+  // warns and leaves this binding out of the OpenAPI document.
+  rpc UploadThingChunks(stream UploadThingChunksRequest) returns (UploadThingChunksResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=things/*}:upload"
+      body: "*"
+    };
+  }
+
   // Checks the service is up, over gRPC only.
   rpc PingThings(PingThingsRequest) returns (PingThingsResponse);
 }
@@ -76,6 +91,23 @@ message ExportThingRequest {
 
 message ExportThingResponse {
   string uri = 1;
+}
+
+message TailThingLogRequest {
+  string name = 1;
+}
+
+message ThingLogLine {
+  string text = 1;
+}
+
+message UploadThingChunksRequest {
+  string name = 1;
+  bytes chunk = 2;
+}
+
+message UploadThingChunksResponse {
+  int64 size = 1;
 }
 
 message PingThingsRequest {}
