@@ -444,18 +444,16 @@ public class BazelBuildRunner {
      * build ({@code --nokeep_going}), and the lake's shared options keep Bazel's
      * analysis cache from the main build.
      *
-     * @param aspectParameter {@code name=value} for {@code --aspects_parameters}
      * @return Bazel's combined output and exit code; never throws on a failed build
      */
-    public BazelCommand.CommandResult buildAspect(Path lakeRoot, String aspect, String aspectParameter,
-                                                  String outputGroup, List<String> labels,
-                                                  BuildOperationMetadata metadata) throws IOException {
+    public BazelCommand.CommandResult buildAspect(Path lakeRoot, String aspect, String outputGroup,
+                                                  List<String> labels, BuildOperationMetadata metadata)
+            throws IOException {
         List<String> args = new ArrayList<>();
         args.add("build");
         args.addAll(sharedOptions(extractVersionActionEnvs(metadata)));
         args.add("--nokeep_going");
         args.add("--aspects=" + aspect);
-        args.add("--aspects_parameters=" + aspectParameter);
         args.add("--output_groups=" + outputGroup);
         args.add("--");
         args.addAll(labels);

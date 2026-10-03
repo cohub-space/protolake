@@ -18,6 +18,8 @@ import com.google.protobuf.DescriptorProtos.MethodOptions;
 import com.google.protobuf.DescriptorProtos.OneofDescriptorProto;
 import com.google.protobuf.DescriptorProtos.ServiceDescriptorProto;
 import com.google.protobuf.DescriptorProtos.SourceCodeInfo;
+import com.google.protobuf.ExtensionRegistry;
+import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -31,9 +33,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.attribute.PosixFilePermissions;
+import java.security.MessageDigest;
 import java.util.ArrayList;
+import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.TimeUnit;
 
 import static com.google.protobuf.DescriptorProtos.FieldDescriptorProto.Label.LABEL_OPTIONAL;
@@ -52,9 +57,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * does: on a descriptor set, here built with protobuf-java from the same
  * options lakes write, against fake plugins. The fakes answer with what the
  * real plugins wrote for demo.proto (src/test/resources/apispec/, from
- * protoc-gen-openapiv2 2.31.0 and protoc-gen-connect-openapi 0.28.0), and the
- * descriptors here mirror that file, so the tool's rewrites and checks run on
- * real plugin output.
+ * protoc-gen-openapiv2 2.31.0 and protoc-gen-connect-openapi 0.28.0), less the
+ * operations of methods whose binding the request no longer carries, as the
+ * real generator omits them; the descriptors here mirror that file, so the
+ * tool's rewrites and checks run on real plugin output. One test runs the real
+ * protoc-gen-openapiv2 when {@code PROTOC_GEN_OPENAPIV2} names it.
  *
  * <p>Skipped when {@code python3} is not on the PATH (the tool is stdlib-only).
  */
@@ -156,10 +163,55 @@ class ApiSpecToolTest {
         assertThat(run.warnings()).extracting(w -> w.path("rpc").asText())
                 .containsExactly("demo.v1.ThingService.Collaborate", "demo.v1.ThingService.UploadChunks");
         assertThat(run.warnings()).extracting(w -> w.path("message").asText())
-                .anySatisfy(m -> assertThat(m).contains("bidi-streaming RPC", "google.api.http"))
+                .anySatisfy(m -> assertThat(m).contains("bidi-streaming RPC", "google.api.http",
+                        "leaves the binding out"))
                 .anySatisfy(m -> assertThat(m).contains("client-streaming RPC"));
         // A warning does not stop the specs.
         assertThat(run.specs()).containsExactly("demo.openapi.json", "demo.asyncapi.json");
+        // REST cannot carry a request stream, so the generator never sees those bindings.
+        assertThat(boundMethods(lastRequest(OPENAPIV2)))
+                .containsExactlyInAnyOrder("GetThing", "WatchThings", "ExportThing");
+    }
+
+    @Test
+    void openapi_bindingsOnlyOnRequestStreams_writesNoOpenApi() throws Exception {
+        ServiceDescriptorProto.Builder service = demoService();
+        for (int i = 0; i < service.getMethodCount(); i++) {
+            service.setMethod(i, service.getMethod(i).toBuilder().clearOptions());
+        }
+        service.setMethod(UPLOAD_CHUNKS, service.getMethod(UPLOAD_CHUNKS).toBuilder()
+                .setOptions(http(HttpRule.newBuilder().setPost("/v1/{name=things/*}:upload").setBody("*").build())));
+
+        Run run = runTool(demoFile(service, null));
+
+        assertThat(run.errors()).isEmpty();
+        assertThat(run.warnings()).singleElement()
+                .satisfies(w -> assertThat(w.path("rpc").asText()).isEqualTo("demo.v1.ThingService.UploadChunks"));
+        assertThat(specFiles()).isEmpty();
+        assertThat(calls(OPENAPIV2)).isEmpty();
+    }
+
+    @Test
+    void openapi_realPlugin_leavesOutARequestStreamBindingWithAPathParameter() throws Exception {
+        // protoc-gen-openapiv2 refuses a path parameter on a client stream; a
+        // WARNING must not turn into a failed build.
+        String real = System.getenv("PROTOC_GEN_OPENAPIV2");
+        assumeTrue(real != null && Files.isExecutable(Path.of(real)), "PROTOC_GEN_OPENAPIV2 names no plugin");
+        ServiceDescriptorProto.Builder service = demoService();
+        service.setMethod(UPLOAD_CHUNKS, service.getMethod(UPLOAD_CHUNKS).toBuilder()
+                .setOptions(http(HttpRule.newBuilder().setPost("/v1/{name=things/*}:upload").setBody("*").build())));
+        Files.delete(pluginState.resolve(OPENAPIV2));
+        Files.createSymbolicLink(pluginState.resolve(OPENAPIV2), Path.of(real));
+
+        Run run = runTool(demoFile(service, null));
+
+        assertThat(run.errors()).isEmpty();
+        assertThat(run.warnings()).extracting(w -> w.path("rpc").asText())
+                .containsExactly("demo.v1.ThingService.UploadChunks");
+        assertThat(openApi().path("paths").properties()).extracting(Map.Entry::getKey)
+                .containsExactlyInAnyOrder("/v1/{name}", "/v1/things:watch", "/v1/{name}:export");
+        assertThat(openApi().at("/paths/~1v1~1things:watch/get/responses/200/x-stream-framing").asText())
+                .isEqualTo("newline-delimited");
     }
 
     @Test
@@ -227,6 +279,15 @@ class ApiSpecToolTest {
     }
 
     @Test
+    void specs_withoutABundleVersion_leaveThePlaceholderForTheBundlers() throws Exception {
+        // The aspect has no bundle.yaml; the jar, wheel and npm bundlers stamp the version.
+        runTool(demoSet(demoFile(demoService(), null)), "demo", false);
+
+        assertThat(openApi().path("info").path("version").asText()).isEqualTo("version not set");
+        assertThat(asyncApi().path("info").path("version").asText()).isEqualTo("version not set");
+    }
+
+    @Test
     void openapi_streamInAnUnknownShape_failsInsteadOfPublishing() throws Exception {
         // A future plugin that frames streams some other way must not be published unrewritten.
         String swagger = resource("apispec/protoc-gen-openapiv2.demo.swagger.json")
@@ -261,8 +322,8 @@ class ApiSpecToolTest {
         assertThat(doc.path("info").path("version").asText()).isEqualTo("1.4.0");
         // The plugin also wrote WatchThings, a server stream; only the marked RPCs stay.
         assertThat(doc.path("channels").properties()).extracting(Map.Entry::getKey)
-                .containsExactly("demo_v1_ThingService_Collaborate", "demo_v1_ThingService_UploadChunks");
-        JsonNode channel = doc.path("channels").path("demo_v1_ThingService_Collaborate");
+                .containsExactly("demo-v1-ThingService-Collaborate", "demo-v1-ThingService-UploadChunks");
+        JsonNode channel = doc.path("channels").path("demo-v1-ThingService-Collaborate");
         assertThat(channel.path("address").asText()).isEqualTo("/ws/demo.v1.ThingService/Collaborate");
         JsonNode messages = channel.path("messages");
         assertThat(messages.at("/request/payload/properties/data/$ref").asText())
@@ -274,9 +335,9 @@ class ApiSpecToolTest {
         assertThat(doc.at("/components/messages/End/payload/properties/end/const").asBoolean()).isTrue();
         assertThat(doc.at("/components/messages/Status/payload/properties/status/$ref").asText())
                 .isEqualTo("#/components/schemas/google.rpc.Status");
-        assertThat(doc.at("/operations/demo_v1_ThingService_Collaborate_send/action").asText()).isEqualTo("send");
-        assertThat(doc.at("/operations/demo_v1_ThingService_Collaborate_receive/messages/1/$ref").asText())
-                .isEqualTo("#/channels/demo_v1_ThingService_Collaborate/messages/status");
+        assertThat(doc.at("/operations/demo-v1-ThingService-Collaborate_send/action").asText()).isEqualTo("send");
+        assertThat(doc.at("/operations/demo-v1-ThingService-Collaborate_receive/messages/1/$ref").asText())
+                .isEqualTo("#/channels/demo-v1-ThingService-Collaborate/messages/status");
         // Schemas are the plugin's, pruned to what the kept channels reach.
         assertThat(doc.path("components").path("schemas").properties()).extracting(Map.Entry::getKey)
                 .contains("demo.v1.CollaborateRequest", "demo.v1.Thing", "demo.v1.Kind", "google.rpc.Status")
@@ -302,14 +363,34 @@ class ApiSpecToolTest {
         assertThat(openApi().path("paths").properties()).extracting(Map.Entry::getKey)
                 .containsExactlyInAnyOrder("/v1/{name}", "/v1/things:watch", "/v1/{name}:export");
         assertThat(asyncApi().path("channels").properties()).extracting(Map.Entry::getKey)
-                .containsExactly("demo_v1_ThingService_Collaborate", "demo_v1_ThingService_UploadChunks");
+                .containsExactly("demo-v1-ThingService-Collaborate", "demo-v1-ThingService-UploadChunks");
+    }
+
+    @Test
+    void openapi_customServerStream_keepsTheGeneratorsShapeAndSaysItsAuthorDefined() throws Exception {
+        // The author serves WatchThings' REST binding; the transcoder's framing is not theirs to follow.
+        ServiceDescriptorProto.Builder service = demoService();
+        service.setMethod(WATCH_THINGS, service.getMethod(WATCH_THINGS).toBuilder()
+                .setOptions(service.getMethod(WATCH_THINGS).getOptions().toBuilder()
+                        .setExtension(ExposureProto.exposure, MethodExposure.newBuilder().setCustom(true).build())));
+
+        Run run = runTool(demoFile(service, null));
+
+        assertThat(run.findings()).isEmpty();
+        JsonNode response = openApi().at("/paths/~1v1~1things:watch/get/responses/200");
+        assertThat(response.path("x-stream-framing").asText()).isEqualTo("author-defined");
+        assertThat(response.at("/schema/properties/result/$ref").asText()).isEqualTo("#/definitions/v1Thing");
+        assertThat(response.at("/schema/properties/error/$ref").asText()).isEqualTo("#/definitions/rpcStatus");
+        // A second generator run, without WatchThings' binding, is how the operation was told apart.
+        assertThat(calls(OPENAPIV2)).hasSize(2);
+        assertThat(boundMethods(lastRequest(OPENAPIV2))).doesNotContain("WatchThings");
     }
 
     @Test
     void asyncapi_channelDeclaresTheHandshakeAndTheCloseCodes() throws Exception {
         runTool(demoFile(demoService(), null));
 
-        JsonNode channel = asyncApi().path("channels").path("demo_v1_ThingService_UploadChunks");
+        JsonNode channel = asyncApi().path("channels").path("demo-v1-ThingService-UploadChunks");
         JsonNode ws = channel.path("bindings").path("ws");
         assertThat(ws.path("method").asText()).isEqualTo("GET");
         assertThat(ws.at("/headers/required/0").asText()).isEqualTo("Sec-WebSocket-Protocol");
@@ -338,7 +419,7 @@ class ApiSpecToolTest {
         // The same document shape, from the descriptors.
         JsonNode doc = asyncApi();
         assertThat(doc.path("channels").properties()).extracting(Map.Entry::getKey)
-                .containsExactly("demo_v1_ThingService_Collaborate", "demo_v1_ThingService_UploadChunks");
+                .containsExactly("demo-v1-ThingService-Collaborate", "demo-v1-ThingService-UploadChunks");
         assertThat(doc.at("/components/schemas/demo.v1.CollaborateRequest/unevaluatedProperties").isMissingNode())
                 .isTrue();
         assertThat(run.errors()).isEmpty();
@@ -380,6 +461,49 @@ class ApiSpecToolTest {
         assertThat(schemas.at("/demo.v1.UploadChunksRequest/properties/chunk/format").asText())
                 .isEqualTo("byte");
         assertThat(schemas.has("demo.v1.Thing.TagsEntry")).as("map entries are inlined").isFalse();
+    }
+
+    @Test
+    void asyncapi_builtInGenerator_forbidsSettingTwoFieldsOfAOneof() throws Exception {
+        // proto3 JSON parsers reject a CollaborateRequest that sets insertText and deleteCount.
+        Files.delete(pluginState.resolve(CONNECT_OPENAPI));
+
+        runTool(demoFile(demoService(), null));
+
+        JsonNode request = asyncApi().at("/components/schemas/demo.v1.CollaborateRequest");
+        assertThat(request.at("/not/anyOf")).hasSize(1);
+        assertThat(acceptedByNot(request, Set.of("name", "insertText", "deleteCount"))).isFalse();
+        assertThat(acceptedByNot(request, Set.of("name", "insertText"))).isTrue();
+        assertThat(acceptedByNot(request, Set.of("name", "deleteCount"))).isTrue();
+        // Thing's proto3 optional note is a oneof of one: nothing to forbid.
+        assertThat(asyncApi().at("/components/schemas/demo.v1.Thing").has("not")).isFalse();
+    }
+
+    @Test
+    void asyncapi_channelKeysStayDistinctForNamesThatDifferOnlyInDotsAndUnderscores() throws Exception {
+        // acme.foo_bar.v1.Chat.Stream and acme.foo.bar.v1.Chat.Stream once shared a key.
+        Run run = runTool(chatBundle("acme/foo_bar/v1/chat.proto", "acme.foo_bar.v1",
+                "acme/foo/bar/v1/chat.proto", "acme.foo.bar.v1"), "acme");
+
+        assertThat(run.errors()).isEmpty();
+        JsonNode channels = JSON.readTree(tempDir.resolve("demo_api_specs/demo.asyncapi.json").toFile())
+                .path("channels");
+        assertThat(channels.properties()).extracting(Map.Entry::getKey)
+                .containsExactlyInAnyOrder("acme-foo_bar-v1-Chat-Stream", "acme-foo-bar-v1-Chat-Stream");
+        assertThat(channels.path("acme-foo_bar-v1-Chat-Stream").path("address").asText())
+                .isEqualTo("/ws/acme.foo_bar.v1.Chat/Stream");
+        assertThat(channels.path("acme-foo-bar-v1-Chat-Stream").path("address").asText())
+                .isEqualTo("/ws/acme.foo.bar.v1.Chat/Stream");
+    }
+
+    @Test
+    void asyncapi_rpcsSharingAChannelKey_failInsteadOfOverwritingEachOther() throws Exception {
+        // Two files declaring the same RPC: a set protoc would refuse, and the one way to collide.
+        Run run = runTool(chatBundle("acme/a/v1/chat.proto", "acme.v1", "acme/b/v1/chat.proto", "acme.v1"), "acme");
+
+        assertThat(run.errors()).singleElement().satisfies(error -> assertThat(error.path("message").asText())
+                .contains("share the channel key acme-v1-Chat-Stream"));
+        assertThat(specFiles()).isEmpty();
     }
 
     @Test
@@ -584,18 +708,32 @@ class ApiSpecToolTest {
     }
 
     private Run runTool(FileDescriptorSet set) throws Exception {
+        return runTool(set, "demo");
+    }
+
+    private Run runTool(FileDescriptorSet set, String packagePath) throws Exception {
+        return runTool(set, packagePath, true);
+    }
+
+    private Run runTool(FileDescriptorSet set, String packagePath, boolean withVersion) throws Exception {
         Path descriptor = tempDir.resolve("demo_api_descriptor.pb");
         Files.write(descriptor, set.toByteArray());
         Path findings = tempDir.resolve("demo_api_findings.json");
-        List<String> command = List.of(python3(), tool.toString(),
-                "--bundle", "demo", "--package", "demo", "--bundle-version", "1.4.0",
+        List<String> command = new ArrayList<>(List.of(python3(), tool.toString(),
+                "--bundle", "demo", "--package", packagePath));
+        if (withVersion) {
+            command.addAll(List.of("--bundle-version", "1.4.0"));
+        }
+        command.addAll(List.of(
                 "--descriptor-set", descriptor.toString(),
                 "--out-dir", tempDir.resolve("demo_api_specs").toString(),
                 "--findings", findings.toString(),
                 "--openapiv2", pluginState.resolve(OPENAPIV2).toString(),
                 "--openapiv2-version", "2.31.0",
+                "--openapiv2-sha256", "0000," + sha256(pluginState.resolve(OPENAPIV2)),
                 "--connect-openapi", pluginState.resolve(CONNECT_OPENAPI).toString(),
-                "--connect-openapi-version", "0.28.0");
+                "--connect-openapi-version", "0.28.0",
+                "--connect-openapi-sha256", sha256(pluginState.resolve(CONNECT_OPENAPI)) + ",0000"));
         Process process = new ProcessBuilder(command).directory(tempDir.toFile())
                 .redirectErrorStream(true).start();
         String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
@@ -624,7 +762,10 @@ class ApiSpecToolTest {
 
     /**
      * A protoc plugin stand-in: answers --version with the given line and every
-     * request with the given files, logging each request's parameter and files.
+     * request with the given files, logging each request's parameter and files
+     * and keeping its bytes. Like the real generator, it leaves out of a
+     * swagger document the operations of methods the request carries no
+     * google.api.http binding for.
      */
     private void writeFakePlugin(String name, String version, Map<String, String> outputs) throws Exception {
         Files.writeString(pluginState.resolve(name + ".version"), version);
@@ -641,16 +782,37 @@ class ApiSpecToolTest {
                 if sys.argv[1:] == ["--version"]:
                     print(open(os.path.join(state, name + ".version")).read())
                     sys.exit(0)
-                files, parameter = [], ""
-                for number, _, value in pd.iter_fields(sys.stdin.buffer.read()):
+                request = sys.stdin.buffer.read()
+                files, parameter, unbound = [], "", set()
+                for number, _, value in pd.iter_fields(request):
                     if number == 1:
                         files.append(value.decode())
                     elif number == 2:
                         parameter = value.decode()
-                with open(os.path.join(state, name + ".calls"), "a") as log:
+                    elif number == 15:
+                        proto, _ = pd.parse_file(value)
+                        for service in proto.services:
+                            for method in service.methods:
+                                if not any(n == 72295728 for n, _, _ in pd.iter_fields(method.options)):
+                                    unbound.add(service.name + "_" + method.name)
+                calls = os.path.join(state, name + ".calls")
+                count = sum(1 for _ in open(calls)) if os.path.exists(calls) else 0
+                with open(os.path.join(state, "%%s.request-%%d.bin" %% (name, count)), "wb") as out:
+                    out.write(request)
+                with open(calls, "a") as log:
                     log.write(json.dumps({"files": files, "parameter": parameter}) + "\\n")
                 response = b""
                 for file_name, content in json.load(open(os.path.join(state, name + ".outputs.json"))).items():
+                    if file_name.endswith(".swagger.json"):
+                        doc = json.loads(content)
+                        for path in list(doc.get("paths", {})):
+                            item = doc["paths"][path]
+                            for verb in list(item):
+                                if isinstance(item[verb], dict) and item[verb].get("operationId") in unbound:
+                                    del item[verb]
+                            if not item:
+                                del doc["paths"][path]
+                        content = json.dumps(doc)
                     response += pd.encode_bytes_field(15, pd.encode_bytes_field(1, file_name.encode())
                                                       + pd.encode_bytes_field(15, content.encode()))
                 sys.stdout.buffer.write(response)
@@ -667,6 +829,67 @@ class ApiSpecToolTest {
             }
         }
         return out;
+    }
+
+    /** The plugin's most recent request, its extensions readable. */
+    private CodeGeneratorRequest lastRequest(String plugin) throws IOException {
+        int count = calls(plugin).size();
+        assertThat(count).as("%s was called", plugin).isPositive();
+        ExtensionRegistry registry = ExtensionRegistry.newInstance();
+        AnnotationsProto.registerAllExtensions(registry);
+        ExposureProto.registerAllExtensions(registry);
+        return CodeGeneratorRequest.parseFrom(
+                Files.readAllBytes(pluginState.resolve(plugin + ".request-" + (count - 1) + ".bin")), registry);
+    }
+
+    /** The demo file's methods that carry a google.api.http binding in a request. */
+    private static List<String> boundMethods(CodeGeneratorRequest request) {
+        return request.getProtoFileList().stream()
+                .filter(file -> file.getName().equals(DEMO))
+                .flatMap(file -> file.getServiceList().stream())
+                .flatMap(service -> service.getMethodList().stream())
+                .filter(method -> method.getOptions().hasExtension(AnnotationsProto.http))
+                .map(MethodDescriptorProto::getName)
+                .toList();
+    }
+
+    /** Whether a payload with these keys passes the schema's "not anyOf required" constraint. */
+    private static boolean acceptedByNot(JsonNode schema, Set<String> keys) {
+        for (JsonNode branch : schema.at("/not/anyOf")) {
+            boolean allPresent = true;
+            for (JsonNode required : branch.path("required")) {
+                allPresent &= keys.contains(required.asText());
+            }
+            if (allPresent) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /** Two files, each declaring a WebSocket bidi RPC Chat.Stream in its package. */
+    private static FileDescriptorSet chatBundle(String firstFile, String firstPackage,
+                                                String secondFile, String secondPackage) {
+        FileDescriptorSet.Builder set = FileDescriptorSet.newBuilder()
+                .addFile(DescriptorProtos.getDescriptor().toProto())
+                .addFile(ExposureProto.getDescriptor().toProto());
+        for (String[] file : new String[][] {{firstFile, firstPackage}, {secondFile, secondPackage}}) {
+            set.addFile(FileDescriptorProto.newBuilder()
+                    .setName(file[0]).setPackage(file[1]).setSyntax("proto3")
+                    .addDependency("cohub/api/v1/exposure.proto")
+                    .addMessageType(message("Line", field("text", 1, TYPE_STRING)))
+                    .addService(ServiceDescriptorProto.newBuilder().setName("Chat")
+                            .addMethod(method("Stream", "." + file[1] + ".Line", "." + file[1] + ".Line",
+                                    true, true, websocket()))));
+        }
+        return set.build();
+    }
+
+    private static String sha256(Path file) throws Exception {
+        if (!Files.exists(file)) {
+            return "0000";
+        }
+        return HexFormat.of().formatHex(MessageDigest.getInstance("SHA-256").digest(Files.readAllBytes(file)));
     }
 
     private static String resource(String path) throws IOException {

@@ -108,13 +108,65 @@ def iter_fields(buf):
     length-delimited ones. Groups are skipped whole: descriptor.proto has
     none, and nothing this tool reads is one.
     """
+    for number, wire_type, value, _, _ in _iter_spans(buf):
+        if wire_type != 3:
+            yield number, wire_type, value
+
+
+def _iter_spans(buf):
+    """Like iter_fields, with each field's byte span, groups included."""
     pos = 0
     while pos < len(buf):
+        start = pos
         key, pos = _read_varint(buf, pos)
         number, wire_type = key >> 3, key & 7
         value, pos = _read_value(buf, pos, number, wire_type)
-        if wire_type != 3:
-            yield number, wire_type, value
+        yield number, wire_type, value, start, pos
+
+
+def _replace_fields(buf, replace):
+    """Re-serializes a message, copying every field's bytes but those replace() changes.
+
+    replace(number, wire_type, value, index) returns None to keep a field as
+    written, or new bytes for a length-delimited field; index counts the
+    field's occurrences so far.
+    """
+    out = bytearray()
+    seen = {}
+    for number, wire_type, value, start, end in _iter_spans(buf):
+        index = seen.get(number, 0)
+        seen[number] = index + 1
+        new = replace(number, wire_type, value, index) if wire_type == 2 else None
+        out += buf[start:end] if new is None else encode_bytes_field(number, new)
+    return bytes(out)
+
+
+def strip_method_options(file_raw, methods, option_number):
+    """A serialized FileDescriptorProto without one option on some methods.
+
+    methods holds (service index, method index) pairs; every other byte of
+    the file, source info included, is kept, so its descriptor paths still
+    point where they did.
+    """
+    def in_method(method_raw):
+        return _replace_fields(method_raw, lambda n, w, v, i: _without(v, option_number) if n == 4 else None)
+
+    def in_service(service_index):
+        def replace(number, wire_type, value, index):
+            if number == 2 and (service_index, index) in methods:
+                return in_method(value)
+            return None
+        return replace
+
+    return _replace_fields(file_raw, lambda n, w, v, i: _replace_fields(v, in_service(i)) if n == 6 else None)
+
+
+def _without(message_raw, number):
+    out = bytearray()
+    for field_number, _, _, start, end in _iter_spans(message_raw):
+        if field_number != number:
+            out += message_raw[start:end]
+    return bytes(out)
 
 
 def _varint_bytes(value):
@@ -215,12 +267,13 @@ class MethodDesc:
 
 
 class ServiceDesc:
-    """A ServiceDescriptorProto."""
+    """A ServiceDescriptorProto, with its options' raw bytes."""
 
     def __init__(self):
         self.name = ""
         self.full_name = ""
         self.methods = []
+        self.options = b""
         self.file = None
         self.path = ()
 
@@ -375,6 +428,8 @@ def _parse_service(raw, scope, file, path):
             service.name = value.decode("utf-8")
         elif number == 2:
             methods.append(value)
+        elif number == 3:
+            service.options += value
     service.full_name = _join(scope, service.name)
     service.methods = [_parse_method(item, service, path + (2, i)) for i, item in enumerate(methods)]
     return service
@@ -606,19 +661,19 @@ class PluginError(RuntimeError):
     """A plugin failed, or answered with an error."""
 
 
-def code_generator_request(files_to_generate, parameter, files):
+def code_generator_request(files_to_generate, parameter, raw_files):
     """Serializes a CodeGeneratorRequest.
 
-    files must hold every file the generated ones need, each after its
-    dependencies, as protoc sends them.
+    raw_files are serialized FileDescriptorProtos: every file the generated
+    ones need, each after its dependencies, as protoc sends them.
     """
     out = bytearray()
     for name in files_to_generate:
         out += encode_bytes_field(1, name.encode("utf-8"))
     if parameter:
         out += encode_bytes_field(2, parameter.encode("utf-8"))
-    for file in files:
-        out += encode_bytes_field(15, file.raw)
+    for raw in raw_files:
+        out += encode_bytes_field(15, raw)
     return bytes(out)
 
 

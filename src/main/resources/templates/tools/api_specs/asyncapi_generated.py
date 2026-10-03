@@ -18,7 +18,6 @@ protolake's, so a fallback changes only the schemas' wording.
 """
 
 import json
-import re
 
 import protodesc_generated as protodesc
 
@@ -64,6 +63,10 @@ PROTOCOL_HEADER = (
 
 class CheckFailed(Exception):
     """protoc-gen-connect-openapi's output is not one protolake relies on."""
+
+
+class DocumentError(ValueError):
+    """The document protolake would write is not well-formed."""
 
 
 class Channel:
@@ -346,6 +349,11 @@ class _Schemas:
                                                        message.file.comment(field.path))
         schema = {"type": "object", "title": message.name, "properties": properties,
                   "additionalProperties": False}
+        exclusive = _oneof_constraints(message)
+        if len(exclusive) == 1:
+            schema["not"] = exclusive[0]
+        elif exclusive:
+            schema["allOf"] = [{"not": constraint} for constraint in exclusive]
         return _described(schema, message.file.comment(message.path))
 
     def _field(self, field):
@@ -362,6 +370,28 @@ class _Schemas:
         if field.type in (protodesc.TYPE_MESSAGE, protodesc.TYPE_GROUP, protodesc.TYPE_ENUM):
             return self.ref(field.type_name)
         return dict(_SCALARS.get(field.type, {}))
+
+
+def _oneof_constraints(message):
+    """For each oneof, a schema matching a payload that sets two of its fields.
+
+    proto3 JSON lets a payload set at most one field of a oneof, and a
+    parser rejects one that sets more; the message's schema forbids each of
+    these. A proto3 optional field's synthetic oneof has one field and needs
+    none.
+    """
+    groups = {}
+    for field in message.fields:
+        if field.oneof_index is not None and not field.proto3_optional:
+            groups.setdefault(field.oneof_index, []).append(_json_name(field))
+    constraints = []
+    for index in sorted(groups):
+        names = groups[index]
+        pairs = [{"required": [names[i], names[j]]}
+                 for i in range(len(names)) for j in range(i + 1, len(names))]
+        if pairs:
+            constraints.append({"anyOf": pairs})
+    return constraints
 
 
 def _described(schema, comment):
@@ -389,7 +419,12 @@ def builtin(pool, rpcs):
 # ---------------------------------------------------------------------------
 
 def channel_key(rpc):
-    return re.sub(r"[^A-Za-z0-9_-]", "_", rpc.full_name)
+    """The RPC's full name with its dots as dashes.
+
+    AsyncAPI keys allow letters, digits, _ and -; proto names have no -, so
+    distinct RPCs keep distinct keys (foo_bar.v1 and foo.bar.v1 stay apart).
+    """
+    return rpc.full_name.replace(".", "-")
 
 
 def _data_message(direction, ref):
@@ -478,6 +513,9 @@ def document(bundle, version, base):
     operations = {}
     for channel in sorted(base.channels, key=lambda c: c.rpc.full_name):
         key = channel_key(channel.rpc)
+        if key in channels:
+            raise DocumentError("RPCs %s and %s share the channel key %s"
+                                % (channels[key]["title"], channel.rpc.full_name, key))
         description = (channel.description + "\n\n" if channel.description else "") + CLOSE_CODES
         channels[key] = {
             "address": channel.address,

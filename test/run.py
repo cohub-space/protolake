@@ -39,7 +39,7 @@ def run(cmd, **kw) -> subprocess.CompletedProcess:
 
 
 LEGACY_SUITES = ["test_protolake.sh", "test_cli.sh", "test_remote_publish.sh"]
-LEGACY_TOOLS = ["jq", "grpcurl", "curl", "python3"]
+LEGACY_TOOLS = ["jq", "grpcurl", "curl", "python3", "unzip"]
 
 
 def smoke() -> int:

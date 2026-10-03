@@ -257,8 +257,16 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
         assertFileExists(toolsPath, "api_specs/asyncapi_generated.py", "api_specs/protodesc_generated.py");
         assertFileContains(toolsPath.resolve("BUILD.bazel"),
             "name = \"api_specs_tool\"",
-            "main = \"api_specs/api_specs_generated.py\""
+            "main = \"api_specs/api_specs_generated.py\"",
+            "name = \"bundler_api_spec_files\""
         );
+        // The bundle rules apply the aspect and pack the specs into their packages.
+        assertFileContains(toolsPath.resolve("proto_bundle.bzl"),
+            "load(\":api_specs.bzl\", \"api_specs\")",
+            "aspects = [api_specs]",
+            "--api-specs-dir"
+        );
+        assertFileExists(toolsPath, "bundler/api_spec_files_generated.py");
     }
 
     @Test

@@ -14,7 +14,7 @@ the engine would emit if it were authored as a Board proto.
 ```
 
 The legacy suites drive the stack themselves with `docker compose`, `jq`,
-`grpcurl`, `curl` and `python3`, so they run on the host, not in the Karate
+`grpcurl`, `curl`, `python3` and `unzip`, so they run on the host, not in the Karate
 runner image; `run.py` checks those tools first (macOS:
 `brew install jq grpcurl`). They also need a protolake-gazelle checkout:
 the sibling `../protolake-gazelle`, or `PROTOLAKE_GAZELLE_SOURCE_PATH`. A

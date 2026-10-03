@@ -44,21 +44,26 @@ RUN BUF_ARCH=$(case "${TARGETARCH}" in arm64) echo "Linux-aarch64";; amd64) echo
 
 # protoc plugins for the API specs a bundle build writes: OpenAPI 2.0 from the
 # google.api.http bindings, AsyncAPI 3.1 for WebSocket-marked RPCs. Pinned by
-# version and per-platform SHA-256, since release assets are mutable. The
-# versions also sit in templates/tools/api_specs.bzl, where they key Bazel's
-# cache and are checked against the installed binaries; ApiSpecPinsTest keeps
-# the two files in step.
+# version and per-platform SHA-256, since release assets are mutable: the
+# downloaded asset, and for protoc-gen-connect-openapi also the binary its
+# tarball holds. The versions and binary digests also sit in
+# templates/tools/api_specs.bzl, where they key Bazel's cache and are checked
+# against the installed binaries; ApiSpecPinsTest keeps the files in step.
 ARG PROTOC_GEN_OPENAPIV2_VERSION=2.31.0
 ARG PROTOC_GEN_OPENAPIV2_SHA256_AMD64=a05f17a2a934692cc9d0b46a5a597f23cf2f1e34c76e0a457943aa5afffa33ba
 ARG PROTOC_GEN_OPENAPIV2_SHA256_ARM64=6240a03543695ed7dfad404765cc681c7bcc7760773c479d37cdd80f7840e000
 ARG PROTOC_GEN_CONNECT_OPENAPI_VERSION=0.28.0
 ARG PROTOC_GEN_CONNECT_OPENAPI_SHA256_AMD64=1bc500494b835efa00487d9685ca8e6f74b5a427bdb6f5a456f3287e5f3b336a
 ARG PROTOC_GEN_CONNECT_OPENAPI_SHA256_ARM64=679816cf64acee93a19c6100f16b5144b5b17e59fa697b8a29cbf73eede5ec80
+ARG PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_AMD64=fdaa7b60734db2513727f56bb5415406c76d1490cb14827a1af38dd32cb5d080
+ARG PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_ARM64=662c2ae8fa8c0bd0deb2f4068577b8809dc69b10645c4d12dc1d22ea4f90d3ab
 RUN case "${TARGETARCH}" in \
       amd64) OPENAPIV2_ARCH=linux-x86_64; OPENAPIV2_SHA256="${PROTOC_GEN_OPENAPIV2_SHA256_AMD64}"; \
-             CONNECT_ARCH=linux_amd64; CONNECT_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_SHA256_AMD64}";; \
+             CONNECT_ARCH=linux_amd64; CONNECT_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_SHA256_AMD64}"; \
+             CONNECT_BINARY_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_AMD64}";; \
       arm64) OPENAPIV2_ARCH=linux-arm64; OPENAPIV2_SHA256="${PROTOC_GEN_OPENAPIV2_SHA256_ARM64}"; \
-             CONNECT_ARCH=linux_arm64; CONNECT_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_SHA256_ARM64}";; \
+             CONNECT_ARCH=linux_arm64; CONNECT_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_SHA256_ARM64}"; \
+             CONNECT_BINARY_SHA256="${PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_ARM64}";; \
       *) echo "no pinned protoc plugins for ${TARGETARCH}" >&2; exit 1;; \
     esac \
     && curl -fsSL -o /usr/local/bin/protoc-gen-openapiv2 \
@@ -69,6 +74,7 @@ RUN case "${TARGETARCH}" in \
       "https://github.com/sudorandom/protoc-gen-connect-openapi/releases/download/v${PROTOC_GEN_CONNECT_OPENAPI_VERSION}/protoc-gen-connect-openapi_${PROTOC_GEN_CONNECT_OPENAPI_VERSION}_${CONNECT_ARCH}.tar.gz" \
     && echo "${CONNECT_SHA256}  /tmp/protoc-gen-connect-openapi.tar.gz" | sha256sum -c - \
     && tar -xzf /tmp/protoc-gen-connect-openapi.tar.gz -C /usr/local/bin protoc-gen-connect-openapi \
+    && echo "${CONNECT_BINARY_SHA256}  /usr/local/bin/protoc-gen-connect-openapi" | sha256sum -c - \
     && rm /tmp/protoc-gen-connect-openapi.tar.gz \
     && /usr/local/bin/protoc-gen-openapiv2 --version \
     && /usr/local/bin/protoc-gen-connect-openapi --version

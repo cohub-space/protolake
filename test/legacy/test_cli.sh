@@ -115,7 +115,7 @@ echo ""
 echo "Phase 0: Checking prerequisites..."
 
 PREREQ_FAIL=false
-for cmd in docker jq; do
+for cmd in docker jq unzip; do
     if command -v "$cmd" &> /dev/null; then
         echo "  Found: $cmd"
     else
@@ -597,8 +597,7 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
 
     # OpenAPI 2.0, from the google.api.http bindings
     check_json "$OPENAPI" '.swagger == "2.0"' "OpenAPI: a Swagger 2.0 document"
-    check_json "$OPENAPI" ".info.title == \"api_demo\" and .info.version == \"$AD_VERSION\"" \
-        "OpenAPI: titled and versioned after the bundle ($AD_VERSION)"
+    check_json "$OPENAPI" '.info.title == "api_demo"' "OpenAPI: titled after the bundle"
     check_json "$OPENAPI" '.paths["/v1/{name}"].get.operationId == "ThingService_GetThing"' \
         "OpenAPI: the REST-bound unary RPC"
     check_json "$OPENAPI" '.paths["/v1/things:watch"].get.responses["200"]
@@ -607,6 +606,11 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
         "OpenAPI: the server stream is newline-delimited bare ThingEvent messages"
     check_json "$OPENAPI" '.paths["/v1/{name}:export"].post.operationId == "ThingService_ExportThing"' \
         "OpenAPI: the custom RPC is in the spec"
+    check_json "$OPENAPI" '.paths["/v1/{name}:tail"].get.responses["200"]
+        | ."x-stream-framing" == "author-defined" and .schema.properties.result["$ref"] == "#/definitions/v1ThingLogLine"' \
+        "OpenAPI: the custom server stream keeps the generator's framing, marked author-defined"
+    check_json "$OPENAPI" '.paths | has("/v1/{name}:upload") | not' \
+        "OpenAPI: the client stream's binding is left out"
     check_json "$OPENAPI" '[.. | .operationId? // empty]
         | index("ThingService_PingThings") == null and index("ThingService_CollaborateOnThing") == null' \
         "OpenAPI: neither the unannotated nor the WebSocket RPC"
@@ -614,25 +618,61 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
         "OpenAPI: none of the unannotated RPC's messages"
 
     # AsyncAPI 3.1, for the WebSocket-marked RPCs
-    CHANNEL=api_demo_v1_ThingService_CollaborateOnThing
+    CHANNEL=api_demo-v1-ThingService-CollaborateOnThing
     check_json "$ASYNCAPI" '.asyncapi == "3.1.0"' "AsyncAPI: a 3.1 document"
     check_json "$ASYNCAPI" ".channels | keys == [\"$CHANNEL\"]" "AsyncAPI: only the WebSocket RPC has a channel"
-    check_json "$ASYNCAPI" ".channels.$CHANNEL.address == \"/ws/api_demo.v1.ThingService/CollaborateOnThing\"" \
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].address == \"/ws/api_demo.v1.ThingService/CollaborateOnThing\"" \
         "AsyncAPI: the channel sits at the bridge's address"
-    check_json "$ASYNCAPI" ".channels.$CHANNEL.messages
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].messages
         | .request.payload.properties.data[\"\$ref\"] == \"#/components/schemas/api_demo.v1.CollaborateOnThingRequest\"
           and .response.payload.properties.data[\"\$ref\"] == \"#/components/schemas/api_demo.v1.CollaborateOnThingResponse\"
           and .end[\"\$ref\"] == \"#/components/messages/End\" and .status[\"\$ref\"] == \"#/components/messages/Status\"" \
         "AsyncAPI: the channel carries the bridge's Data, End and Status frames"
-    check_json "$ASYNCAPI" ".channels.$CHANNEL.bindings.ws.headers.required == [\"Sec-WebSocket-Protocol\"]" \
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].bindings.ws.headers.required == [\"Sec-WebSocket-Protocol\"]" \
         "AsyncAPI: the WebSocket binding declares the subprotocol handshake"
     check_json "$ASYNCAPI" '.components.schemas | has("api_demo.v1.PingThingsResponse") | not' \
         "AsyncAPI: none of the unannotated RPC's messages"
-    check_json "$FINDINGS" '.findings == [] and (.asyncapi_generator | startswith("protoc-gen-connect-openapi"))' \
+    check_json "$FINDINGS" '.asyncapi_generator | startswith("protoc-gen-connect-openapi")' \
         "AsyncAPI: protoc-gen-connect-openapi's output passed protolake's check"
+    check_json "$FINDINGS" '[.findings[] | [.severity, .rpc]] == [["WARNING", "api_demo.v1.ThingService.UploadThingChunks"]]' \
+        "the client stream's binding is the one finding, a WARNING"
+    check_file_contains "$BUILD_LOG" "WARNING: api_demo/v1/things.proto:" "the build prints the WARNING with its location"
 
     # service_a has no bindings and no WebSocket RPCs: no specs, which is fine
     check_json "$SA_FINDINGS" '.findings == [] and .specs == []' "service_a gets no API specs"
+
+    # The specs ship inside api_demo's packages, stamped with the version each is published under
+    AD_JAR=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/api-demo-proto" -name "*.jar" 2>/dev/null | head -1)
+    AD_WHEEL=$(find "$LOCAL_ROOT/pip/simple" -name "company_api_demo_proto-*.whl" 2>/dev/null | head -1)
+    AD_NPM_SPEC=$(find "$LOCAL_ROOT/npm-packages" -path "*api-demo-proto*" -name "api_demo.openapi.json" 2>/dev/null | head -1)
+    PACKAGED="$SPECS_DIR/packaged"
+    mkdir -p "$PACKAGED"
+    if [ -n "$AD_JAR" ]; then
+        unzip -p "$AD_JAR" META-INF/api-specs/api_demo.openapi.json > "$PACKAGED/jar.openapi.json" 2>/dev/null
+        unzip -p "$AD_JAR" META-INF/api-specs/api_demo.asyncapi.json > "$PACKAGED/jar.asyncapi.json" 2>/dev/null
+    fi
+    if [ -n "$AD_WHEEL" ]; then
+        unzip -p "$AD_WHEEL" "*.dist-info/api-specs/api_demo.openapi.json" > "$PACKAGED/wheel.openapi.json" 2>/dev/null
+        unzip -p "$AD_WHEEL" "*.dist-info/RECORD" > "$PACKAGED/wheel.RECORD" 2>/dev/null
+    fi
+    [ -n "$AD_NPM_SPEC" ] && cp "$AD_NPM_SPEC" "$PACKAGED/npm.openapi.json"
+    check_json "$PACKAGED/jar.openapi.json" ".info.version == \"$AD_VERSION\" and (.paths | has(\"/v1/{name}\"))" \
+        "jar: META-INF/api-specs/api_demo.openapi.json, version $AD_VERSION"
+    check_json "$PACKAGED/jar.asyncapi.json" ".info.version == \"$AD_VERSION\" and .asyncapi == \"3.1.0\"" \
+        "jar: META-INF/api-specs/api_demo.asyncapi.json, version $AD_VERSION"
+    check_json "$PACKAGED/wheel.openapi.json" ".info.version == \"$AD_VERSION\"" \
+        "wheel: .dist-info/api-specs/api_demo.openapi.json, version $AD_VERSION"
+    check_file_contains "$PACKAGED/wheel.RECORD" "dist-info/api-specs/api_demo.openapi.json,sha256=" \
+        "wheel: RECORD lists the spec with its hash"
+    check_json "$PACKAGED/npm.openapi.json" ".info.version == \"$AD_VERSION\"" \
+        "npm: api-specs/api_demo.openapi.json, version $AD_VERSION"
+    # service_a has no specs, so its jar carries none
+    SA_JAR_FILE=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/service-a-proto" -name "*.jar" 2>/dev/null | head -1)
+    if [ -n "$SA_JAR_FILE" ] && ! unzip -l "$SA_JAR_FILE" | grep -q "api-specs/"; then
+        pass "service_a's jar carries no API specs"
+    else
+        fail "service_a's jar carries API specs, or is missing ($SA_JAR_FILE)"
+    fi
 else
     echo "  Skipping API spec checks (build did not succeed)"
 fi
