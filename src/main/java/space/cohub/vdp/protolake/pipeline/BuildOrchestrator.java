@@ -208,6 +208,9 @@ public class BuildOrchestrator {
         // Before Bazel: such a bundle would fail to compile, or publish packages that fail to load.
         List<ValidationError> refused = providedImportCheck.check(lakeRoot, lakeRelativeTarget);
         if (!refused.isEmpty()) {
+            metadata = recordOnBuildPhase(metadata,
+                refused.stream().map(error -> "ERROR " + describe(error)).toList(), refused);
+            listener.onMetadataUpdate(metadata);
             listener.onPhaseComplete("Building", false, refused.size() + " API exposure error(s)");
             throw new BuildException("API exposure checks failed",
                 ValidationErrors.newBuilder().addAllErrors(refused).build());
@@ -281,16 +284,7 @@ public class BuildOrchestrator {
         List<ValidationError> errors = result.findings(ValidationError.Severity.ERROR);
         errors.forEach(error -> logs.add("ERROR " + describe(error)));
 
-        PhaseStatus.Builder build = metadata.getPhaseStatuses().getBuild().toBuilder().addAllLogLines(logs);
-        if (!errors.isEmpty()) {
-            build.setStatus(PhaseStatus.Status.FAILED)
-                .setErrorMessage("API exposure checks failed:\n" + errors.stream()
-                    .map(BuildOrchestrator::describe)
-                    .collect(Collectors.joining("\n")));
-        }
-        metadata = metadata.toBuilder()
-            .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder().setBuild(build.build()).build())
-            .build();
+        metadata = recordOnBuildPhase(metadata, logs, errors);
         listener.onMetadataUpdate(metadata);
 
         if (!errors.isEmpty()) {
@@ -302,6 +296,26 @@ public class BuildOrchestrator {
         listener.onPhaseComplete(API_SPECS_PHASE, true,
             written.isEmpty() ? "no bundle has REST bindings or WebSocket RPCs" : String.join(", ", written));
         return metadata;
+    }
+
+    /**
+     * Adds log lines to the build phase's status and, when there are errors,
+     * marks the phase failed with each one described: gRPC callers read the
+     * phase status, while the exception that ends the build reaches them only
+     * as its message.
+     */
+    private static BuildOperationMetadata recordOnBuildPhase(BuildOperationMetadata metadata, List<String> logs,
+                                                             List<ValidationError> errors) {
+        PhaseStatus.Builder build = metadata.getPhaseStatuses().getBuild().toBuilder().addAllLogLines(logs);
+        if (!errors.isEmpty()) {
+            build.setStatus(PhaseStatus.Status.FAILED)
+                .setErrorMessage("API exposure checks failed:\n" + errors.stream()
+                    .map(BuildOrchestrator::describe)
+                    .collect(Collectors.joining("\n")));
+        }
+        return metadata.toBuilder()
+            .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder().setBuild(build.build()).build())
+            .build();
     }
 
     /** {@code file:line:column: message}, without the position when it is unknown. */
