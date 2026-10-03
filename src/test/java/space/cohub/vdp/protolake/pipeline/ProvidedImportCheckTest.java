@@ -98,6 +98,17 @@ class ProvidedImportCheckTest {
     }
 
     @Test
+    void check_importSpelledWithByteEscapes_isFollowedToTheFileItNames() throws IOException {
+        // protoc resolves "lib/v1/\303\251.proto" to lib/v1/é.proto, which imports the options.
+        bundle("lib", "syntax = \"proto3\";\n", "proto_library(\n)\n");
+        Files.writeString(lake.resolve("lib/v1/é.proto"), IMPORTING);
+        bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/\\303\\251.proto\";\n", "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, "app")).singleElement().satisfies(error -> assertThat(error.getMessage())
+                .contains("app/v1/app.proto imports lib/v1/é.proto, which imports cohub/api/v1/exposure.proto"));
+    }
+
+    @Test
     void check_bundleWhoseImportsNeverReachIt_isUntouched() throws IOException {
         bundle("lib", "syntax = \"proto3\";\nimport \"google/api/annotations.proto\";\n", "proto_library(\n)\n");
         bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/lib.proto\";\nimport \"missing/v1/x.proto\";\n",

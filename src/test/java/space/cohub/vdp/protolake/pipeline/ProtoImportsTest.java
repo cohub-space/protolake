@@ -44,6 +44,44 @@ class ProtoImportsTest {
     }
 
     @Test
+    void parse_byteEscapesSpellUtf8_asProtocReadsThem() {
+        // protoc reads a literal as bytes and the path as those bytes in UTF-8: all three name lib/é.proto.
+        String expected = "lib/é.proto";
+
+        assertThat(ProtoImports.parse("import \"lib/\\303\\251.proto\";")).extracting(ProtoImports.Import::path)
+                .containsExactly(expected);
+        assertThat(ProtoImports.parse("import \"lib/\\xc3\\xa9.proto\";")).extracting(ProtoImports.Import::path)
+                .containsExactly(expected);
+        assertThat(ProtoImports.parse("import \"lib/\\303\" '\\251.proto';")).extracting(ProtoImports.Import::path)
+                .containsExactly(expected);
+    }
+
+    @Test
+    void parse_unicodeEscapesAndLiteralCharacters_areUtf8Too() {
+        String expected = "lib/é.proto";
+
+        assertThat(ProtoImports.parse("import \"lib/\\u00e9.proto\";")).extracting(ProtoImports.Import::path)
+                .containsExactly(expected);
+        assertThat(ProtoImports.parse("import \"lib/é.proto\";")).extracting(ProtoImports.Import::path)
+                .containsExactly(expected);
+    }
+
+    @Test
+    void parse_aCommentInAnotherEncoding_isSkippedLikeAnyComment() {
+        byte[] latin1 = "syntax = \"proto3\";\n// café in Latin-1\nimport \"a.proto\";\n"
+                .getBytes(java.nio.charset.StandardCharsets.ISO_8859_1);
+
+        assertThat(ProtoImports.parse(latin1)).containsExactly(new ProtoImports.Import("a.proto", 3, 1));
+    }
+
+    @Test
+    void parse_columnsCountBytesAndTabStops_asProtocDoes() {
+        assertThat(ProtoImports.parse("\timport \"a.proto\";\n/* é */ import \"b.proto\";\n")).containsExactly(
+                new ProtoImports.Import("a.proto", 1, 9),
+                new ProtoImports.Import("b.proto", 2, 10));
+    }
+
+    @Test
     void parse_importsInCommentsAndStrings_areNotImports() {
         String source = "syntax = \"proto3\";\n"
                 + "/* import \"" + EXPOSURE + "\";\n   import 'x.proto'; */\n"

@@ -7,7 +7,6 @@ import space.cohub.vdp.protolake.util.git.GitCommand;
 
 import java.io.IOException;
 import java.io.InputStream;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
 import java.nio.file.LinkOption;
@@ -73,7 +72,7 @@ final class ProvidedProtoOverlay implements AutoCloseable {
         Set<String> imported = new HashSet<>();
         for (Path proto : bufInputs(tree)) {
             if (proto.toString().endsWith(".proto")) {
-                for (ProtoImports.Import use : ProtoImports.parse(Files.readString(proto, StandardCharsets.UTF_8))) {
+                for (ProtoImports.Import use : ProtoImports.parse(Files.readAllBytes(proto))) {
                     imported.add(use.path());
                 }
             }

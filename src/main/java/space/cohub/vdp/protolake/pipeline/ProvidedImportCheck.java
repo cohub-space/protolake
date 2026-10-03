@@ -209,7 +209,7 @@ public class ProvidedImportCheck {
         private List<ProtoImports.Import> imports(String file) throws IOException {
             List<ProtoImports.Import> parsed = imports.get(file);
             if (parsed == null) {
-                parsed = ProtoImports.parse(Files.readString(lakeRoot.resolve(file), StandardCharsets.UTF_8));
+                parsed = ProtoImports.parse(Files.readAllBytes(lakeRoot.resolve(file)));
                 imports.put(file, parsed);
             }
             return parsed;

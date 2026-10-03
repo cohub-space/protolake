@@ -1,5 +1,7 @@
 package space.cohub.vdp.protolake.pipeline;
 
+import java.io.ByteArrayOutputStream;
+import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -12,6 +14,14 @@ import java.util.List;
  * gets each of these wrong: it misses {@code import 'a.proto';} and an import
  * written after another statement on the same line, which protoc accepts, and
  * it finds one inside a block comment, which protoc ignores.
+ *
+ * <p>Like protoc, this reads the file as bytes, not text. A string literal is
+ * a byte string: a {@code \x} or octal escape is one raw byte, adjacent
+ * literals join byte by byte, and the imported path is the joined bytes read
+ * as UTF-8, so {@code "lib/\303\251.proto"} names {@code lib/é.proto}. Bytes
+ * outside string literals are never decoded: a comment in another encoding
+ * is skipped as protoc skips it. Positions count bytes from 1, with a tab
+ * advancing to the next multiple of 8, as protoc counts columns.
  */
 final class ProtoImports {
 
@@ -19,11 +29,13 @@ final class ProtoImports {
     record Import(String path, int line, int column) {
     }
 
+    private static final int TAB_WIDTH = 8;
+
     private ProtoImports() {
     }
 
-    /** The file's imports, plain, public and weak, in source order. */
-    static List<Import> parse(String source) {
+    /** The imports of a .proto file's bytes, plain, public and weak, in source order. */
+    static List<Import> parse(byte[] source) {
         List<Token> tokens = new Lexer(source).tokens();
         List<Import> imports = new ArrayList<>();
         int depth = 0;
@@ -43,6 +55,11 @@ final class ProtoImports {
         return imports;
     }
 
+    /** The imports of a .proto file's text, encoded as UTF-8. */
+    static List<Import> parse(String source) {
+        return parse(source.getBytes(StandardCharsets.UTF_8));
+    }
+
     /** A file-level statement starts the file, or follows a {@code ;} or a closing brace. */
     private static boolean startsStatement(List<Token> tokens, int index) {
         if (index == 0) {
@@ -58,10 +75,10 @@ final class ProtoImports {
         if (next < tokens.size() && (tokens.get(next).isWord("public") || tokens.get(next).isWord("weak"))) {
             next++;
         }
-        StringBuilder path = new StringBuilder();
+        ByteArrayOutputStream path = new ByteArrayOutputStream();
         int strings = 0;
         while (next < tokens.size() && tokens.get(next).kind() == Kind.STRING) {
-            path.append(tokens.get(next).text());
+            path.writeBytes(tokens.get(next).bytes());
             next++;
             strings++;
         }
@@ -69,80 +86,88 @@ final class ProtoImports {
             return null;
         }
         Token keyword = tokens.get(index);
-        return new Import(path.toString(), keyword.line(), keyword.column());
+        return new Import(path.toString(StandardCharsets.UTF_8), keyword.line(), keyword.column());
     }
 
     private enum Kind { WORD, STRING, SYMBOL }
 
-    /** A word, a string literal's decoded value, or one other character, at its 1-based start. */
-    private record Token(Kind kind, String text, int line, int column) {
+    /**
+     * A word, a string literal, or one other byte, at its 1-based start. A
+     * word or symbol's bytes are ASCII; a string's are its decoded value.
+     */
+    private record Token(Kind kind, byte[] bytes, int line, int column) {
         boolean isWord(String word) {
-            return kind == Kind.WORD && text.equals(word);
+            return kind == Kind.WORD && new String(bytes, StandardCharsets.US_ASCII).equals(word);
         }
 
         boolean isSymbol(char symbol) {
-            return kind == Kind.SYMBOL && text.length() == 1 && text.charAt(0) == symbol;
+            return kind == Kind.SYMBOL && bytes.length == 1 && bytes[0] == symbol;
         }
     }
 
     /** protoc's lexical rules, as far as finding imports needs them. */
     private static final class Lexer {
-        private final String source;
+        private final byte[] source;
         private int position;
         private int line = 1;
-        private int column = 1;
+        private int column;
 
-        Lexer(String source) {
+        Lexer(byte[] source) {
             this.source = source;
         }
 
         List<Token> tokens() {
             List<Token> tokens = new ArrayList<>();
-            while (position < source.length()) {
-                char c = source.charAt(position);
-                if (Character.isWhitespace(c) || c == '﻿') {
+            if (source.length >= 3 && (source[0] & 0xFF) == 0xEF && (source[1] & 0xFF) == 0xBB
+                    && (source[2] & 0xFF) == 0xBF) {
+                advance();
+                advance();
+                advance();
+            }
+            while (position < source.length) {
+                int c = source[position] & 0xFF;
+                if (c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == 0x0B) {
                     advance();
                 } else if (c == '/' && peek(1) == '/') {
-                    while (position < source.length() && source.charAt(position) != '\n') {
+                    while (position < source.length && source[position] != '\n') {
                         advance();
                     }
                 } else if (c == '/' && peek(1) == '*') {
                     advance();
                     advance();
-                    while (position < source.length() && !(source.charAt(position) == '*' && peek(1) == '/')) {
+                    while (position < source.length && !(source[position] == '*' && peek(1) == '/')) {
                         advance();
                     }
-                    if (position < source.length()) {
+                    if (position < source.length) {
                         advance();
                         advance();
                     }
                 } else {
                     int startLine = line;
-                    int startColumn = column;
+                    int startColumn = column + 1;
+                    int start = position;
                     if (c == '"' || c == '\'') {
                         tokens.add(new Token(Kind.STRING, string(c), startLine, startColumn));
-                    } else if (Character.isLetter(c) || c == '_') {
-                        int start = position;
-                        while (position < source.length()
-                                && (Character.isLetterOrDigit(source.charAt(position)) || source.charAt(position) == '_')) {
+                    } else if (isWordStart(c)) {
+                        while (position < source.length && isWordPart(source[position] & 0xFF)) {
                             advance();
                         }
-                        tokens.add(new Token(Kind.WORD, source.substring(start, position), startLine, startColumn));
+                        tokens.add(new Token(Kind.WORD, slice(start, position), startLine, startColumn));
                     } else {
                         advance();
-                        tokens.add(new Token(Kind.SYMBOL, String.valueOf(c), startLine, startColumn));
+                        tokens.add(new Token(Kind.SYMBOL, slice(start, position), startLine, startColumn));
                     }
                 }
             }
             return tokens;
         }
 
-        /** A string literal's value, with its escapes decoded; it ends at its quote or at the end of the line. */
-        private String string(char quote) {
+        /** A string literal's bytes, escapes decoded; it ends at its quote or at the end of the line. */
+        private byte[] string(int quote) {
             advance();
-            StringBuilder value = new StringBuilder();
-            while (position < source.length()) {
-                char c = source.charAt(position);
+            ByteArrayOutputStream value = new ByteArrayOutputStream();
+            while (position < source.length) {
+                int c = source[position] & 0xFF;
                 if (c == quote) {
                     advance();
                     break;
@@ -151,57 +176,81 @@ final class ProtoImports {
                     break;
                 }
                 advance();
-                if (c != '\\' || position >= source.length()) {
-                    value.append(c);
+                if (c != '\\' || position >= source.length) {
+                    value.write(c);
                     continue;
                 }
-                char escape = source.charAt(position);
+                int escape = source[position] & 0xFF;
                 advance();
                 switch (escape) {
-                    case 'a' -> value.append('\u0007');
-                    case 'b' -> value.append('\b');
-                    case 'f' -> value.append('\f');
-                    case 'n' -> value.append('\n');
-                    case 'r' -> value.append('\r');
-                    case 't' -> value.append('\t');
-                    case 'v' -> value.append('\u000B');
-                    case 'x', 'X' -> value.appendCodePoint(number(16, 2, 0));
-                    case 'u' -> value.appendCodePoint(number(16, 4, 0));
-                    case 'U' -> value.appendCodePoint(number(16, 8, 0));
+                    case 'a' -> value.write(0x07);
+                    case 'b' -> value.write('\b');
+                    case 'f' -> value.write('\f');
+                    case 'n' -> value.write('\n');
+                    case 'r' -> value.write('\r');
+                    case 't' -> value.write('\t');
+                    case 'v' -> value.write(0x0B);
+                    case 'x', 'X' -> value.write(number(16, 2, 0));
+                    case 'u' -> writeUtf8(value, number(16, 4, 0));
+                    case 'U' -> writeUtf8(value, number(16, 8, 0));
                     default -> {
                         if (escape >= '0' && escape <= '7') {
-                            value.appendCodePoint(number(8, 2, escape - '0'));
+                            value.write(number(8, 2, escape - '0'));
                         } else {
-                            value.append(escape);
+                            value.write(escape);
                         }
                     }
                 }
             }
-            return value.toString();
+            return value.toByteArray();
         }
 
         /** Up to maxDigits more digits in the radix, accumulated onto value. */
         private int number(int radix, int maxDigits, int value) {
-            for (int i = 0; i < maxDigits && position < source.length(); i++) {
-                int digit = Character.digit(source.charAt(position), radix);
+            for (int i = 0; i < maxDigits && position < source.length; i++) {
+                int digit = Character.digit(source[position] & 0xFF, radix);
                 if (digit < 0) {
                     break;
                 }
                 value = value * radix + digit;
                 advance();
             }
-            return Character.isValidCodePoint(value) ? value : '?';
+            return value;
         }
 
-        private char peek(int offset) {
+        /** A Unicode escape's code point, as UTF-8; one that is no code point, as '?'. */
+        private static void writeUtf8(ByteArrayOutputStream out, int codePoint) {
+            String text = Character.isValidCodePoint(codePoint) ? new String(Character.toChars(codePoint)) : "?";
+            out.writeBytes(text.getBytes(StandardCharsets.UTF_8));
+        }
+
+        private static boolean isWordStart(int c) {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+        }
+
+        private static boolean isWordPart(int c) {
+            return isWordStart(c) || (c >= '0' && c <= '9');
+        }
+
+        private byte[] slice(int start, int end) {
+            byte[] bytes = new byte[end - start];
+            System.arraycopy(source, start, bytes, 0, bytes.length);
+            return bytes;
+        }
+
+        private int peek(int offset) {
             int index = position + offset;
-            return index < source.length() ? source.charAt(index) : '\0';
+            return index < source.length ? source[index] & 0xFF : -1;
         }
 
+        /** Moves past one byte, counting lines and protoc's 0-based columns. */
         private void advance() {
-            if (source.charAt(position) == '\n') {
+            byte b = source[position];
+            if (b == '\n') {
                 line++;
-                column = 1;
+                column = 0;
+            } else if (b == '\t') {
+                column += TAB_WIDTH - column % TAB_WIDTH;
             } else {
                 column++;
             }
