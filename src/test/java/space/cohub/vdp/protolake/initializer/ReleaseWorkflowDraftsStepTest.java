@@ -24,38 +24,43 @@ import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import java.util.stream.IntStream;
+import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assumptions.assumeTrue;
 
 /**
- * Runs the release-PR lookups of the scaffolded {@code release.yml}'s
- * release-please job: the hold step, which drafts every ready release PR
- * before release-please can move it, and the drafts step, which builds the
- * regenerate-release-branch matrix from each release PR release-please opened
- * or moved in the run (the action's {@code prs} output, of which only numbers
- * and head branches reach the environment) and every other open draft release
- * PR, once each, and puts a reported PR that is ready back to draft. A
- * reported PR counts only if it is open on a branch of the repository itself:
- * release-please matches its PR by branch name alone. One the paged list
- * missed is looked up by number.
+ * Runs the release-PR handling of the scaffolded {@code release.yml}. The
+ * release-please job holds every ready release PR before release-please can
+ * move it, readies again each held one whose head is the regenerate job's
+ * commit, and then judges every open release PR by its head commit: a
+ * regenerated one is ready, any other goes back to draft and into the
+ * regenerate-release-branch matrix. The regenerate job's commit carries a
+ * Regenerated-by trailer, made even when nothing changed. release-please's
+ * {@code prs} output, of which only numbers and head branches reach the
+ * environment, is only a hint for a PR the paged list missed, which is looked
+ * up by number and kept only if it is open on a branch of the repository
+ * itself.
  *
- * <p>Both page through every open PR with the REST API and keep the release
- * PRs in jq. Given {@code --label}, gh answers from the search index, which
- * shows a PR, its label and its draft state only a moment after they change:
- * cohub-protolake#271 stayed a draft with stale BUILD files because a label
- * list ran 0.3 s after release-please opened it.
+ * <p>Both lookups page through every open PR with the REST API and keep the
+ * release PRs in jq. Given {@code --label}, gh answers from the search index,
+ * which shows a PR, its label and its draft state only a moment after they
+ * change: cohub-protolake#271 stayed a draft with stale BUILD files because a
+ * label list ran 0.3 s after release-please opened it.
  *
  * <p>Each step's script runs under the command GitHub runs for its declared
- * shell, with the env GitHub evaluates for it and a stub gh. The stub answers
- * {@code gh api --paginate} a page of 100 PRs at a time, applying
- * {@code --jq} to each page as gh does, and {@code gh api .../pulls/N} with
- * one PR, open or not, or a 404; for older copies of the workflow it
- * also answers {@code gh pr list}, from the open PRs as they are or, given
- * {@code --label}, from a search-index fixture that can lag, with gh's field
- * projection and default limit of 30. Skipped when bash or jq is not on the
- * PATH. The cohub-protolake repository runs the same cases against its own
+ * shell, with the env GitHub evaluates for it and a stub gh over fixture
+ * files. The stub answers {@code gh api --paginate} a page of 100 PRs at a
+ * time, applying {@code --jq} to each page as gh does; {@code gh api
+ * .../pulls/N} and {@code .../commits/SHA} with one object or a 404, or a 503
+ * where a case says so; and {@code gh pr ready [--undo]} by changing the PR's
+ * draft state in every view but the search index, so steps run in sequence
+ * see each other's changes. For older copies of the workflow it also answers
+ * {@code gh pr view} and {@code gh pr list}, from the open PRs as they are or,
+ * given {@code --label}, from a search-index fixture that can lag, with gh's
+ * field projection and default limit of 30. Skipped when bash or jq is not on
+ * the PATH. The cohub-protolake repository runs the same cases against its own
  * {@code release.yml} in {@code scripts/test_release_drafts.py}.
  */
 class ReleaseWorkflowDraftsStepTest {
@@ -64,6 +69,7 @@ class ReleaseWorkflowDraftsStepTest {
     private static final ObjectMapper JSON = new ObjectMapper();
     private static final String REPOSITORY = "cohub-space/a-lake";
     private static final String LABEL = "autorelease: pending";
+    private static final String TRAILER = "Regenerated-by: release-workflow";
     private static final String BRANCH = "release-please--branches--main";
     private static final String AUTHZ = "release-please--branches--main--components--authz";
     private static final String BOT = "release-please--branches--main--components--bot";
@@ -74,7 +80,7 @@ class ReleaseWorkflowDraftsStepTest {
     private static final int MAX_ENV_ENTRY = 131072;
 
     private static final Pattern STEP_OUTPUT =
-            Pattern.compile("\\$\\{\\{\\s*steps\\.release\\.outputs\\.([a-z_]+)\\s*}}");
+            Pattern.compile("\\$\\{\\{\\s*steps\\.([a-z_-]+)\\.outputs\\.([a-z_]+)\\s*}}");
     private static final Pattern OUTPUT_FIELD = Pattern.compile(
             "\\$\\{\\{\\s*toJSON\\(fromJSON\\(steps\\.release\\.outputs\\.([a-z_]+) \\|\\| '\\[\\]'\\)"
                     + "\\.\\*\\.([A-Za-z_]+)\\)\\s*}}");
@@ -90,23 +96,62 @@ class ReleaseWorkflowDraftsStepTest {
     private static final String STUB_GH = """
             #!/bin/bash
             printf '%s\\n' "$*" >> "$GH_CALLS"
+            F=$GH_FIXTURES
             fail() { echo "stub gh: $*" >&2; exit 2; }
+            unavailable() { echo "gh: Service Unavailable (HTTP 503)" >&2; exit 1; }
             # Applies --jq as gh does: strings raw, everything else as compact JSON.
             emit() { jq -rc "$expr"; }
+            # Sets PR $1's draft state to $2 in every view of it but the search index.
+            set_draft() {
+              for f in pulls lookup; do
+                jq -c --argjson n "$1" --argjson d "$2" 'map(if .number == $n then .draft = $d else . end)' \\
+                  "$F/$f.json" > "$F/$f.tmp" && mv "$F/$f.tmp" "$F/$f.json"
+              done
+              jq -c --argjson n "$1" --argjson d "$2" 'map(if .number == $n then .isDraft = $d else . end)' \\
+                "$F/pr-list.json" > "$F/pr-list.tmp" && mv "$F/pr-list.tmp" "$F/pr-list.json"
+            }
             case "$1 $2" in
-              "pr ready") exit 0 ;;
-              "pr list"|api\\ *) [ -z "$GH_FAIL" ] || fail "the lookup failed" ;;
+              "pr list"|"pr view"|api\\ *) [ -z "$GH_FAIL" ] || fail "the lookup failed" ;;
             esac
             case "$1 $2" in
+              "pr ready")
+                shift 2
+                draft=false; n=
+                while [ $# -gt 0 ]; do
+                  case "$1" in
+                    --undo) draft=true; shift ;;
+                    -R) [ "$2" = "$GITHUB_REPOSITORY" ] || fail "unexpected repository $2"; shift 2 ;;
+                    -*) fail "unexpected argument $1" ;;
+                    *) n=$1; shift ;;
+                  esac
+                done
+                set_draft "$n" "$draft" ;;
+              "pr view")
+                n=$3; shift 3
+                fields=; expr=
+                while [ $# -gt 0 ]; do
+                  case "$1" in
+                    -R) [ "$2" = "$GITHUB_REPOSITORY" ] || fail "unexpected repository $2" ;;
+                    --json) fields=$2 ;;
+                    --jq) expr=$2 ;;
+                    *) fail "unexpected argument $1" ;;
+                  esac
+                  shift 2
+                done
+                jq -c --argjson n "$n" --arg fields "$fields" '
+                  ($fields | split(",")) as $keep
+                  | map(select(.number == $n)) | first // error("no such PR")
+                  | .state |= ascii_upcase | .headRefOid = .head.sha | .isDraft = .draft
+                  | with_entries(select(.key as $k | any($keep[]; . == $k)))' "$F/lookup.json" | emit ;;
               "pr list")
                 shift 2
-                prs=$GH_FIXTURES/pr-list.json; fields=; expr=; limit=30
+                prs=$F/pr-list.json; fields=; expr=; limit=30
                 while [ $# -gt 0 ]; do
                   case "$1" in
                     -R) [ "$2" = "$GITHUB_REPOSITORY" ] || fail "unexpected repository $2" ;;
                     --state) [ "$2" = open ] || fail "unexpected state $2" ;;
                     --label) [ "$2" = "autorelease: pending" ] || fail "unexpected label $2"
-                             prs=$GH_FIXTURES/label-search.json ;;
+                             prs=$F/label-search.json ;;
                     -L|--limit) limit=$2 ;;
                     --json) fields=$2 ;;
                     --jq) expr=$2 ;;
@@ -132,13 +177,20 @@ class ReleaseWorkflowDraftsStepTest {
                   "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100")
                     # A page per 100 PRs, the first one only without --paginate.
                     jq -c 'if length == 0 then [] else range(0; length; 100) as $i | .[$i:$i + 100] end' \\
-                        "$GH_FIXTURES/pulls.json" | { if $paginate; then cat; else head -1; fi; } |
+                        "$F/pulls.json" | { if $paginate; then cat; else head -1; fi; } |
                       while IFS= read -r page; do printf '%s' "$page" | emit || exit 3; done ;;
                   "repos/$GITHUB_REPOSITORY/pulls/"[0-9]*)
-                    pr=$(jq -c --argjson n "${path##*/}" 'map(select(.number == $n)) | first // empty' \\
-                        "$GH_FIXTURES/lookup.json")
+                    n=${path##*/}
+                    if jq -e --argjson n "$n" 'index($n)' "$F/failing-lookups.json" > /dev/null; then unavailable; fi
+                    pr=$(jq -c --argjson n "$n" 'map(select(.number == $n)) | first // empty' "$F/lookup.json")
                     [ -n "$pr" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
                     printf '%s' "$pr" | emit ;;
+                  "repos/$GITHUB_REPOSITORY/commits/"?*)
+                    sha=${path##*/}
+                    if jq -e --arg s "$sha" 'index($s)' "$F/failing-commits.json" > /dev/null; then unavailable; fi
+                    commit=$(jq -c --arg s "$sha" '.[$s] // empty' "$F/commits.json")
+                    [ -n "$commit" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+                    printf '%s' "$commit" | emit ;;
                   *) fail "unexpected path $path" ;;
                 esac ;;
               *) fail "unexpected call: $*" ;;
@@ -157,60 +209,40 @@ class ReleaseWorkflowDraftsStepTest {
     /** The #271 race: the label search does not show the PR yet; the open PRs do. */
     @Test
     void aPrReleasePleaseJustOpened_isRegenerated() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(271, true, BRANCH)),
-                reported(releasePleasePr(271, BRANCH, 0)), List.of(), false);
+        List<Pr> openPrs = List.of(releasePr(271, true, BRANCH));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(), List.of(), false, List.of(), List.of()),
+                "drafts", reported(releasePleasePr(271, BRANCH, 0)));
 
         assertThat(run.matrix()).isEqualTo(entries(271, BRANCH));
         assertThat(tempDir.resolve("pwned")).as("the PR body reaches the script as data").doesNotExist();
     }
 
-    /**
-     * A PR closed during the paged read moved #12 onto a page already read;
-     * release-please reopened #12 from a snooze, ready, and moved it.
-     */
     @Test
-    void aReportedPrTheListMissed_isLookedUpAndRegenerated() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(14, true, AUTHZ)),
-                reported(releasePleasePr(12, BRANCH, 0)), caughtUp(List.of()), false,
-                List.of(releasePr(12, false, BRANCH)));
+    void aReportedPrWhoseLabelIsNotVisibleYet_isRegenerated() throws Exception {
+        StepRun run = runIn(repo(tempDir, List.of(new Pr(271, true, BRANCH, "", REPOSITORY, "open", false))),
+                "drafts", reported(releasePleasePr(271, BRANCH, 0)));
 
-        assertThat(run.matrix()).isEqualTo(entries(12, BRANCH, 14, AUTHZ));
-        assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
-        assertThat(run.log()).doesNotContain("::warning::");
+        assertThat(run.matrix()).isEqualTo(entries(271, BRANCH));
     }
 
-    /** release-please matched #75, a ready fork PR, by its branch name; #76 is closed. */
     @Test
-    void aReportedPrNotOpenOnThisRepository_isDroppedWithAWarning() throws Exception {
-        List<OpenPr> openPrs = List.of(forkPr(75, false, "someone/a-lake", BRANCH), releasePr(14, true, AUTHZ));
-        StepRun run = runStep(tempDir, "drafts", openPrs,
-                reported(releasePleasePr(75, BRANCH, 0), releasePleasePr(76, VDP, 0)), caughtUp(openPrs), false,
-                List.of(closedPr(76, VDP)));
+    void aReadyPrReleasePleaseMoved_goesBackToDraftAndIsRegenerated() throws Exception {
+        Repo repo = repo(tempDir, List.of(releasePr(12, false, BRANCH)));
 
-        assertThat(run.matrix()).isEqualTo(entries(14, AUTHZ));
-        assertThat(run.undone()).isEmpty();
-        assertThat(run.log().lines().filter(line -> line.startsWith("::warning::")).toList())
-                .satisfiesExactly(
-                        warning -> assertThat(warning).contains("#75"),
-                        warning -> assertThat(warning).contains("#76"));
-    }
-
-    /** The hold step drafted #12 before release-please moved it. */
-    @Test
-    void aMovedPrAListStillShowsReady_isRegenerated() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(12, false, BRANCH)),
-                reported(releasePleasePr(12, BRANCH, 0)));
+        StepRun run = runIn(repo, "drafts", reported(releasePleasePr(12, BRANCH, 0)));
 
         assertThat(run.matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
+        assertThat(repo.draft(12)).isTrue();
     }
 
     /** release-please reopened #12 from a snooze, ready; the hold step never saw it. */
     @Test
     void aReportedPrThatIsReady_goesBackToDraft() throws Exception {
-        StepRun run = runStep(tempDir, "drafts",
-                List.of(featurePr(13, false), releasePr(12, false, BRANCH), releasePr(30, true, VDP),
-                        releasePr(26, false, BOT)),
-                reported(releasePleasePr(12, BRANCH, 0), releasePleasePr(30, VDP, 0)));
+        StepRun run = runIn(repo(tempDir,
+                        List.of(featurePr(13, false), releasePr(12, false, BRANCH), releasePr(30, true, VDP),
+                                regeneratedPr(26, false, BOT))),
+                "drafts", reported(releasePleasePr(12, BRANCH, 0), releasePleasePr(30, VDP, 0)));
 
         assertThat(run.matrix()).isEqualTo(entries(12, BRANCH, 30, VDP));
         assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
@@ -219,83 +251,188 @@ class ReleaseWorkflowDraftsStepTest {
     @Test
     void olderDraftsJoinTheReportedPrs_onceEach_otherPrsStayOut() throws Exception {
         String iam = "release-please--branches--main--components--iam";
-        StepRun run = runStep(tempDir, "drafts",
-                List.of(releasePr(31, true, iam),
-                        featurePr(40, true),
-                        releasePr(30, true, VDP),
-                        // left a draft by an earlier failed run, and seen on two pages
-                        releasePr(25, true, AUTHZ),
-                        releasePr(25, true, AUTHZ),
-                        // readied again by the hold step: release-please left it alone
-                        releasePr(26, false, BOT)),
-                reported(releasePleasePr(30, VDP, 0), releasePleasePr(31, iam, 0)));
+        StepRun run = runIn(repo(tempDir,
+                        List.of(releasePr(31, true, iam),
+                                featurePr(40, true),
+                                releasePr(30, true, VDP),
+                                // left a draft by an earlier failed run, and seen on two pages
+                                releasePr(25, true, AUTHZ),
+                                releasePr(25, true, AUTHZ),
+                                // regenerated and readied by an earlier run
+                                regeneratedPr(26, false, BOT))),
+                "drafts", reported(releasePleasePr(30, VDP, 0), releasePleasePr(31, iam, 0)));
 
         assertThat(run.matrix()).isEqualTo(entries(25, AUTHZ, 30, VDP, 31, iam));
     }
 
     @Test
-    void nothingReportedAndNoDraftReleasePr_leavesTheMatrixEmpty() throws Exception {
-        StepRun run = runStep(tempDir, "drafts",
-                List.of(featurePr(27, true), releasePr(26, false, BRANCH)),
-                Map.of("prs_created", "false"));
+    void nothingReportedAndNothingToRegenerate_leavesTheMatrixEmpty() throws Exception {
+        StepRun run = runIn(repo(tempDir, List.of(featurePr(27, true), regeneratedPr(26, false, BRANCH))),
+                "drafts", Map.of("prs_created", "false"));
 
         assertThat(run.matrix()).isEqualTo(JSON.createArrayNode());
         assertThat(run.undone()).isEmpty();
+        assertThat(run.readied()).isEmpty();
     }
 
     @Test
     void noPullRequestOutputsAtAll_leaveTheMatrixEmpty() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(), Map.of());
+        StepRun run = runIn(repo(tempDir, List.of()), "drafts", Map.of());
 
         assertThat(run.matrix()).isEqualTo(JSON.createArrayNode());
     }
 
     @Test
-    void aReportedPrTheOutputsCannotName_failsTheStep() throws Exception {
-        StepRun missing = runStep(tempDir.resolve("missing"), "drafts", List.of(),
-                Map.of("prs_created", "true"));
+    void aReportedPrTheOutputsCannotName_failsTheStepAfterTheListedPrs() throws Exception {
+        StepRun missing = runIn(repo(tempDir.resolve("missing"), List.of(releasePr(14, true, AUTHZ))),
+                "drafts", Map.of("prs_created", "true"));
         assertThat(missing.exitCode()).as("step output:\n%s", missing.log()).isNotZero();
-        assertThat(missing.written()).isEmpty();
+        assertThat(missing.writtenMatrix()).isEqualTo(entries(14, AUTHZ));
 
         ObjectNode nameless = releasePleasePr(40, BRANCH, 0);
         nameless.remove("headBranchName");
-        StepRun unnamed = runStep(tempDir.resolve("nameless"), "drafts", List.of(),
-                reported(nameless, releasePleasePr(41, BRANCH, 0)));
+        StepRun unnamed = runIn(repo(tempDir.resolve("nameless"), List.of(releasePr(14, true, AUTHZ))),
+                "drafts", reported(nameless, releasePleasePr(41, BRANCH, 0)));
         assertThat(unnamed.exitCode()).as("step output:\n%s", unnamed.log()).isNotZero();
-        assertThat(unnamed.written()).isEmpty();
+        assertThat(unnamed.writtenMatrix()).isEqualTo(entries(14, AUTHZ));
     }
 
     @Test
     void aReportedPrWithAnEmptyBranch_failsTheStep() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(40, true, BRANCH)),
-                reported(releasePleasePr(40, "", 0)));
+        StepRun run = runIn(repo(tempDir, List.of(releasePr(40, true, BRANCH))),
+                "drafts", reported(releasePleasePr(40, "", 0)));
 
         assertThat(run.exitCode()).as("step output:\n%s", run.log()).isNotZero();
-        assertThat(run.written()).isEmpty();
     }
 
     /** release-please reports number 0 for a PR it opened from an empty change set. */
     @Test
     void aReportedPrNumberedZero_failsTheStep() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(), reported(releasePleasePr(0, BRANCH, 0)));
+        StepRun run = runIn(repo(tempDir, List.of()), "drafts", reported(releasePleasePr(0, BRANCH, 0)));
 
         assertThat(run.exitCode()).as("step output:\n%s", run.log()).isNotZero();
-        assertThat(run.written()).isEmpty();
     }
 
     @Test
     void draftsList_readsTheOpenPrsNotTheSearchIndex() throws Exception {
-        StepRun run = runStep(tempDir, "drafts",
-                List.of(featurePr(60, true),
-                        // a draft release PR whose label the search index has not caught up with
-                        releasePr(50, true, AUTHZ),
-                        // readied again a moment ago; the search index still shows it a draft
-                        releasePr(26, false, BOT)),
-                Map.of("prs_created", "false"),
-                List.of(releasePr(26, true, BOT)), false);
+        List<Pr> openPrs = List.of(featurePr(60, true),
+                // a draft release PR whose label the search index has not caught up with
+                releasePr(50, true, AUTHZ),
+                // regenerated and readied a moment ago; the search index still shows it a draft
+                regeneratedPr(26, false, BOT));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(), List.of(releasePr(26, true, BOT)), false,
+                List.of(), List.of()), "drafts", Map.of("prs_created", "false"));
 
         assertThat(run.matrix()).isEqualTo(entries(50, AUTHZ));
         assertThat(run.lookups()).isNotEmpty().allSatisfy(call -> assertThat(call).doesNotContain("--label"));
+    }
+
+    /**
+     * A PR closed during the paged read moved #12 onto a page already read;
+     * release-please reopened #12 from a snooze, ready, and moved it.
+     */
+    @Test
+    void aReportedPrTheListMissed_isLookedUpAndRegenerated() throws Exception {
+        List<Pr> openPrs = List.of(releasePr(14, true, AUTHZ));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(releasePr(12, false, BRANCH)), caughtUp(openPrs),
+                false, List.of(), List.of()), "drafts", reported(releasePleasePr(12, BRANCH, 0)));
+
+        assertThat(run.matrix()).isEqualTo(entries(12, BRANCH, 14, AUTHZ));
+        assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
+        assertThat(run.annotations("warning")).isEmpty();
+    }
+
+    /** release-please matched #75, a ready fork PR, by its branch name; #76 is closed. */
+    @Test
+    void aReportedPrNotOpenOnThisRepository_isDroppedWithAWarning() throws Exception {
+        List<Pr> openPrs = List.of(forkPr(75, false, "someone/a-lake", BRANCH), releasePr(14, true, AUTHZ));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(closedPr(76, VDP)), caughtUp(openPrs), false,
+                        List.of(), List.of()),
+                "drafts", reported(releasePleasePr(75, BRANCH, 0), releasePleasePr(76, VDP, 0)));
+
+        assertThat(run.matrix()).isEqualTo(entries(14, AUTHZ));
+        assertThat(run.undone()).isEmpty();
+        assertThat(run.annotations("warning")).satisfiesExactly(
+                warning -> assertThat(warning).contains("#75"),
+                warning -> assertThat(warning).contains("#76"));
+    }
+
+    /** #12, reported and missed by the list, cannot be looked up; #20 and #14 were listed. */
+    @Test
+    void aFailedLookup_stillHandlesTheVerifiedPrsThenFailsTheStep() throws Exception {
+        List<Pr> openPrs = List.of(releasePr(20, false, VDP), releasePr(14, true, AUTHZ));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(releasePr(12, false, BRANCH)), caughtUp(openPrs),
+                false, List.of(12), List.of()), "drafts", reported(releasePleasePr(12, BRANCH, 0)));
+
+        assertThat(run.exitCode()).as("step output:\n%s", run.log()).isNotZero();
+        assertThat(run.writtenMatrix()).isEqualTo(entries(14, AUTHZ, 20, VDP));
+        assertThat(run.undone()).containsExactly("pr ready --undo 20 -R " + REPOSITORY);
+        assertThat(run.annotations("error")).anySatisfy(error -> assertThat(error).contains("#12"));
+    }
+
+    @Test
+    void anUnreadableHeadCommit_countsAsNotRegenerated() throws Exception {
+        List<Pr> openPrs = List.of(regeneratedPr(20, false, VDP), releasePr(14, true, AUTHZ));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(), caughtUp(openPrs), false, List.of(),
+                List.of(20)), "drafts", Map.of("prs_created", "false"));
+
+        assertThat(run.exitCode()).as("step output:\n%s", run.log()).isNotZero();
+        assertThat(run.writtenMatrix()).isEqualTo(entries(14, AUTHZ, 20, VDP));
+        assertThat(run.undone()).containsExactly("pr ready --undo 20 -R " + REPOSITORY);
+    }
+
+    @Test
+    void aRetryAfterAFailedLookup_regeneratesThePrRatherThanReadyingIt() throws Exception {
+        // Run 1: release-please reopened #12 ready and moved it; the list missed
+        // it and its lookup failed.
+        List<Pr> openPrs = List.of(releasePr(14, true, AUTHZ));
+        StepRun first = runIn(new Repo(tempDir.resolve("first"), openPrs, List.of(releasePr(12, false, BRANCH)),
+                caughtUp(openPrs), false, List.of(12), List.of()), "drafts", reported(releasePleasePr(12, BRANCH, 0)));
+        assertThat(first.exitCode()).isNotZero();
+
+        // The retry: release-please reports nothing; #14 was regenerated meanwhile.
+        Repo retry = repo(tempDir.resolve("retry"),
+                List.of(releasePr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ)));
+        JobRun job = runJob(retry, Map.of("prs_created", "false"));
+
+        assertThat(job.readyAgain().readied()).containsExactly("pr ready 14 -R " + REPOSITORY);
+        assertThat(job.drafts().matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(retry.draft(12)).isTrue();
+        assertThat(retry.draft(14)).isFalse();
+    }
+
+    @Test
+    void aPrTheListMissed_isRegeneratedOnTheNextRunWithNothingReported() throws Exception {
+        // Run 1: the list missed #12, ready since release-please reopened it, and
+        // release-please reported nothing.
+        List<Pr> openPrs = List.of(releasePr(14, true, AUTHZ));
+        StepRun first = runIn(new Repo(tempDir.resolve("first"), openPrs, List.of(releasePr(12, false, BRANCH)),
+                caughtUp(openPrs), false, List.of(), List.of()), "drafts", Map.of("prs_created", "false"));
+        assertThat(first.matrix()).isEqualTo(entries(14, AUTHZ));
+
+        Repo next = repo(tempDir.resolve("next"), List.of(releasePr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ)));
+        JobRun job = runJob(next, Map.of("prs_created", "false"));
+
+        assertThat(job.drafts().matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(next.draft(12)).isTrue();
+    }
+
+    @Test
+    void aRegeneratedPrIsReadied_andAReleasePleaseHeadedPrNeverIs() throws Exception {
+        Repo repo = repo(tempDir, List.of(
+                regeneratedPr(12, false, BRANCH),
+                releasePr(13, false, VDP),
+                // regenerated, but its ready call failed in an earlier run
+                regeneratedPr(14, true, AUTHZ),
+                releasePr(15, true, BOT)));
+
+        JobRun job = runJob(repo, Map.of("prs_created", "false"));
+
+        assertThat(job.drafts().matrix()).isEqualTo(entries(13, VDP, 15, BOT));
+        assertThat(List.of(repo.draft(12), repo.draft(13), repo.draft(14), repo.draft(15)))
+                .containsExactly(false, true, false, true);
+        assertThat(Stream.concat(job.readyAgain().readied().stream(), job.drafts().readied().stream()))
+                .noneMatch(call -> call.startsWith("pr ready 13 ") || call.startsWith("pr ready 15 "));
     }
 
     /**
@@ -304,33 +441,30 @@ class ReleaseWorkflowDraftsStepTest {
      */
     @Test
     void holdStep_holdsAPrMarkedReadyOnlyOnAFreshLookup() throws Exception {
-        StepRun run = runStep(tempDir, "hold",
-                List.of(featurePr(13, false), releasePr(12, false, BRANCH), releasePr(14, true, AUTHZ)),
-                Map.of(),
-                List.of(releasePr(12, true, BRANCH), releasePr(14, true, AUTHZ)), false);
+        List<Pr> openPrs = List.of(featurePr(13, false), regeneratedPr(12, false, BRANCH), releasePr(14, true, AUTHZ));
+        StepRun run = runIn(new Repo(tempDir, openPrs, List.of(),
+                List.of(releasePr(12, true, BRANCH), releasePr(14, true, AUTHZ)), false, List.of(), List.of()),
+                "hold", Map.of());
 
-        assertThat(run.output("held")).isEqualTo(held(12));
+        assertThat(run.output("held").split(":")[0]).isEqualTo("12");
         assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
         assertThat(run.lookups()).isNotEmpty().allSatisfy(call -> assertThat(call).doesNotContain("--label"));
     }
 
     @Test
     void holdStep_neverHoldsAForkPr() throws Exception {
-        StepRun run = runStep(tempDir, "hold",
-                List.of(forkPr(70, false, "someone/a-lake"), forkPr(72, false, DELETED_FORK),
-                        releasePr(12, false, BRANCH)),
-                Map.of());
+        StepRun run = runIn(repo(tempDir, List.of(forkPr(70, false, "someone/a-lake", "main"),
+                forkPr(72, false, DELETED_FORK, "main"), regeneratedPr(12, false, BRANCH))), "hold", Map.of());
 
-        assertThat(run.output("held")).isEqualTo(held(12));
+        assertThat(run.output("held").split(":")[0]).isEqualTo("12");
         assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
     }
 
     @Test
     void draftsList_neverRegeneratesAForkPr() throws Exception {
-        StepRun run = runStep(tempDir, "drafts",
-                List.of(forkPr(71, true, "someone/a-lake"), forkPr(73, true, DELETED_FORK),
-                        releasePr(14, true, AUTHZ)),
-                Map.of("prs_created", "false"));
+        StepRun run = runIn(repo(tempDir, List.of(forkPr(71, true, "someone/a-lake", "main"),
+                        forkPr(73, true, DELETED_FORK, "main"), releasePr(14, true, AUTHZ))),
+                "drafts", Map.of("prs_created", "false"));
 
         assertThat(run.matrix()).isEqualTo(entries(14, AUTHZ));
     }
@@ -338,16 +472,15 @@ class ReleaseWorkflowDraftsStepTest {
     /** Newest first: 1,050 newer PRs put the release PRs past any page or limit. */
     @Test
     void bothLookups_seeEveryOpenPr() throws Exception {
-        List<OpenPr> openPrs = new ArrayList<>();
+        List<Pr> openPrs = new ArrayList<>();
         IntStream.iterate(2100, n -> n > 1050, n -> n - 1).forEach(n -> openPrs.add(featurePr(n, false)));
-        openPrs.add(releasePr(12, false, BRANCH));
+        openPrs.add(regeneratedPr(12, false, BRANCH));
         openPrs.add(releasePr(14, true, AUTHZ));
 
-        StepRun hold = runStep(tempDir.resolve("hold"), "hold", openPrs, Map.of());
-        StepRun drafts = runStep(tempDir.resolve("drafts"), "drafts", openPrs,
-                Map.of("prs_created", "false"));
+        StepRun hold = runIn(repo(tempDir.resolve("hold"), openPrs), "hold", Map.of());
+        StepRun drafts = runIn(repo(tempDir.resolve("drafts"), openPrs), "drafts", Map.of("prs_created", "false"));
 
-        assertThat(hold.output("held")).isEqualTo(held(12));
+        assertThat(hold.output("held").split(":")[0]).isEqualTo("12");
         assertThat(drafts.matrix()).isEqualTo(entries(14, AUTHZ));
     }
 
@@ -365,9 +498,9 @@ class ReleaseWorkflowDraftsStepTest {
             assertThat(value).doesNotContain("a changelog line");
         });
 
-        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(31, true, BRANCH + "--components--c31"),
-                releasePr(32, true, BRANCH + "--components--c32"), releasePr(33, true, BRANCH + "--components--c33")),
-                outputs);
+        StepRun run = runIn(repo(tempDir, List.of(releasePr(31, true, BRANCH + "--components--c31"),
+                releasePr(32, true, BRANCH + "--components--c32"), releasePr(33, true, BRANCH + "--components--c33"))),
+                "drafts", outputs);
         assertThat(run.matrix()).isEqualTo(entries(31, BRANCH + "--components--c31",
                 32, BRANCH + "--components--c32", 33, BRANCH + "--components--c33"));
     }
@@ -387,9 +520,9 @@ class ReleaseWorkflowDraftsStepTest {
     @Test
     void aFailedLookup_failsTheStep() throws Exception {
         for (String stepId : List.of("hold", "drafts")) {
-            List<OpenPr> openPrs = List.of(releasePr(12, false, BRANCH));
-            StepRun run = runStep(tempDir.resolve(stepId), stepId, openPrs, Map.of("prs_created", "false"),
-                    caughtUp(openPrs), true);
+            List<Pr> openPrs = List.of(releasePr(12, false, BRANCH));
+            StepRun run = runIn(new Repo(tempDir.resolve(stepId), openPrs, List.of(), caughtUp(openPrs), true,
+                    List.of(), List.of()), stepId, Map.of("prs_created", "false"));
 
             assertThat(run.exitCode()).as("%s step output:\n%s", stepId, run.log()).isNotZero();
             assertThat(run.written()).as(stepId).isEmpty();
@@ -404,8 +537,62 @@ class ReleaseWorkflowDraftsStepTest {
         assertThat(job.path("steps")).allSatisfy(step -> assertThat(step.has("shell")).isFalse());
     }
 
-    /** A PR: its number, draft state, head branch, label, head repository and state. */
-    private record OpenPr(int number, boolean draft, String branch, String label, String repo, String state) {
+    /**
+     * The drafts step fails after handling every PR it could read, and a re-run
+     * finds no new release to publish.
+     */
+    @Test
+    void aFailedReleasePleaseJob_stillRegeneratesAndPublishes() throws Exception {
+        JsonNode jobs = workflow().path("jobs");
+
+        for (String name : List.of("regenerate-release-branch", "publish")) {
+            assertThat(jobs.path(name).path("if").asText().replace(" ", "")).as(name).startsWith("${{!cancelled()&&");
+        }
+    }
+
+    @Test
+    void regenerateCommit_carriesTheTrailerEvenWhenNothingChanged() throws Exception {
+        assumeTrue(available("git", "--version"), "git not available on PATH");
+        String commitStep = StreamSupport.stream(
+                        workflow().at("/jobs/regenerate-release-branch/steps").spliterator(), false)
+                .filter(s -> "Commit the regenerated files to the release branch".equals(s.path("name").asText()))
+                .findFirst().orElseThrow().get("run").asText();
+        Path origin = tempDir.resolve("origin.git");
+        Path lake = tempDir.resolve("lake");
+        git(tempDir, "init", "-q", "--bare", origin.toString());
+        git(tempDir, "init", "-q", "-b", BRANCH, lake.toString());
+        for (String path : List.of("a/BUILD.bazel", ".bazelrc.remote-cache", "MODULE.bazel", "package.json",
+                "pnpm-lock.yaml", "protolakew", "tools/defs.bzl")) {
+            Files.createDirectories(lake.resolve(path).getParent());
+            Files.writeString(lake.resolve(path), "generated\n");
+        }
+        git(lake, "add", "-A");
+        git(lake, "-c", "user.name=release-please", "-c", "user.email=rp@example.com",
+                "commit", "-q", "-m", "chore(main): release main");
+        git(lake, "remote", "add", "origin", origin.toString());
+        git(lake, "push", "-q", "origin", "HEAD:" + BRANCH);
+        String regenerated = workflow().at("/jobs/release-please/env/REGENERATED_HEAD").asText();
+
+        for (String change : new String[] {null, "a/BUILD.bazel"}) {
+            if (change != null) {
+                Files.writeString(lake.resolve(change), "regenerated\n");
+            }
+            Command step = run(lake, Map.of("HOME", tempDir.toString(), "RELEASE_BRANCH", BRANCH),
+                    null, "bash", "-e", "-c", commitStep);
+            assertThat(step.exitCode()).as("commit step output:\n%s", step.output()).isZero();
+            String message = git(origin, "log", "-1", "--format=%B", BRANCH).strip();
+            String commit = JSON.writeValueAsString(
+                    JSON.createObjectNode().set("commit", JSON.createObjectNode().put("message", message)));
+            assertThat(run(tempDir, Map.of(), commit, "jq", "-r", regenerated).output().strip())
+                    .as("%s: %s", change, message).isEqualTo("true");
+            assertThat(git(origin, "show", BRANCH + ":a/BUILD.bazel"))
+                    .isEqualTo(change != null ? "regenerated\n" : "generated\n");
+        }
+    }
+
+    /** A PR: its number, draft state, head branch, label, head repository, state and head commit. */
+    private record Pr(int number, boolean draft, String branch, String label, String repo, String state,
+            boolean regenerated) {
 
         String sha() {
             return "%040x".formatted(number);
@@ -418,7 +605,7 @@ class ReleaseWorkflowDraftsStepTest {
             pr.put("isDraft", draft);
             pr.put("headRefName", branch);
             pr.put("headRefOid", sha());
-            pr.putArray("labels").addObject().put("name", label).put("color", "ededed");
+            labels(pr);
             return pr;
         }
 
@@ -438,30 +625,52 @@ class ReleaseWorkflowDraftsStepTest {
                 head.putObject("repo").put("full_name", repo);
             }
             pr.putObject("base").put("ref", "main");
-            pr.putArray("labels").addObject().put("name", label).put("color", "ededed");
+            labels(pr);
             return pr;
+        }
+
+        /** No label at all when {@code label} is empty. */
+        private void labels(ObjectNode pr) {
+            ArrayNode labels = pr.putArray("labels");
+            if (!label.isEmpty()) {
+                labels.addObject().put("name", label).put("color", "ededed");
+            }
+        }
+
+        /** The PR's head commit as the REST commits API reports it, abridged. */
+        ObjectNode commit() {
+            ObjectNode commit = JSON.createObjectNode().put("sha", sha());
+            commit.putObject("commit").put("message", regenerated
+                    ? "chore: regenerate the lake's generated files for the release versions\n\n" + TRAILER
+                    : "chore(main): release main");
+            return commit;
         }
     }
 
-    private static OpenPr releasePr(int number, boolean draft, String branch) {
-        return new OpenPr(number, draft, branch, LABEL, REPOSITORY, "open");
+    private static Pr releasePr(int number, boolean draft, String branch) {
+        return new Pr(number, draft, branch, LABEL, REPOSITORY, "open", false);
     }
 
-    private static OpenPr closedPr(int number, String branch) {
-        return new OpenPr(number, false, branch, LABEL, REPOSITORY, "closed");
+    private static Pr regeneratedPr(int number, boolean draft, String branch) {
+        return new Pr(number, draft, branch, LABEL, REPOSITORY, "open", true);
     }
 
-    private static OpenPr featurePr(int number, boolean draft) {
-        return new OpenPr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY, "open");
+    private static Pr closedPr(int number, String branch) {
+        return new Pr(number, false, branch, LABEL, REPOSITORY, "closed", false);
     }
 
-    /** A fork PR labelled as a release PR, its branch named after the base branch. */
-    private static OpenPr forkPr(int number, boolean draft, String repo) {
-        return forkPr(number, draft, repo, "main");
+    private static Pr featurePr(int number, boolean draft) {
+        return new Pr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY, "open", false);
     }
 
-    private static OpenPr forkPr(int number, boolean draft, String repo, String branch) {
-        return new OpenPr(number, draft, branch, LABEL, repo, "open");
+    /** A fork PR labelled as a release PR. */
+    private static Pr forkPr(int number, boolean draft, String repo, String branch) {
+        return new Pr(number, draft, branch, LABEL, repo, "open", false);
+    }
+
+    /** What a {@code --label} list returns from a search index that has caught up. */
+    private static List<Pr> caughtUp(List<Pr> openPrs) {
+        return openPrs.stream().filter(pr -> LABEL.equals(pr.label())).toList();
     }
 
     /** The PullRequest object release-please-action reports in {@code prs}. */
@@ -488,10 +697,6 @@ class ReleaseWorkflowDraftsStepTest {
         return Map.of("prs_created", "true", "prs", array.toString());
     }
 
-    private static String held(int number) {
-        return number + ":" + "%040x".formatted(number);
-    }
-
     /** Matrix entries from (number, branch) pairs. */
     private static ArrayNode entries(Object... numberBranchPairs) {
         ArrayNode array = JSON.createArrayNode();
@@ -503,26 +708,32 @@ class ReleaseWorkflowDraftsStepTest {
         return array;
     }
 
-    private static ArrayNode array(List<OpenPr> prs, Function<OpenPr, ObjectNode> shape) {
+    private static ArrayNode array(List<Pr> prs, Function<Pr, ObjectNode> shape) {
         ArrayNode array = JSON.createArrayNode();
         prs.forEach(pr -> array.add(shape.apply(pr)));
         return array;
     }
 
-    /** The value GitHub gives a step env expression of the forms the steps use. */
-    private static String evaluate(String expression, Map<String, String> outputs) throws IOException {
+    /** The value GitHub gives an env value of the forms the workflow uses. */
+    private static String evaluate(String expression, Map<String, Map<String, String>> steps) throws IOException {
         String text = expression.strip();
+        if (!text.contains("${{")) {
+            return text;
+        }
+        if (text.equals("${{ github.token }}")) {
+            return "a-token";
+        }
         Matcher output = STEP_OUTPUT.matcher(text);
         if (output.matches()) {
-            // An output the action did not set reads as an empty string.
-            return outputs.getOrDefault(output.group(1), "");
+            // An output a step did not set reads as an empty string.
+            return steps.getOrDefault(output.group(1), Map.of()).getOrDefault(output.group(2), "");
         }
         Matcher field = OUTPUT_FIELD.matcher(text);
         if (field.matches()) {
             // `a || b` is the first truthy operand; `.*.key` skips an item that
             // lacks the key (actions/runner Index.HandleFilteredArray); toJSON
             // pretty-prints.
-            String json = outputs.getOrDefault(field.group(1), "");
+            String json = steps.getOrDefault("release", Map.of()).getOrDefault(field.group(1), "");
             ArrayNode values = JSON.createArrayNode();
             for (JsonNode item : JSON.readTree(json.isEmpty() ? "[]" : json)) {
                 if (item.has(field.group(2))) {
@@ -534,84 +745,121 @@ class ReleaseWorkflowDraftsStepTest {
         throw new AssertionError("the harness does not model " + expression);
     }
 
-    private Map<String, String> stepEnv(String stepId, Map<String, String> outputs) throws IOException {
-        Map<String, String> env = new LinkedHashMap<>();
-        for (Map.Entry<String, JsonNode> var : jobStep(stepId).path("env").properties()) {
-            env.put(var.getKey(), evaluate(var.getValue().asText(), outputs));
+    private static Map<String, String> evaluateAll(JsonNode env, Map<String, Map<String, String>> steps)
+            throws IOException {
+        Map<String, String> values = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonNode> var : env.properties()) {
+            values.put(var.getKey(), evaluate(var.getValue().asText(), steps));
         }
-        return env;
+        return values;
     }
 
-    /** What a {@code --label} list returns from a search index that has caught up. */
-    private static List<OpenPr> caughtUp(List<OpenPr> openPrs) {
-        return openPrs.stream().filter(pr -> LABEL.equals(pr.label())).toList();
-    }
-
-    /** Runs one step with a search index that has caught up with the open PRs. */
-    private StepRun runStep(Path dir, String stepId, List<OpenPr> openPrs, Map<String, String> outputs)
-            throws Exception {
-        return runStep(dir, stepId, openPrs, outputs, caughtUp(openPrs), false);
-    }
-
-    private StepRun runStep(Path dir, String stepId, List<OpenPr> openPrs, Map<String, String> outputs,
-            List<OpenPr> labelSearch, boolean lookupsFail) throws Exception {
-        return runStep(dir, stepId, openPrs, outputs, labelSearch, lookupsFail, List.of());
+    private Map<String, String> stepEnv(String stepId, Map<String, String> outputs) throws IOException {
+        return evaluateAll(jobStep(stepId).path("env"), Map.of("release", outputs));
     }
 
     /**
-     * Runs one step of the release-please job. {@code openPrs} are the open PRs
-     * as they are, newest first; {@code labelSearch} is what a {@code --label}
-     * list returns from the search index; {@code lookupsFail} makes every gh
-     * lookup exit non-zero; {@code missed} are PRs, open or closed, that the
-     * paged list does not return but a lookup by number does.
+     * What the stub gh answers: the open PRs as they are, newest first; PRs only
+     * a lookup by number finds (missed, open or closed); the search index's
+     * answer to a {@code --label} list; and the lookups that fail.
      */
-    private StepRun runStep(Path dir, String stepId, List<OpenPr> openPrs, Map<String, String> outputs,
-            List<OpenPr> labelSearch, boolean lookupsFail, List<OpenPr> missed) throws Exception {
-        JsonNode job = workflow().path("jobs").path("release-please");
+    private static final class Repo {
+        final Path dir;
+        final Path bin;
+        final Path fixtures;
+        final boolean lookupsFail;
+        int runs;
+
+        Repo(Path dir, List<Pr> openPrs, List<Pr> missed, List<Pr> labelSearch, boolean lookupsFail,
+                List<Integer> failingLookups, List<Integer> failingCommits) throws IOException {
+            this.dir = Files.createDirectories(dir);
+            this.lookupsFail = lookupsFail;
+            bin = Files.createDirectories(dir.resolve("bin"));
+            Path gh = bin.resolve("gh");
+            Files.writeString(gh, STUB_GH);
+            Files.setPosixFilePermissions(gh, PosixFilePermissions.fromString("rwxr-xr-x"));
+            // Fixtures go through files: a thousand PRs outgrow an environment entry.
+            fixtures = Files.createDirectories(dir.resolve("fixtures"));
+            List<Pr> everyone = new ArrayList<>(openPrs);
+            everyone.addAll(missed);
+            ObjectNode commits = JSON.createObjectNode();
+            everyone.forEach(pr -> commits.set(pr.sha(), pr.commit()));
+            ArrayNode failingShas = JSON.createArrayNode();
+            everyone.stream().filter(pr -> failingCommits.contains(pr.number())).forEach(pr -> failingShas.add(pr.sha()));
+            write("pr-list.json", array(openPrs, Pr::listed));
+            write("label-search.json", array(labelSearch, Pr::listed));
+            write("pulls.json", array(openPrs, Pr::pull));
+            write("lookup.json", array(everyone, Pr::pull));
+            write("commits.json", commits);
+            write("failing-lookups.json", JSON.valueToTree(failingLookups));
+            write("failing-commits.json", failingShas);
+        }
+
+        private void write(String name, JsonNode value) throws IOException {
+            Files.writeString(fixtures.resolve(name), value.toString());
+        }
+
+        boolean draft(int number) throws IOException {
+            for (JsonNode pr : JSON.readTree(fixtures.resolve("lookup.json").toFile())) {
+                if (pr.path("number").asInt() == number) {
+                    return pr.path("draft").asBoolean();
+                }
+            }
+            throw new AssertionError("no PR #" + number);
+        }
+    }
+
+    private static Repo repo(Path dir, List<Pr> openPrs) throws IOException {
+        return new Repo(dir, openPrs, List.of(), caughtUp(openPrs), false, List.of(), List.of());
+    }
+
+    private StepRun runIn(Repo repo, String stepId, Map<String, String> outputs) throws Exception {
+        return runIn(repo, stepId, outputs, "");
+    }
+
+    /** Runs one step of the release-please job against the repository's stub. */
+    private StepRun runIn(Repo repo, String stepId, Map<String, String> outputs, String held) throws Exception {
+        JsonNode workflow = workflow();
+        JsonNode job = workflow.path("jobs").path("release-please");
         JsonNode step = jobStep(stepId);
         String shell = step.has("shell") ? step.path("shell").asText()
                 : job.path("defaults").path("run").path("shell").asText();
         assertThat(SHELLS).as("the shells the test models").containsKey(shell);
 
-        Path bin = Files.createDirectories(dir.resolve("bin"));
-        Path gh = bin.resolve("gh");
-        Files.writeString(gh, STUB_GH);
-        Files.setPosixFilePermissions(gh, PosixFilePermissions.fromString("rwxr-xr-x"));
-        // Fixtures go through files: a thousand PRs outgrow an environment entry.
-        Path fixtures = Files.createDirectories(dir.resolve("fixtures"));
-        Files.writeString(fixtures.resolve("pr-list.json"), array(openPrs, OpenPr::listed).toString());
-        Files.writeString(fixtures.resolve("label-search.json"), array(labelSearch, OpenPr::listed).toString());
-        Files.writeString(fixtures.resolve("pulls.json"), array(openPrs, OpenPr::pull).toString());
-        List<OpenPr> lookup = new ArrayList<>(openPrs);
-        lookup.addAll(missed);
-        Files.writeString(fixtures.resolve("lookup.json"), array(lookup, OpenPr::pull).toString());
-        Path script = dir.resolve("step.sh");
+        Path runDir = Files.createDirectories(repo.dir.resolve("run-" + repo.runs++ + "-" + stepId));
+        Path script = runDir.resolve("step.sh");
         Files.writeString(script, step.get("run").asText());
-        Path output = Files.createFile(dir.resolve("output"));
-        Path calls = Files.createFile(dir.resolve("gh-calls"));
+        Path output = Files.createFile(runDir.resolve("output"));
+        Path calls = Files.createFile(runDir.resolve("gh-calls"));
 
-        List<String> command = new ArrayList<>(SHELLS.get(shell));
-        command.add(script.toString());
-        ProcessBuilder builder = new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true);
-        Map<String, String> env = builder.environment();
-        env.clear();
-        env.put("PATH", bin + ":" + System.getenv("PATH"));
+        Map<String, Map<String, String>> steps = Map.of("release", outputs, "hold", Map.of("held", held));
+        Map<String, String> env = new LinkedHashMap<>();
+        env.putAll(evaluateAll(workflow.path("env"), steps));
+        env.putAll(evaluateAll(job.path("env"), steps));
+        env.putAll(evaluateAll(step.path("env"), steps));
+        env.put("PATH", repo.bin + ":" + System.getenv("PATH"));
         env.put("GITHUB_REPOSITORY", REPOSITORY);
         env.put("GITHUB_OUTPUT", output.toString());
         env.put("GH_CALLS", calls.toString());
-        env.put("GH_FIXTURES", fixtures.toString());
-        env.put("GH_FAIL", lookupsFail ? "1" : "");
-        Map<String, String> stepEnv = stepEnv(stepId, outputs);
-        env.putAll(stepEnv);
+        env.put("GH_FIXTURES", repo.fixtures.toString());
+        env.put("GH_FAIL", repo.lookupsFail ? "1" : "");
 
-        Process process = builder.start();
-        String log = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
-        assertThat(process.waitFor(60, TimeUnit.SECONDS)).isTrue();
+        List<String> command = new ArrayList<>(SHELLS.get(shell));
+        command.add(script.toString());
+        Command result = run(runDir, env, null, command.toArray(String[]::new));
         List<Map.Entry<String, String>> written = Files.readAllLines(output).stream()
                 .map(line -> line.split("=", 2))
                 .map(parts -> Map.entry(parts[0], parts.length > 1 ? parts[1] : ""))
                 .toList();
-        return new StepRun(process.exitValue(), log, written, Files.readAllLines(calls), stepEnv);
+        return new StepRun(result.exitCode(), result.output(), written, Files.readAllLines(calls));
+    }
+
+    /** Runs the job's steps around release-please: hold, ready-again when something is held, then drafts. */
+    private JobRun runJob(Repo repo, Map<String, String> outputs) throws Exception {
+        StepRun hold = runIn(repo, "hold", Map.of());
+        String held = hold.output("held");
+        StepRun readyAgain = held.isEmpty() ? null : runIn(repo, "ready-again", outputs, held);
+        return new JobRun(hold, readyAgain, runIn(repo, "drafts", outputs));
     }
 
     private JsonNode workflow() throws IOException {
@@ -621,11 +869,41 @@ class ReleaseWorkflowDraftsStepTest {
         }
     }
 
+    /** A step by id; "ready-again" is the step that runs on what the hold step held. */
     private JsonNode jobStep(String stepId) throws IOException {
         return StreamSupport.stream(workflow().at("/jobs/release-please/steps").spliterator(), false)
-                .filter(s -> stepId.equals(s.path("id").asText()))
+                .filter(s -> stepId.equals("ready-again")
+                        ? s.path("if").asText().contains("steps.hold.outputs.held")
+                        : stepId.equals(s.path("id").asText()))
                 .findFirst()
                 .orElseThrow(() -> new AssertionError("no " + stepId + " step in " + TEMPLATE));
+    }
+
+    private record Command(int exitCode, String output) {}
+
+    /** Runs a command with only the given environment (plus PATH), and stdin if not null. */
+    private static Command run(Path dir, Map<String, String> env, String stdin, String... command) throws Exception {
+        ProcessBuilder builder = new ProcessBuilder(command).directory(dir.toFile()).redirectErrorStream(true);
+        builder.environment().clear();
+        builder.environment().put("PATH", System.getenv("PATH"));
+        builder.environment().put("GIT_CONFIG_GLOBAL", "/dev/null");
+        builder.environment().put("GIT_CONFIG_NOSYSTEM", "1");
+        builder.environment().putAll(env);
+        Process process = builder.start();
+        if (stdin != null) {
+            process.getOutputStream().write(stdin.getBytes(StandardCharsets.UTF_8));
+        }
+        process.getOutputStream().close();
+        String output = new String(process.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        assertThat(process.waitFor(60, TimeUnit.SECONDS)).isTrue();
+        return new Command(process.exitValue(), output);
+    }
+
+    private static String git(Path dir, String... args) throws Exception {
+        String[] command = Stream.concat(Stream.of("git"), Stream.of(args)).toArray(String[]::new);
+        Command result = run(dir, Map.of(), null, command);
+        assertThat(result.exitCode()).as("git %s:\n%s", String.join(" ", args), result.output()).isZero();
+        return result.output();
     }
 
     private static boolean available(String command, String versionFlag) {
@@ -638,17 +916,22 @@ class ReleaseWorkflowDraftsStepTest {
         }
     }
 
-    private record StepRun(int exitCode, String log, List<Map.Entry<String, String>> written,
-            List<String> calls, Map<String, String> env) {
+    private record JobRun(StepRun hold, StepRun readyAgain, StepRun drafts) {}
+
+    private record StepRun(int exitCode, String log, List<Map.Entry<String, String>> written, List<String> calls) {
 
         /** The step's single value for an output, once it exited 0. */
         String output(String name) {
             assertThat(exitCode).as("step output:\n%s", log).isZero();
+            return written(name);
+        }
+
+        String written(String name) {
             List<String> values = written.stream()
                     .filter(line -> line.getKey().equals(name))
                     .map(Map.Entry::getValue)
                     .toList();
-            assertThat(values).as("%s outputs", name).hasSize(1);
+            assertThat(values).as("%s outputs; step output:\n%s", name, log).hasSize(1);
             return values.get(0);
         }
 
@@ -657,12 +940,25 @@ class ReleaseWorkflowDraftsStepTest {
             return JSON.readTree(output("prs"));
         }
 
+        /** The {@code prs} output a step wrote before it failed. */
+        JsonNode writtenMatrix() throws IOException {
+            return JSON.readTree(written("prs"));
+        }
+
         List<String> lookups() {
             return calls.stream().filter(call -> !call.startsWith("pr ready")).toList();
         }
 
         List<String> undone() {
             return calls.stream().filter(call -> call.startsWith("pr ready --undo")).toList();
+        }
+
+        List<String> readied() {
+            return calls.stream().filter(call -> call.startsWith("pr ready ") && !call.contains("--undo")).toList();
+        }
+
+        List<String> annotations(String kind) {
+            return log.lines().filter(line -> line.startsWith("::" + kind + "::")).toList();
         }
     }
 }
