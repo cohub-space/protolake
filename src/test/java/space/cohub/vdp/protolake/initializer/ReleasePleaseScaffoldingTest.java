@@ -83,10 +83,11 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
      * BUILD files: release-please opens it as a draft; release.yml holds a
      * ready one as a draft before release-please can move it, readies again
      * the ones it left alone, and regenerates each one release-please opened
-     * or moved (from the action's outputs) and every other draft, marking it
-     * ready only after pushing. Its lists filter release PRs in jq: a
-     * {@code --label} list reads the search index, which lags.
-     * ReleaseWorkflowDraftsStepTest runs the hold and matrix steps.
+     * or moved (from the action's outputs, back to draft if it is ready) and
+     * every other draft, marking it ready only after pushing. Its lookups page
+     * through every open PR and filter release PRs in jq: a {@code --label}
+     * list reads the search index, which lags. ReleaseWorkflowDraftsStepTest
+     * runs the hold and matrix steps.
      */
     @Test
     void releasePrsStayDraftsUntilTheirBranchIsRegenerated() throws Exception {
@@ -106,17 +107,21 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
         int readyAgain = releasePlease.indexOf(
                 "if [ \"$head\" = \"$(echo \"$entry\" | cut -d: -f2)\" ]; then");
-        int reported = releasePlease.indexOf("REPORTED: ${{ steps.release.outputs.prs }}");
-        int drafts = releasePlease.indexOf(
-                "select(.isDraft and any(.labels[]; .name == \"autorelease: pending\"))");
+        int reported = releasePlease.indexOf(
+                "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}");
+        int backToDraft = releasePlease.indexOf("gh pr ready --undo \"$pr\"");
+        int drafts = releasePlease.indexOf("map(select(.draft) | del(.draft))");
         assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
+        assertThat(releasePlease).as("no PR body reaches the environment")
+                .doesNotContain("steps.release.outputs.prs }}");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
         assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);
         assertThat(releasePlease).contains("if: always() && steps.hold.outputs.held != ''");
         assertThat(reported).as("each PR release-please reported is regenerated")
                 .isGreaterThan(readyAgain);
-        assertThat(drafts).as("every other draft is regenerated").isGreaterThan(reported);
+        assertThat(backToDraft).as("a reported ready PR goes back to draft").isGreaterThan(reported);
+        assertThat(drafts).as("every other draft is regenerated").isGreaterThan(backToDraft);
         assertThat(releasePlease).contains("drafts:           ${{ steps.drafts.outputs.prs }}");
 
         String regenerate = release.substring(regenerateJob, release.indexOf("\n  publish:", regenerateJob));
