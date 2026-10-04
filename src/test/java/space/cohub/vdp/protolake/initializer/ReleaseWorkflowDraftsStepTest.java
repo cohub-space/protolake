@@ -11,6 +11,8 @@ import org.junit.jupiter.api.io.TempDir;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.math.BigDecimal;
+import java.math.MathContext;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -96,13 +98,19 @@ class ReleaseWorkflowDraftsStepTest {
             "${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}";
     private static final String BRANCHES =
             "${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}";
+    private static final String ENTRIES = "${{ join(fromJSON(steps.release.outputs.prs || '[]'), ',') }}";
+    private static final String NULLS = "${{ contains(fromJSON(steps.release.outputs.prs || '[]'), null) }}";
+    private static final Pattern JOINED = Pattern.compile(
+            "\\$\\{\\{\\s*join\\(fromJSON\\(steps\\.release\\.outputs\\.([a-z_]+) \\|\\| '\\[\\]'\\), ','\\)\\s*}}");
+    private static final Pattern HAS_NULL = Pattern.compile(
+            "\\$\\{\\{\\s*contains\\(fromJSON\\(steps\\.release\\.outputs\\.([a-z_]+) \\|\\| '\\[\\]'\\), null\\)"
+                    + "\\s*}}");
     private static final Map<String, String> REPORT_ENV = Map.of(
             "PRS_CREATED", "${{ steps.release.outputs.prs_created }}",
-            "REPORTED_NUMBERS", NUMBERS, "REPORTED_BRANCHES", BRANCHES);
+            "REPORTED_NUMBERS", NUMBERS, "REPORTED_BRANCHES", BRANCHES,
+            "REPORTED_ENTRIES", ENTRIES, "REPORTED_NULLS", NULLS);
     /** How a step reads release-please's report: through REPORTED_PRS, the one definition of a trusted one. */
-    private static final String REPORT_CHECK =
-            "reported=$(printf '%s\\n%s' \"$REPORTED_NUMBERS\" \"$REPORTED_BRANCHES\""
-            + " | jq -cs --arg created \"$PRS_CREATED\" \"$REPORTED_PRS\")";
+    private static final String REPORT_CHECK = "reported=$(jq -nc \"$REPORTED_PRS\")";
     private static final Pattern CONDITION =
             Pattern.compile("steps\\.([a-z_-]+)\\.(outputs\\.[a-z_]+|outcome) (==|!=) '([^']*)'");
     /** What GitHub runs for a step's shell (docs: "Supported shells"); empty is unspecified. */
@@ -516,9 +524,10 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     @Test
-    void aReport_isTrustedOnlyIfItNamesEachPrByWholeNumberAndBranch() throws Exception {
-        assertThat(checkReport(reported(releasePleasePr(12, BRANCH, 0), releasePleasePr(30, VDP, 0))))
-                .isEqualTo(entries(12, BRANCH, 30, VDP));
+    void aReport_isTrustedOnlyIfEachEntryIsAPrWithWholeNumberAndBranch() throws Exception {
+        assertThat(checkReport(reported(releasePleasePr(12, BRANCH, 0)))).isEqualTo(entries(12, BRANCH));
+        assertThat(checkReport(reported(releasePleasePr(12, BRANCH, 0), releasePleasePr(30, VDP, 0),
+                releasePleasePr(31, BOT, 0)))).isEqualTo(entries(12, BRANCH, 30, VDP, 31, BOT));
         assertThat(checkReport(Map.of("prs_created", "false"))).isEqualTo(JSON.createArrayNode());
         assertThat(checkReport(Map.of())).isEqualTo(JSON.createArrayNode());
         Map<String, Map<String, String>> untrusted = new LinkedHashMap<>();
@@ -530,9 +539,33 @@ class ReleaseWorkflowDraftsStepTest {
         untrusted.put("fractional number", changed(pr -> pr.put("number", 30.5)));
         untrusted.put("empty branch", changed(pr -> pr.put("headBranchName", "")));
         untrusted.put("branch not a string", changed(pr -> pr.put("headBranchName", 30)));
+        // The .* projections skip a missing field: these lists alone match.
+        untrusted.put("an entry with neither", reported(releasePleasePr(12, BRANCH, 0),
+                without(releasePleasePr(30, VDP, 0), "number", "headBranchName")));
+        untrusted.put("omissions that pair off", reported(without(releasePleasePr(12, BRANCH, 0), "headBranchName"),
+                without(releasePleasePr(30, VDP, 0), "number")));
+        untrusted.put("an entry that is not an object",
+                reported(releasePleasePr(12, BRANCH, 0), JSON.getNodeFactory().textNode("Object")));
+        untrusted.put("an entry that is null",
+                reported(releasePleasePr(12, BRANCH, 0), JSON.getNodeFactory().nullNode()));
+        untrusted.put("a lone null entry", Map.of("prs_created", "false", "prs", "[null]"));
+        Map<String, String> uncreated = new LinkedHashMap<>(reported(releasePleasePr(12, BRANCH, 0)));
+        uncreated.put("prs_created", "false");
+        untrusted.put("entries it says it did not create", uncreated);
         for (Map.Entry<String, Map<String, String>> report : untrusted.entrySet()) {
             assertThat(checkReport(report.getValue())).as(report.getKey()).isNull();
         }
+    }
+
+    @Test
+    void theRunner_countsEachEntryWithoutItsBody() throws Exception {
+        Map<String, String> env = stepEnv("drafts", reported(releasePleasePr(12, BRANCH, 0),
+                without(releasePleasePr(30, VDP, 0), "number", "headBranchName"), JSON.getNodeFactory().nullNode()));
+
+        assertThat(env.get("REPORTED_ENTRIES")).isEqualTo("Object,Object,");
+        assertThat(env.get("REPORTED_NULLS")).isEqualTo("true");
+        assertThat(JSON.readTree(env.get("REPORTED_NUMBERS"))).isEqualTo(JSON.readTree("[12]"));
+        assertThat(JSON.readTree(env.get("REPORTED_BRANCHES"))).isEqualTo(JSON.readTree("[\"" + BRANCH + "\"]"));
     }
 
     /**
@@ -564,31 +597,74 @@ class ReleaseWorkflowDraftsStepTest {
 
     /**
      * #30 is reported without its number or with its number as a string, or
-     * release-please says it created a PR and names none. Every branch reads
-     * as the regenerate commit; #12's and #30's lag release-please's push.
+     * release-please says it created a PR and names none.
      */
     @Test
     void aReportThatCannotBeTrusted_readiesNothingAndRegeneratesEveryReleasePr() throws Exception {
-        ObjectNode nameless = releasePleasePr(30, VDP, 0);
-        nameless.remove("number");
         ObjectNode string = releasePleasePr(30, VDP, 0);
         string.put("number", "30");
         Map<String, Map<String, String>> reports = new LinkedHashMap<>();
-        reports.put("nameless", reported(releasePleasePr(12, BRANCH, 0), nameless));
+        reports.put("nameless",
+                reported(releasePleasePr(12, BRANCH, 0), without(releasePleasePr(30, VDP, 0), "number")));
         reports.put("string", reported(releasePleasePr(12, BRANCH, 0), string));
         reports.put("none-named", Map.of("prs_created", "true"));
         for (Map.Entry<String, Map<String, String>> report : reports.entrySet()) {
-            Repo repo = repo(tempDir.resolve(report.getKey()), List.of(regeneratedPr(12, false, BRANCH),
-                    regeneratedPr(14, false, AUTHZ), regeneratedPr(30, false, VDP)));
+            assertUntrustedReportRegeneratesEveryReleasePr(tempDir.resolve(report.getKey()), report.getValue(),
+                    report.getKey());
+        }
+    }
 
-            JobRun job = runJob(repo, report.getValue());
+    /** The .* projections skip #30's entry, so both lists name #12 alone. */
+    @Test
+    void aReportWithAnEntryLackingBothNumberAndBranch_isNotTrusted() throws Exception {
+        assertUntrustedReportRegeneratesEveryReleasePr(tempDir, reported(releasePleasePr(12, BRANCH, 0),
+                without(releasePleasePr(30, VDP, 0), "number", "headBranchName")), "");
+    }
 
-            assertThat(job.readied()).as(report.getKey()).isEmpty();
-            assertThat(job.step("drafts").exitCode()).as(report.getKey()).isNotZero();
-            assertThat(job.step("drafts").writtenMatrix()).as(report.getKey())
-                    .isEqualTo(entries(12, BRANCH, 14, AUTHZ, 30, VDP));
-            assertThat(List.of(repo.draft(12), repo.draft(14), repo.draft(30))).as(report.getKey())
-                    .containsOnly(true);
+    /** #12 lacks its branch and #30 its number: the lists are [12] and [VDP]. */
+    @Test
+    void aReportWhoseOmissionsPairOff_isNotTrusted() throws Exception {
+        assertUntrustedReportRegeneratesEveryReleasePr(tempDir, reported(
+                without(releasePleasePr(12, BRANCH, 0), "headBranchName"),
+                without(releasePleasePr(30, VDP, 0), "number")), "");
+    }
+
+    /**
+     * Runs the job on #12, #14 and #30, ready on regenerated branches, after
+     * release-please reported #12 and #30 as outputs say; their branches lag
+     * its push.
+     */
+    private void assertUntrustedReportRegeneratesEveryReleasePr(Path dir, Map<String, String> outputs, String name)
+            throws Exception {
+        Repo repo = repo(dir, List.of(regeneratedPr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ),
+                regeneratedPr(30, false, VDP)));
+
+        JobRun job = runJob(repo, outputs);
+
+        assertThat(job.readied()).as(name).isEmpty();
+        assertThat(job.step("drafts").exitCode()).as(name).isNotZero();
+        assertThat(job.step("drafts").writtenMatrix()).as(name).isEqualTo(entries(12, BRANCH, 14, AUTHZ, 30, VDP));
+        assertThat(List.of(repo.draft(12), repo.draft(14), repo.draft(30))).as(name).containsOnly(true);
+    }
+
+    /** Every branch reads as the regenerate commit; the reported PRs lag release-please's push. */
+    @Test
+    void aWholeReportOfOneOrThreePrs_isTrusted() throws Exception {
+        List<Pr> prs = List.of(regeneratedPr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ),
+                regeneratedPr(30, false, VDP), regeneratedPr(31, false, BOT));
+        Map<Integer, String> branches = Map.of(12, BRANCH, 14, AUTHZ, 30, VDP, 31, BOT);
+        for (List<Integer> moved : List.of(List.of(12), List.of(12, 30, 31))) {
+            Repo repo = repo(tempDir.resolve(String.valueOf(moved.size())), prs);
+
+            JobRun job = runJob(repo, reported(moved.stream()
+                    .map(n -> releasePleasePr(n, branches.get(n), 0)).toArray(JsonNode[]::new)));
+
+            ArrayNode matrix = JSON.createArrayNode();
+            moved.forEach(n -> matrix.addObject().put("number", n).put("headRefName", branches.get(n)));
+            assertThat(job.step("drafts").matrix()).as("%s", moved).isEqualTo(matrix);
+            assertThat(job.readied()).as("%s", moved).containsExactlyInAnyOrderElementsOf(
+                    branches.keySet().stream().filter(n -> !moved.contains(n))
+                            .map(n -> "pr ready " + n + " -R " + REPOSITORY).toList());
         }
     }
 
@@ -599,8 +675,7 @@ class ReleaseWorkflowDraftsStepTest {
      */
     @Test
     void anUntrustedReport_stillRegeneratesEachPrItNumbers() throws Exception {
-        ObjectNode nameless = releasePleasePr(30, VDP, 0);
-        nameless.remove("number");
+        ObjectNode nameless = without(releasePleasePr(30, VDP, 0), "number");
         List<Pr> openPrs = List.of(regeneratedPr(14, false, AUTHZ));
         Repo repo = new Repo(tempDir, openPrs, List.of(releasePr(12, false, BRANCH)), caughtUp(openPrs), false,
                 List.of(), List.of());
@@ -621,16 +696,21 @@ class ReleaseWorkflowDraftsStepTest {
         return reported(releasePleasePr(12, BRANCH, 0), pr);
     }
 
+    /** The PR without the given fields. */
+    private static ObjectNode without(ObjectNode pr, String... fields) {
+        pr.remove(List.of(fields));
+        return pr;
+    }
+
     /**
-     * {@code REPORTED_PRS} on the env a step gets from release-please's
-     * outputs: the reported PRs, or null for a report it does not trust.
+     * {@code REPORTED_PRS} on the env the drafts step gets from
+     * release-please's outputs: the reported PRs, or null for a report it does
+     * not trust.
      */
     private JsonNode checkReport(Map<String, String> outputs) throws Exception {
-        Map<String, String> env = stepEnv("drafts", outputs);
         String program = workflow().at("/jobs/release-please/env/REPORTED_PRS").asText();
         assertThat(program).isNotEmpty();
-        Command result = run(tempDir, Map.of(), env.get("REPORTED_NUMBERS") + "\n" + env.get("REPORTED_BRANCHES"),
-                "jq", "-cs", "--arg", "created", env.get("PRS_CREATED"), program);
+        Command result = run(tempDir, stepEnv("drafts", outputs), null, "jq", "-nc", program);
         return result.exitCode() == 0 ? JSON.readTree(result.output()) : null;
     }
 
@@ -748,14 +828,15 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     @Test
-    void draftsStep_takesOnlyNumberAndBranchFromPrs() throws Exception {
+    void draftsStep_takesNoPrBodyFromPrs() throws Exception {
         Map<String, String> env = new LinkedHashMap<>();
         for (Map.Entry<String, JsonNode> var : jobStep("drafts").path("env").properties()) {
             env.put(var.getKey(), var.getValue().asText());
         }
 
         assertThat(env).isEqualTo(Map.of("PRS_CREATED", "${{ steps.release.outputs.prs_created }}",
-                "REPORTED_NUMBERS", NUMBERS, "REPORTED_BRANCHES", BRANCHES));
+                "REPORTED_NUMBERS", NUMBERS, "REPORTED_BRANCHES", BRANCHES,
+                "REPORTED_ENTRIES", ENTRIES, "REPORTED_NULLS", NULLS));
     }
 
     /** A lookup piped into another command fails the step only under pipefail. */
@@ -947,9 +1028,9 @@ class ReleaseWorkflowDraftsStepTest {
         return pr;
     }
 
-    private static Map<String, String> reported(ObjectNode... prs) {
+    private static Map<String, String> reported(JsonNode... prs) {
         ArrayNode array = JSON.createArrayNode();
-        for (ObjectNode pr : prs) {
+        for (JsonNode pr : prs) {
             array.add(pr);
         }
         return Map.of("prs_created", "true", "prs", array.toString());
@@ -1000,7 +1081,79 @@ class ReleaseWorkflowDraftsStepTest {
             }
             return JSON.writerWithDefaultPrettyPrinter().writeValueAsString(values);
         }
+        Matcher joined = JOINED.matcher(text);
+        if (joined.matches()) {
+            // join converts each item to a string (actions/runner Functions/Join).
+            List<String> strings = new ArrayList<>();
+            for (JsonNode item : items(steps, joined.group(1))) {
+                strings.add(runnerString(item));
+            }
+            return String.join(",", strings);
+        }
+        Matcher hasNull = HAS_NULL.matcher(text);
+        if (hasNull.matches()) {
+            // contains compares each item with null by AbstractEqual (Functions/Contains).
+            for (JsonNode item : items(steps, hasNull.group(1))) {
+                if (equalsNull(item)) {
+                    return "true";
+                }
+            }
+            return "false";
+        }
         throw new AssertionError("the harness does not model " + expression);
+    }
+
+    private static JsonNode items(Map<String, Map<String, String>> steps, String output) throws IOException {
+        String json = steps.getOrDefault("release", Map.of()).getOrDefault(output, "");
+        return JSON.readTree(json.isEmpty() ? "[]" : json);
+    }
+
+    /**
+     * actions/runner EvaluationResult.ConvertToString: an object or array is
+     * its kind's name, null is empty, a number is formatted G15.
+     */
+    private static String runnerString(JsonNode item) {
+        if (item.isNull()) {
+            return "";
+        } else if (item.isBoolean()) {
+            return item.asBoolean() ? "true" : "false";
+        } else if (item.isNumber()) {
+            return item.isIntegralNumber() ? item.asText()
+                    : BigDecimal.valueOf(item.asDouble()).round(new MathContext(15)).stripTrailingZeros()
+                            .toPlainString();
+        } else if (item.isTextual()) {
+            return item.textValue();
+        }
+        return item.isArray() ? "Array" : "Object";
+    }
+
+    /**
+     * actions/runner AbstractEqual(null, item): null coerces to the number 0
+     * against any other primitive, and never equals an object or array.
+     */
+    private static boolean equalsNull(JsonNode item) {
+        return item.isNull() || (!item.isContainerNode() && runnerNumber(item) == 0d);
+    }
+
+    /**
+     * actions/runner EvaluationResult.ConvertToNumber: JavaScript's Number()
+     * for a primitive (ExpressionUtility.ParseNumber for a string).
+     */
+    private static double runnerNumber(JsonNode item) {
+        if (item.isBoolean()) {
+            return item.asBoolean() ? 1d : 0d;
+        } else if (item.isNumber()) {
+            return item.asDouble();
+        }
+        String text = item.asText().strip();
+        if (text.isEmpty()) {
+            return 0d;
+        } else if (text.matches("[+-]?(\\d+\\.?\\d*|\\.\\d+)([eE][+-]?\\d+)?")) {
+            return Double.parseDouble(text);
+        } else if (text.matches("0[xX][0-9a-fA-F]+")) {
+            return Long.parseLong(text.substring(2), 16);
+        }
+        return Double.NaN;
     }
 
     private static Map<String, String> evaluateAll(JsonNode env, Map<String, Map<String, String>> steps)

@@ -131,9 +131,11 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         assertThat(releasePlease.split(Pattern.quote("gh pr ready \"$pr\""), -1))
                 .as("only the drafts step readies a release PR").hasSize(2);
         assertThat(releasePlease).as("one definition of a trusted report").contains("REPORTED_PRS: |-");
-        assertThat(releasePlease.split(Pattern.quote(
-                "| jq -cs --arg created \"$PRS_CREATED\" \"$REPORTED_PRS\")"), -1))
+        assertThat(releasePlease.split(Pattern.quote("jq -nc \"$REPORTED_PRS\""), -1))
                 .as("the drafts step judges the report by it").hasSize(2);
+        assertThat(releasePlease).as("every entry of the report is counted, without its body")
+                .contains("REPORTED_ENTRIES: ${{ join(fromJSON(steps.release.outputs.prs || '[]'), ',') }}")
+                .contains("REPORTED_NULLS: ${{ contains(fromJSON(steps.release.outputs.prs || '[]'), null) }}");
         assertThat(releasePlease).as("an untrusted report regenerates every release PR")
                 .contains("if [ \"$trusted\" = false ] || printf '%s' \"$reported\"");
         assertThat(reported).as("each PR release-please reported is regenerated")

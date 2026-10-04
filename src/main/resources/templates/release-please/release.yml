@@ -43,15 +43,22 @@ jobs:
       # Whether a commit is the regenerate job's: its message carries the
       # Regenerated-by trailer that job adds, which release-please's never do.
       REGENERATED_HEAD: '.commit.message | split("\n") | any(. == "Regenerated-by: release-workflow")'
-      # release-please's report, from the numbers and the head branches of
-      # the PRs it opened or moved in this run, and whether it says it
-      # created any. The .* filter skips a PR that lacks the field, and
-      # transpose pads the shorter list with null. The program fails for a
-      # report it cannot trust: one naming a PR without a whole number and a
-      # head branch, or naming none when it says it created one.
+      # release-please's report, from what the drafts step's env takes of its
+      # prs output: the numbers and the head branches of the PRs it opened or
+      # moved in this run, the kind of each entry, whether an entry equals
+      # null, and whether it says it created any. The .* filter skips an
+      # entry that lacks the field, so the kinds count the entries: join
+      # writes "Object" for an object, never its body. join writes nothing
+      # for a null, so a report of one null entry would count as none; the
+      # null test catches it. The program fails for a report it cannot
+      # trust: one with an entry that is not an object with a whole number
+      # and a head branch, or whose prs_created disagrees with its entries.
       REPORTED_PRS: |-
-        transpose | map(. as [$number, $branch] | null | .number = $number | .headRefName = $branch)
-        | if ($created == "true" and length == 0)
+        [$ENV.REPORTED_NUMBERS, $ENV.REPORTED_BRANCHES | fromjson] | transpose
+        | map(. as [$number, $branch] | null | .number = $number | .headRefName = $branch)
+        | if $ENV.REPORTED_NULLS != "false"
+            or ($ENV.REPORTED_ENTRIES | split(",")) != [range(length) | "Object"]
+            or ($ENV.PRS_CREATED == "true") != (length > 0)
             or any(.[]; (.number | type) != "number" or .number <= 0 or .number != (.number | floor)
               or (.headRefName | type) != "string" or .headRefName == "")
           then error("release-please's report cannot be trusted")
@@ -105,20 +112,22 @@ jobs:
       # not trust, no tip is trusted either: every release PR, and every one
       # the report numbers, needs regenerating, and the step fails. The step
       # acts on every PR it could read before it fails for one it could not,
-      # and the next run reads that one again. Only each reported PR's number and
-      # head branch reach the environment: the output also carries every
-      # PR's body, and Linux will not start a process with an environment
-      # variable over 128 KiB.
+      # and the next run reads that one again. Of the report, only each PR's
+      # number and head branch and each entry's kind reach the environment:
+      # the output also carries every PR's body, and Linux will not start a
+      # process with an environment variable over 128 KiB.
       - name: List the release PRs to regenerate
         id: drafts
         env:
           PRS_CREATED: ${{ steps.release.outputs.prs_created }}
           REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}
           REPORTED_BRANCHES: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}
+          REPORTED_ENTRIES: ${{ join(fromJSON(steps.release.outputs.prs || '[]'), ',') }}
+          REPORTED_NULLS: ${{ contains(fromJSON(steps.release.outputs.prs || '[]'), null) }}
         run: |
           failed=false
           trusted=true
-          if ! reported=$(printf '%s\n%s' "$REPORTED_NUMBERS" "$REPORTED_BRANCHES" | jq -cs --arg created "$PRS_CREATED" "$REPORTED_PRS"); then
+          if ! reported=$(jq -nc "$REPORTED_PRS"); then
             echo "::error::release-please's report cannot be trusted; every release PR is regenerated"
             trusted=false
             failed=true
