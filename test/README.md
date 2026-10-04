@@ -39,7 +39,8 @@ test/
 ├── legacy/                full-pipeline bash suites, run on the host by `run.py e2e`
 │   ├── test_protolake.sh         gRPC API path through full build pipeline
 │   ├── test_cli.sh               CLI path through protolakew wrapper
-│   └── test_remote_publish.sh    remote publish flow with mock server
+│   ├── test_remote_publish.sh    remote publish flow with mock server
+│   └── test_foreign_owner.sh     protolake's git in a lake another user owns
 ├── fixtures/
 │   └── test-protos/       proto fixtures (company_a + company_b)
 └── runner/
@@ -62,6 +63,13 @@ They also drop every publishing setting a developer's shell may carry
 (`MAVEN_REPO`, `PYPI_REPO`, tokens, npm modes), so no run reaches a real
 registry. Native Karate equivalents, for clearer per-area assertions, would
 go under `e2e/`.
+
+`test_foreign_owner.sh` is the short one: it runs init, create-bundle and
+validate inside one container, as uid 1001 on a lake uid 4242 owns, which is
+how a bind-mounted lake looks to git. It builds that ownership mismatch on the
+container's own filesystem, so it fails the same way on every host when
+protolake stops trusting the lake. `PROTOLAKE_TEST_IMAGE=<image>` runs it
+against an existing image instead of building this tree's.
 
 ## Add a scenario
 

@@ -9,17 +9,25 @@ import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
  * Wrapper for executing git commands.
  * 
  * Provides a type-safe interface for common git operations used by ProtoLake.
+ * Each command trusts the repository it runs in, which another user may own
+ * (see {@link SafeDirectory}).
  */
 @ApplicationScoped
 public class GitCommand {
     private static final Logger LOG = Logger.getLogger(GitCommand.class);
     private static final int COMMAND_TIMEOUT_SECONDS = 30;
+
+    // Added to every git process's environment. Tests put git's
+    // GIT_TEST_ASSUME_DIFFERENT_OWNER here, which makes git treat each
+    // repository as another user's on any host, without root.
+    Map<String, String> environment = Map.of();
 
     /**
      * Initializes a new git repository.
@@ -150,17 +158,29 @@ public class GitCommand {
     }
 
     /**
+     * A git process running {@code args} in {@code directory} that trusts that
+     * repository. Every caller passes the lake root, so the trust covers exactly
+     * the lake. Error messages keep showing {@code git <args>}: the trust
+     * arguments are the same on every call.
+     */
+    private ProcessBuilder gitProcess(Path directory, String... args) {
+        List<String> command = new ArrayList<>();
+        command.add("git");
+        command.addAll(SafeDirectory.configArgs(directory));
+        command.addAll(List.of(args));
+        ProcessBuilder pb = new ProcessBuilder(command);
+        pb.directory(directory.toFile());
+        pb.environment().putAll(environment);
+        return pb;
+    }
+
+    /**
      * Executes a git command without capturing output.
      */
     private void executeGit(Path directory, String... args) throws IOException {
-        List<String> command = new ArrayList<>();
-        command.add("git");
-        for (String arg : args) {
-            command.add(arg);
-        }
+        String command = "git " + String.join(" ", args);
 
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(directory.toFile());
+        ProcessBuilder pb = gitProcess(directory, args);
         pb.redirectErrorStream(true);
 
         Process process = pb.start();
@@ -168,7 +188,7 @@ public class GitCommand {
             boolean finished = process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
-                throw new IOException("Git command timed out: " + String.join(" ", command));
+                throw new IOException("Git command timed out: " + command);
             }
 
             int exitCode = process.exitValue();
@@ -183,7 +203,7 @@ public class GitCommand {
                     }
                 }
                 throw new IOException("Git command failed with exit code " + exitCode + 
-                    ": " + String.join(" ", command) + "\n" + error);
+                    ": " + command + "\n" + error);
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
@@ -195,21 +215,16 @@ public class GitCommand {
      * Executes a git command and returns the output.
      */
     private String executeGitWithOutput(Path directory, String... args) throws IOException {
-        List<String> command = new ArrayList<>();
-        command.add("git");
-        for (String arg : args) {
-            command.add(arg);
-        }
+        String command = "git " + String.join(" ", args);
 
-        ProcessBuilder pb = new ProcessBuilder(command);
-        pb.directory(directory.toFile());
+        ProcessBuilder pb = gitProcess(directory, args);
 
         Process process = pb.start();
         try {
             boolean finished = process.waitFor(COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS);
             if (!finished) {
                 process.destroyForcibly();
-                throw new IOException("Git command timed out: " + String.join(" ", command));
+                throw new IOException("Git command timed out: " + command);
             }
 
             int exitCode = process.exitValue();
@@ -235,7 +250,7 @@ public class GitCommand {
                     }
                 }
                 throw new IOException("Git command failed with exit code " + exitCode + 
-                    ": " + String.join(" ", command) + "\n" + error);
+                    ": " + command + "\n" + error);
             }
 
             return output.toString();

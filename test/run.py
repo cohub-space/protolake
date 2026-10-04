@@ -38,7 +38,8 @@ def run(cmd, **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **kw)
 
 
-LEGACY_SUITES = ["test_protolake.sh", "test_cli.sh", "test_remote_publish.sh"]
+LEGACY_SUITES = ["test_protolake.sh", "test_cli.sh", "test_remote_publish.sh",
+                 "test_foreign_owner.sh"]
 LEGACY_TOOLS = ["jq", "grpcurl", "curl", "python3"]
 
 
