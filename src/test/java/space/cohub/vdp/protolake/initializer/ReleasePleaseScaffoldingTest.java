@@ -2,6 +2,7 @@ package space.cohub.vdp.protolake.initializer;
 
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import io.quarkus.qute.Engine;
 import io.quarkus.test.junit.QuarkusTest;
 import jakarta.inject.Inject;
 import org.junit.jupiter.api.BeforeEach;
@@ -10,12 +11,17 @@ import protolake.v1.Lake;
 import protolake.v1.LakeConfig;
 import space.cohub.vdp.protolake.util.LakeUtil;
 
+import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
+import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatCode;
 
 /**
  * The release-please birth contract (the engine's ReleasePleaseEntryManager
@@ -36,6 +42,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
 
     @Inject
     ReleasePleaseScaffolding scaffolding;
+
+    @Inject
+    Engine qute;
 
     private Lake lake;
     private Path lakePath;
@@ -73,9 +82,15 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
     /**
      * A release PR must not merge before its branch carries the regenerated
      * BUILD files: release-please opens it as a draft; release.yml holds a
-     * ready one as a draft before release-please can move it, readies again
-     * the ones it left alone, and regenerates every draft, marking it ready
-     * only after pushing.
+     * ready one as a draft before release-please can move it; only after
+     * release-please succeeded, its drafts step readies one whose branch tip
+     * is the regenerate job's commit (it carries a Regenerated-by trailer,
+     * made even when nothing changed) and that release-please did not report,
+     * puts every other release PR back to draft and regenerates it, and marks
+     * it ready only after pushing. Its lookups page through every open PR and
+     * filter release PRs in jq: a {@code --label} list reads the search
+     * index, which lags. ReleaseWorkflowDraftsStepTest runs the steps and the
+     * commit.
      */
     @Test
     void releasePrsStayDraftsUntilTheirBranchIsRegenerated() throws Exception {
@@ -93,24 +108,73 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         String releasePlease = release.substring(releaseJob, regenerateJob);
         int hold = releasePlease.indexOf("gh pr ready --undo");
         int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
-        int readyAgain = releasePlease.indexOf(
-                "if [ \"$head\" = \"$(echo \"$entry\" | cut -d: -f2)\" ]; then");
-        int drafts = releasePlease.indexOf("select(.isDraft)] | tojson");
+        int reported = releasePlease.indexOf(
+                "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}");
+        int readied = releasePlease.indexOf("[ \"$draft\" = true ] && ! gh pr ready \"$pr\"");
+        int backToDraft = releasePlease.indexOf("[ \"$draft\" = false ] && ! gh pr ready --undo \"$pr\"");
+        int drafts = releasePlease.indexOf("del(.draft, .release)]");
+        assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
+        assertThat(releasePlease).as("no PR body reaches the environment")
+                .doesNotContain("steps.release.outputs.prs }}");
+        assertThat(releasePlease).as("a reported PR not open on this repository is dropped")
+                .contains("select(any($open[]; .number == $n) | not)");
+        assertThat(releasePlease).as("a reported PR the list missed is looked up by number")
+                .contains("gh api \"repos/$GITHUB_REPOSITORY/pulls/$pr\"");
+        assertThat(releasePlease).as("a head is regenerated when its commit carries the trailer")
+                .contains("any(. == \"Regenerated-by: release-workflow\")");
+        assertThat(releasePlease).as("judged by the branch tip").contains("commits/heads/$branch")
+                .as("never by the PR's recorded head, which lags a push").doesNotContain(".head.sha");
+        assertThat(releasePlease).as("a PR release-please reported is regenerated outright")
+                .contains("\"$reported\" | jq -e --argjson n \"$pr\" 'any(.[]; .number == $n)'");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
-        assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);
-        assertThat(releasePlease).contains("if: always() && steps.hold.outputs.held != ''");
-        assertThat(drafts).as("every draft is regenerated").isGreaterThan(readyAgain);
+        assertThat(releasePlease.split(Pattern.quote("gh pr ready \"$pr\""), -1))
+                .as("only the drafts step readies a release PR").hasSize(2);
+        assertThat(releasePlease).as("one definition of a trusted report").contains("REPORTED_PRS: |-");
+        assertThat(releasePlease.split(Pattern.quote("jq -nc \"$REPORTED_PRS\""), -1))
+                .as("the drafts step judges the report by it").hasSize(2);
+        assertThat(releasePlease).as("every entry of the report is counted, without its body")
+                .contains("REPORTED_ENTRIES: ${{ join(fromJSON(steps.release.outputs.prs || '[]'), ',') }}")
+                .contains("REPORTED_NULLS: ${{ contains(fromJSON(steps.release.outputs.prs || '[]'), null) }}");
+        assertThat(releasePlease).as("an untrusted report regenerates every release PR")
+                .contains("if [ \"$trusted\" = false ] || printf '%s' \"$reported\"");
+        assertThat(reported).as("each PR release-please reported is regenerated")
+                .isGreaterThan(action);
+        assertThat(readied).as("a regenerated one is readied").isGreaterThan(reported);
+        assertThat(backToDraft).as("a release PR that is not regenerated goes back to draft")
+                .isGreaterThan(readied);
+        assertThat(drafts).as("and is regenerated").isGreaterThan(backToDraft);
         assertThat(releasePlease).contains("drafts:           ${{ steps.drafts.outputs.prs }}");
 
         String regenerate = release.substring(regenerateJob, release.indexOf("\n  publish:", regenerateJob));
         assertThat(regenerate).contains("pr: ${{ fromJson(needs.release-please.outputs.drafts) }}");
         assertThat(regenerate).contains("pull-requests: write");
         assertThat(regenerate).doesNotContain("gh pr ready --undo");
+        assertThat(regenerate).contains("if: ${{ !cancelled() && ");
+        assertThat(regenerate).as("the commit is made even when nothing changed, with the trailer")
+                .contains("git commit --allow-empty").contains("-m \"Regenerated-by: release-workflow\"");
         int push = regenerate.indexOf("git push --force-with-lease");
         int ready = regenerate.indexOf("gh pr ready \"$RELEASE_PR\"");
         assertThat(push).isPositive();
         assertThat(ready).as("marked ready only after the push").isGreaterThan(push);
+    }
+
+    /**
+     * The Quarkus build parses every file under {@code templates/} as a Qute
+     * template, and a parse error fails it. The workflows the scaffold copies
+     * raw therefore avoid single-brace shell parameter expansions with an
+     * operator (such as a default or a prefix strip) and jq object literals.
+     */
+    @Test
+    void releasePleaseWorkflowsParseAsQuteTemplates() throws Exception {
+        for (String workflow : List.of("release.yml", "publish-bundle.yml", "pr-title-lint.yml")) {
+            String content;
+            try (InputStream in = getClass().getResourceAsStream("/templates/release-please/" + workflow)) {
+                assertThat(in).as(workflow).isNotNull();
+                content = new String(in.readAllBytes(), StandardCharsets.UTF_8);
+            }
+            assertThatCode(() -> qute.parse(content)).as(workflow).doesNotThrowAnyException();
+        }
     }
 
     @Test

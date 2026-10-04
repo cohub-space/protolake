@@ -40,22 +40,61 @@ jobs:
       drafts:           ${{ steps.drafts.outputs.prs }}
     env:
       GH_TOKEN: ${{ github.token }}
+      # Whether a commit is the regenerate job's: its message carries the
+      # Regenerated-by trailer that job adds, which release-please's never do.
+      REGENERATED_HEAD: '.commit.message | split("\n") | any(. == "Regenerated-by: release-workflow")'
+      # release-please's report, from what the drafts step's env takes of its
+      # prs output: the numbers and the head branches of the PRs it opened or
+      # moved in this run, the kind of each entry, whether an entry equals
+      # null, and whether it says it created any. The .* filter skips an
+      # entry that lacks the field, so the kinds count the entries: join
+      # writes "Object" for an object, never its body. join writes nothing
+      # for a null, so a report of one null entry would count as none; the
+      # null test catches it. The program fails for a report it cannot
+      # trust: one with an entry that is not an object with a whole number
+      # and a head branch, or whose prs_created disagrees with its entries.
+      REPORTED_PRS: |-
+        [$ENV.REPORTED_NUMBERS, $ENV.REPORTED_BRANCHES | fromjson] | transpose
+        | map(. as [$number, $branch] | null | .number = $number | .headRefName = $branch)
+        | if $ENV.REPORTED_NULLS != "false"
+            or ($ENV.REPORTED_ENTRIES | split(",")) != [range(length) | "Object"]
+            or ($ENV.PRS_CREATED == "true") != (length > 0)
+            or any(.[]; (.number | type) != "number" or .number <= 0 or .number != (.number | floor)
+              or (.headRefName | type) != "string" or .headRefName == "")
+          then error("release-please's report cannot be trusted")
+          else . end
+    # An unspecified shell runs bash -e without pipefail, so a command that
+    # failed inside a pipeline would pass on an empty list.
+    defaults:
+      run:
+        shell: bash
     steps:
-      # A release PR stays a draft until its branch carries the regenerated
+      # A release PR may merge only once its branch carries the regenerated
       # files (regenerate-release-branch below), and GitHub refuses to merge
-      # a draft. release-please pushes a new version bump onto an open
-      # release PR without drafting it, so every ready one is held first,
-      # with its head recorded.
+      # a draft. Whether a branch carries them is read from its tip on every
+      # run, never remembered: the regenerate job's commit is the tip of a
+      # regenerated branch, and release-please rewrites the branch without
+      # one. The tip is read from the branch itself: GitHub updates the PR's
+      # recorded head a moment after a push. release-please pushes onto an
+      # open release PR without drafting it, so every ready one is held
+      # first, and in this job only the drafts step readies one again. Both
+      # lookups in this job page through every open PR with the REST API and
+      # keep the release PRs in jq, the way release-please finds them: given
+      # a label filter, gh answers from the search index, which shows a PR,
+      # its label and its draft state only a moment after they change, and
+      # gh pr list stops at a limit. Both keep only PRs whose branch lives in
+      # this repository: a fork PR labelled as a release PR would send its
+      # branch name to checkout and push.
       - name: Hold the open release PRs as drafts
         id: hold
         run: |
-          held=$(gh pr list -R "$GITHUB_REPOSITORY" --label 'autorelease: pending' --state open \
-            --json number,isDraft,headRefOid \
-            --jq '[.[] | select(.isDraft | not) | "\(.number):\(.headRefOid)"] | join(" ")')
-          for entry in $held; do
-            gh pr ready --undo "$(echo "$entry" | cut -d: -f1)" -R "$GITHUB_REPOSITORY"
+          held=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
+              | select(any(.labels[]; .name == "autorelease: pending") and (.draft | not))
+              | .number')
+          for pr in $held; do
+            gh pr ready --undo "$pr" -R "$GITHUB_REPOSITORY"
           done
-          echo "held=$held" >> "$GITHUB_OUTPUT"
 
       - id: release
         uses: googleapis/release-please-action@v4
@@ -63,32 +102,109 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # A held PR whose head release-please did not move still carries its
-      # regenerated tree. This runs when release-please failed too: a PR it
-      # moved stays a draft either way.
-      - name: Ready the held release PRs release-please left alone
-        if: always() && steps.hold.outputs.held != ''
-        env:
-          HELD: ${{ steps.hold.outputs.held }}
-        run: |
-          for entry in $HELD; do
-            pr=$(echo "$entry" | cut -d: -f1)
-            head=$(gh pr view "$pr" -R "$GITHUB_REPOSITORY" --json state,headRefOid \
-              --jq 'select(.state == "OPEN") | .headRefOid')
-            if [ "$head" = "$(echo "$entry" | cut -d: -f2)" ]; then
-              gh pr ready "$pr" -R "$GITHUB_REPOSITORY"
-            fi
-          done
-
-      # Every open release PR that is a draft now needs its branch
-      # regenerated: one release-please opened or moved, or one an earlier
-      # failed run left held.
+      # Every open release PR: one release-please opened or moved in this run
+      # needs regenerating outright, and any other is judged by its branch
+      # tip. A regenerated one is ready; any other goes back to draft and
+      # into the regenerate matrix. release-please's report also finds a PR
+      # the scan missed. The step runs only after release-please succeeded:
+      # a failed run reports nothing it moved before it failed, so the held
+      # PRs stay drafts until the next run. After a report REPORTED_PRS does
+      # not trust, no tip is trusted either: every release PR, and every one
+      # the report numbers, needs regenerating, and the step fails. The step
+      # acts on every PR it could read before it fails for one it could not,
+      # and the next run reads that one again. Of the report, only each PR's
+      # number and head branch and each entry's kind reach the environment:
+      # the output also carries every PR's body, and Linux will not start a
+      # process with an environment variable over 128 KiB.
       - name: List the release PRs to regenerate
         id: drafts
+        env:
+          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
+          REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}
+          REPORTED_BRANCHES: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}
+          REPORTED_ENTRIES: ${{ join(fromJSON(steps.release.outputs.prs || '[]'), ',') }}
+          REPORTED_NULLS: ${{ contains(fromJSON(steps.release.outputs.prs || '[]'), null) }}
         run: |
-          prs=$(gh pr list -R "$GITHUB_REPOSITORY" --label 'autorelease: pending' --state open \
-            --json number,isDraft,headRefName --jq '[.[] | select(.isDraft)] | tojson')
+          failed=false
+          trusted=true
+          if ! reported=$(jq -nc "$REPORTED_PRS"); then
+            echo "::error::release-please's report cannot be trusted; every release PR is regenerated"
+            trusted=false
+            failed=true
+            # Its whole numbers still name PRs release-please opened or moved.
+            reported=$(printf '%s' "$REPORTED_NUMBERS" | jq -c 'map((if type == "string" then (tonumber? // null) else . end)
+              | select(type == "number" and . > 0 and . == floor) | . as $n | null | .number = $n)')
+          fi
+          # Every open PR on a branch of this repository.
+          open=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
+            --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
+              | .headRefName = .head.ref
+              | .release = any(.labels[]; .name == "autorelease: pending")
+              | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
+                  or .key == "release"))' \
+            | jq -cs '.')
+          # A reported PR the scan missed is looked up directly: the scan
+          # pages by page number, so a PR closed while it is read moves
+          # another onto a page already read. Only an open PR on a branch of
+          # this repository is kept: release-please matches its PR by branch
+          # name alone, so it can report a fork PR whose branch has the
+          # release branch's name.
+          missing=$(printf '%s\n%s' "$reported" "$open" | jq -rs '
+            .[1] as $open | .[0][] | .number as $n
+            | select(any($open[]; .number == $n) | not) | $n')
+          for pr in $missing; do
+            if ! found=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" \
+              --jq 'select(.state == "open" and .head.repo.full_name == env.GITHUB_REPOSITORY)
+                | .headRefName = .head.ref
+                | .release = any(.labels[]; .name == "autorelease: pending")
+                | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
+                    or .key == "release"))'); then
+              echo "::error::could not look up #$pr, which release-please reported"
+              failed=true
+            elif [ -n "$found" ]; then
+              open=$(printf '%s\n%s' "$open" "$found" | jq -cs '.[0] + [.[1]]')
+            else
+              echo "::warning::release-please reported #$pr, which is closed or on a fork's branch; it is not regenerated"
+            fi
+          done
+          # The release PRs: labelled, or reported while the label is not
+          # visible yet. unique_by: a PR opened while the pages are read
+          # pushes another onto the next page, where it is listed twice.
+          release=$(printf '%s\n%s' "$reported" "$open" | jq -cs '
+            .[0] as $reported | .[1]
+            | map(select(.number as $n | .release or any($reported[]; .number == $n)))
+            | unique_by(.number)')
+          numbers=$(printf '%s' "$release" | jq -r '.[].number')
+          prs='[]'
+          for pr in $numbers; do
+            pull=$(printf '%s' "$release" | jq -c --argjson n "$pr" 'map(select(.number == $n)) | first')
+            branch=$(printf '%s' "$pull" | jq -r '.headRefName')
+            draft=$(printf '%s' "$pull" | jq -r '.draft')
+            if [ "$trusted" = false ] || printf '%s' "$reported" | jq -e --argjson n "$pr" 'any(.[]; .number == $n)' > /dev/null; then
+              regenerated=false
+            elif ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/$branch" --jq "$REGENERATED_HEAD"); then
+              echo "::error::could not read the branch of #$pr; it is regenerated"
+              failed=true
+              regenerated=false
+            fi
+            if [ "$regenerated" = true ]; then
+              if [ "$draft" = true ] && ! gh pr ready "$pr" -R "$GITHUB_REPOSITORY"; then
+                echo "::error::could not mark #$pr ready"
+                failed=true
+              fi
+            else
+              if [ "$draft" = false ] && ! gh pr ready --undo "$pr" -R "$GITHUB_REPOSITORY"; then
+                echo "::error::could not put #$pr back to draft"
+                failed=true
+              fi
+              prs=$(printf '%s\n%s' "$prs" "$pull" | jq -cs '.[0] + [.[1] | del(.draft, .release)]')
+            fi
+          done
           echo "prs=$prs" >> "$GITHUB_OUTPUT"
+          if [ "$failed" = true ]; then
+            echo "::error::every release PR the step could read is handled; re-run the workflow for the rest"
+            exit 1
+          fi
 
   # Gazelle bakes each bundle's version into its BUILD files from bundle.yaml
   # (rules_jvm_external needs the maven coordinates at analysis time), and
@@ -96,8 +212,9 @@ jobs:
   # go stale on every release and the pom generator's version guard fails the
   # next build. This job regenerates them on each release branch, with the
   # same build the PR check runs, so the release merge lands both and main
-  # never drifts. It runs for every open release PR the release-please job
-  # leaves a draft (one per bundle under separate-pull-requests). The commit
+  # never drifts. It runs for every open release PR whose head is not its
+  # own commit (one per bundle under separate-pull-requests), and also when
+  # the release-please job failed after listing them. The commit
   # carries every file the build regenerates (the workspace initializer
   # rewrites the wrapper, MODULE.bazel, the npm workspace and tools/ from the
   # image's templates before gazelle runs), never half of them, so the branch
@@ -114,7 +231,7 @@ jobs:
   regenerate-release-branch:
     name: regenerate ${{ matrix.pr.headRefName }}
     needs: release-please
-    if: needs.release-please.outputs.drafts != '' && needs.release-please.outputs.drafts != '[]'
+    if: ${{ !cancelled() && needs.release-please.outputs.drafts != '' && needs.release-please.outputs.drafts != '[]' }}
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     strategy:
@@ -154,7 +271,9 @@ jobs:
 
       # Only what the build regenerates: buf.yaml, buf.gen.yaml and .bazelrc
       # are written once at init and user-owned afterwards; package.json and
-      # pnpm-lock.yaml are rewritten as a pair.
+      # pnpm-lock.yaml are rewritten as a pair. The commit is made even when
+      # nothing changed: its Regenerated-by trailer is how the release-please
+      # job tells a regenerated branch from one release-please rewrote.
       - name: Commit the regenerated files to the release branch
         run: |
           BASE="$(git rev-parse HEAD)"
@@ -162,11 +281,11 @@ jobs:
             package.json pnpm-lock.yaml protolakew tools
           if git diff --cached --quiet; then
             echo "generated files already match bundle.yaml"
-            exit 0
           fi
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git commit -m "chore: regenerate the lake's generated files for the release versions"
+          git commit --allow-empty -m "chore: regenerate the lake's generated files for the release versions" \
+            -m "Regenerated-by: release-workflow"
           # The lease pins the branch to the sha this job checked out: a
           # release PR merged (branch deleted) or force-updated by
           # release-please during the build makes the push fail loudly
@@ -177,9 +296,11 @@ jobs:
       - name: Mark the release PR ready
         run: gh pr ready "$RELEASE_PR" -R "$GITHUB_REPOSITORY"
 
+  # Runs when the release-please job failed after release-please tagged a
+  # release too: a re-run would find no new release to publish.
   publish:
     needs: release-please
-    if: needs.release-please.outputs.releases_created == 'true'
+    if: ${{ !cancelled() && needs.release-please.outputs.releases_created == 'true' }}
     runs-on: ubuntu-24.04
     strategy:
       matrix:
