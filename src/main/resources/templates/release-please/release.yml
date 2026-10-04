@@ -54,12 +54,15 @@ jobs:
       # open PR with the REST API and keep the release PRs in jq, the way
       # release-please finds them: given a label filter, gh answers from the
       # search index, which shows a PR, its label and its draft state only a
-      # moment after they change, and gh pr list stops at a limit.
+      # moment after they change, and gh pr list stops at a limit. Both keep
+      # only PRs whose branch lives in this repository: a fork PR labelled
+      # as a release PR would send its branch name to checkout and push.
       - name: Hold the open release PRs as drafts
         id: hold
         run: |
           held=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
-            --jq '.[] | select(any(.labels[]; .name == "autorelease: pending") and (.draft | not))
+            --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
+              | select(any(.labels[]; .name == "autorelease: pending") and (.draft | not))
               | "\(.number):\(.head.sha)"' | paste -sd ' ' -)
           for entry in $held; do
             gh pr ready --undo "$(echo "$entry" | cut -d: -f1)" -R "$GITHUB_REPOSITORY"
@@ -119,7 +122,8 @@ jobs:
             exit 1
           fi
           listed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
-            --jq '.[] | select(any(.labels[]; .name == "autorelease: pending"))
+            --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
+              | select(any(.labels[]; .name == "autorelease: pending"))
               | .headRefName = .head.ref
               | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"))' \
             | jq -cs '.')

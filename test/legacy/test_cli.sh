@@ -361,11 +361,13 @@ grep -E "^\[protolake\]|Phase|Build succeeded|Build failed|command succeeded" "$
 # or moving (back to draft if it is ready), and every other draft one, is
 # regenerated. Both lookups page through every open PR with the REST API and
 # filter release PRs in jq: a --label list reads the search index, which lags.
+# Neither passes a fork PR on to checkout or push.
 echo ""
 echo "  Release-please scaffolding:"
 check_file_contains "$LAKE_DIR/release-please-config.json" '"draft-pull-request" *: *true' "release-please opens release PRs as drafts"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh pr ready --undo' "release.yml holds a ready release PR as a draft"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh api --paginate "repos/.*/pulls?state=open&per_page=100"' "release.yml pages through every open PR without the search index"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(.head.repo.full_name == env.GITHUB_REPOSITORY)' "release.yml keeps fork PRs out of checkout and push"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any(.labels\[\]; .name == "autorelease: pending") and (.draft | not))' "release.yml holds every ready release PR"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'REPORTED_NUMBERS: .*fromJSON(steps.release.outputs.prs' "release.yml regenerates each release PR release-please reports, from its number and branch only"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh pr ready --undo "$pr"' "release.yml puts a reported release PR that is ready back to draft"

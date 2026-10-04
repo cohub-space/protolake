@@ -64,6 +64,8 @@ class ReleaseWorkflowDraftsStepTest {
     private static final String AUTHZ = "release-please--branches--main--components--authz";
     private static final String BOT = "release-please--branches--main--components--bot";
     private static final String VDP = "release-please--branches--main--components--vdp";
+    /** The head repository of a PR whose fork was deleted: the REST API reports it as null. */
+    private static final String DELETED_FORK = "";
     /** Linux's MAX_ARG_STRLEN: execve refuses an environment entry this long. */
     private static final int MAX_ENV_ENTRY = 131072;
 
@@ -257,6 +259,27 @@ class ReleaseWorkflowDraftsStepTest {
         assertThat(run.lookups()).isNotEmpty().allSatisfy(call -> assertThat(call).doesNotContain("--label"));
     }
 
+    @Test
+    void holdStep_neverHoldsAForkPr() throws Exception {
+        StepRun run = runStep(tempDir, "hold",
+                List.of(forkPr(70, false, "someone/a-lake"), forkPr(72, false, DELETED_FORK),
+                        releasePr(12, false, BRANCH)),
+                Map.of());
+
+        assertThat(run.output("held")).isEqualTo(held(12));
+        assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
+    }
+
+    @Test
+    void draftsList_neverRegeneratesAForkPr() throws Exception {
+        StepRun run = runStep(tempDir, "drafts",
+                List.of(forkPr(71, true, "someone/a-lake"), forkPr(73, true, DELETED_FORK),
+                        releasePr(14, true, AUTHZ)),
+                Map.of("prs_created", "false"));
+
+        assertThat(run.matrix()).isEqualTo(entries(14, AUTHZ));
+    }
+
     /** Newest first: 1,050 newer PRs put the release PRs past any page or limit. */
     @Test
     void bothLookups_seeEveryOpenPr() throws Exception {
@@ -324,8 +347,8 @@ class ReleaseWorkflowDraftsStepTest {
         assertThat(job.path("steps")).allSatisfy(step -> assertThat(step.has("shell")).isFalse());
     }
 
-    /** An open PR: its number, draft state, head branch and labels. */
-    private record OpenPr(int number, boolean draft, String branch, String label) {
+    /** An open PR: its number, draft state, head branch, head repository and label. */
+    private record OpenPr(int number, boolean draft, String branch, String label, String repo) {
 
         String sha() {
             return "%040x".formatted(number);
@@ -350,7 +373,13 @@ class ReleaseWorkflowDraftsStepTest {
             pr.put("draft", draft);
             pr.put("title", "change " + number);
             pr.put("body", "a change");
-            pr.putObject("head").put("ref", branch).put("sha", sha()).put("label", "cohub-space:" + branch);
+            ObjectNode head = pr.putObject("head").put("ref", branch).put("sha", sha())
+                    .put("label", "cohub-space:" + branch);
+            if (repo.equals(DELETED_FORK)) {
+                head.putNull("repo");
+            } else {
+                head.putObject("repo").put("full_name", repo);
+            }
             pr.putObject("base").put("ref", "main");
             pr.putArray("labels").addObject().put("name", label).put("color", "ededed");
             return pr;
@@ -358,11 +387,16 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     private static OpenPr releasePr(int number, boolean draft, String branch) {
-        return new OpenPr(number, draft, branch, LABEL);
+        return new OpenPr(number, draft, branch, LABEL, REPOSITORY);
     }
 
     private static OpenPr featurePr(int number, boolean draft) {
-        return new OpenPr(number, draft, "feat/change-" + number, "enhancement");
+        return new OpenPr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY);
+    }
+
+    /** A fork PR labelled as a release PR, its branch named after the base branch. */
+    private static OpenPr forkPr(int number, boolean draft, String repo) {
+        return new OpenPr(number, draft, "main", LABEL, repo);
     }
 
     /** The PullRequest object release-please-action reports in {@code prs}. */
