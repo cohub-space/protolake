@@ -117,6 +117,8 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
                 .doesNotContain("steps.release.outputs.prs }}");
         assertThat(releasePlease).as("a reported PR not open on this repository is dropped")
                 .contains("select(any($open[]; .number == $n) | not)");
+        assertThat(releasePlease).as("a reported PR the list missed is looked up by number")
+                .contains("gh api \"repos/$GITHUB_REPOSITORY/pulls/$pr\"");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
         assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);

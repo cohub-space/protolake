@@ -128,15 +128,27 @@ jobs:
               | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
                   or .key == "release"))' \
             | jq -cs '.')
-          # A reported PR counts only if it is one of those, and its branch
-          # comes from there: release-please matches its PR by branch name
-          # alone, so it can report a fork PR whose branch has the release
-          # branch's name.
+          # A reported PR counts only if it is open on a branch of this
+          # repository, and its branch comes from there: release-please
+          # matches its PR by branch name alone, so it can report a fork PR
+          # whose branch has the release branch's name. One the list missed
+          # is looked up directly: the list pages by page number, so a PR
+          # closed while it is read moves another onto a page already read.
           missing=$(printf '%s\n%s' "$reported" "$open" | jq -rs '
             .[1] as $open | .[0][] | .number as $n
             | select(any($open[]; .number == $n) | not) | $n')
           for pr in $missing; do
-            echo "::warning::release-please reported #$pr, which is not open on a branch of this repository; it is not regenerated"
+            found=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" \
+              --jq 'select(.state == "open" and .head.repo.full_name == env.GITHUB_REPOSITORY)
+                | .headRefName = .head.ref
+                | .release = any(.labels[]; .name == "autorelease: pending")
+                | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
+                    or .key == "release"))')
+            if [ -n "$found" ]; then
+              open=$(printf '%s\n%s' "$open" "$found" | jq -cs '.[0] + [.[1]]')
+            else
+              echo "::warning::release-please reported #$pr, which is closed or on a fork's branch; it is not regenerated"
+            fi
           done
           # A reported PR that is ready goes back to draft until its branch is
           # regenerated: one release-please reopened from a snooze, which the
@@ -148,8 +160,8 @@ jobs:
           for pr in $ready; do
             gh pr ready --undo "$pr" -R "$GITHUB_REPOSITORY"
           done
-          # unique_by: a PR closed while the pages are read can shift another
-          # onto two pages.
+          # unique_by: a PR opened while the pages are read pushes another
+          # onto the next page, where it is listed twice.
           prs=$(printf '%s\n%s' "$reported" "$open" | jq -cs '
             .[0] as $reported | .[1]
             | map(select(.number as $n | any($reported[]; .number == $n) or (.release and .draft))

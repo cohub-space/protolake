@@ -38,7 +38,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * and head branches reach the environment) and every other open draft release
  * PR, once each, and puts a reported PR that is ready back to draft. A
  * reported PR counts only if it is open on a branch of the repository itself:
- * release-please matches its PR by branch name alone.
+ * release-please matches its PR by branch name alone. One the paged list
+ * missed is looked up by number.
  *
  * <p>Both page through every open PR with the REST API and keep the release
  * PRs in jq. Given {@code --label}, gh answers from the search index, which
@@ -49,7 +50,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>Each step's script runs under the command GitHub runs for its declared
  * shell, with the env GitHub evaluates for it and a stub gh. The stub answers
  * {@code gh api --paginate} a page of 100 PRs at a time, applying
- * {@code --jq} to each page as gh does; for older copies of the workflow it
+ * {@code --jq} to each page as gh does, and {@code gh api .../pulls/N} with
+ * one PR, open or not, or a 404; for older copies of the workflow it
  * also answers {@code gh pr list}, from the open PRs as they are or, given
  * {@code --label}, from a search-index fixture that can lag, with gh's field
  * projection and default limit of 30. Skipped when bash or jq is not on the
@@ -126,11 +128,19 @@ class ReleaseWorkflowDraftsStepTest {
                     *) path=$1; shift ;;
                   esac
                 done
-                [ "$path" = "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" ] || fail "unexpected path $path"
-                # A page per 100 PRs, the first one only without --paginate.
-                jq -c 'if length == 0 then [] else range(0; length; 100) as $i | .[$i:$i + 100] end' \\
-                    "$GH_FIXTURES/pulls.json" | { if $paginate; then cat; else head -1; fi; } |
-                  while IFS= read -r page; do printf '%s' "$page" | emit || exit 3; done ;;
+                case "$path" in
+                  "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100")
+                    # A page per 100 PRs, the first one only without --paginate.
+                    jq -c 'if length == 0 then [] else range(0; length; 100) as $i | .[$i:$i + 100] end' \\
+                        "$GH_FIXTURES/pulls.json" | { if $paginate; then cat; else head -1; fi; } |
+                      while IFS= read -r page; do printf '%s' "$page" | emit || exit 3; done ;;
+                  "repos/$GITHUB_REPOSITORY/pulls/"[0-9]*)
+                    pr=$(jq -c --argjson n "${path##*/}" 'map(select(.number == $n)) | first // empty' \\
+                        "$GH_FIXTURES/lookup.json")
+                    [ -n "$pr" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
+                    printf '%s' "$pr" | emit ;;
+                  *) fail "unexpected path $path" ;;
+                esac ;;
               *) fail "unexpected call: $*" ;;
             esac
             """;
@@ -154,12 +164,28 @@ class ReleaseWorkflowDraftsStepTest {
         assertThat(tempDir.resolve("pwned")).as("the PR body reaches the script as data").doesNotExist();
     }
 
-    /** release-please matched #75, a ready fork PR, by its branch name; #76 is not open. */
+    /**
+     * A PR closed during the paged read moved #12 onto a page already read;
+     * release-please reopened #12 from a snooze, ready, and moved it.
+     */
+    @Test
+    void aReportedPrTheListMissed_isLookedUpAndRegenerated() throws Exception {
+        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(14, true, AUTHZ)),
+                reported(releasePleasePr(12, BRANCH, 0)), caughtUp(List.of()), false,
+                List.of(releasePr(12, false, BRANCH)));
+
+        assertThat(run.matrix()).isEqualTo(entries(12, BRANCH, 14, AUTHZ));
+        assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
+        assertThat(run.log()).doesNotContain("::warning::");
+    }
+
+    /** release-please matched #75, a ready fork PR, by its branch name; #76 is closed. */
     @Test
     void aReportedPrNotOpenOnThisRepository_isDroppedWithAWarning() throws Exception {
-        StepRun run = runStep(tempDir, "drafts",
-                List.of(forkPr(75, false, "someone/a-lake", BRANCH), releasePr(14, true, AUTHZ)),
-                reported(releasePleasePr(75, BRANCH, 0), releasePleasePr(76, VDP, 0)));
+        List<OpenPr> openPrs = List.of(forkPr(75, false, "someone/a-lake", BRANCH), releasePr(14, true, AUTHZ));
+        StepRun run = runStep(tempDir, "drafts", openPrs,
+                reported(releasePleasePr(75, BRANCH, 0), releasePleasePr(76, VDP, 0)), caughtUp(openPrs), false,
+                List.of(closedPr(76, VDP)));
 
         assertThat(run.matrix()).isEqualTo(entries(14, AUTHZ));
         assertThat(run.undone()).isEmpty();
@@ -378,8 +404,8 @@ class ReleaseWorkflowDraftsStepTest {
         assertThat(job.path("steps")).allSatisfy(step -> assertThat(step.has("shell")).isFalse());
     }
 
-    /** An open PR: its number, draft state, head branch, head repository and label. */
-    private record OpenPr(int number, boolean draft, String branch, String label, String repo) {
+    /** A PR: its number, draft state, head branch, label, head repository and state. */
+    private record OpenPr(int number, boolean draft, String branch, String label, String repo, String state) {
 
         String sha() {
             return "%040x".formatted(number);
@@ -400,7 +426,7 @@ class ReleaseWorkflowDraftsStepTest {
         ObjectNode pull() {
             ObjectNode pr = JSON.createObjectNode();
             pr.put("number", number);
-            pr.put("state", "open");
+            pr.put("state", state);
             pr.put("draft", draft);
             pr.put("title", "change " + number);
             pr.put("body", "a change");
@@ -418,11 +444,15 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     private static OpenPr releasePr(int number, boolean draft, String branch) {
-        return new OpenPr(number, draft, branch, LABEL, REPOSITORY);
+        return new OpenPr(number, draft, branch, LABEL, REPOSITORY, "open");
+    }
+
+    private static OpenPr closedPr(int number, String branch) {
+        return new OpenPr(number, false, branch, LABEL, REPOSITORY, "closed");
     }
 
     private static OpenPr featurePr(int number, boolean draft) {
-        return new OpenPr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY);
+        return new OpenPr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY, "open");
     }
 
     /** A fork PR labelled as a release PR, its branch named after the base branch. */
@@ -431,7 +461,7 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     private static OpenPr forkPr(int number, boolean draft, String repo, String branch) {
-        return new OpenPr(number, draft, branch, LABEL, repo);
+        return new OpenPr(number, draft, branch, LABEL, repo, "open");
     }
 
     /** The PullRequest object release-please-action reports in {@code prs}. */
@@ -523,14 +553,20 @@ class ReleaseWorkflowDraftsStepTest {
         return runStep(dir, stepId, openPrs, outputs, caughtUp(openPrs), false);
     }
 
+    private StepRun runStep(Path dir, String stepId, List<OpenPr> openPrs, Map<String, String> outputs,
+            List<OpenPr> labelSearch, boolean lookupsFail) throws Exception {
+        return runStep(dir, stepId, openPrs, outputs, labelSearch, lookupsFail, List.of());
+    }
+
     /**
      * Runs one step of the release-please job. {@code openPrs} are the open PRs
      * as they are, newest first; {@code labelSearch} is what a {@code --label}
      * list returns from the search index; {@code lookupsFail} makes every gh
-     * lookup exit non-zero.
+     * lookup exit non-zero; {@code missed} are PRs, open or closed, that the
+     * paged list does not return but a lookup by number does.
      */
     private StepRun runStep(Path dir, String stepId, List<OpenPr> openPrs, Map<String, String> outputs,
-            List<OpenPr> labelSearch, boolean lookupsFail) throws Exception {
+            List<OpenPr> labelSearch, boolean lookupsFail, List<OpenPr> missed) throws Exception {
         JsonNode job = workflow().path("jobs").path("release-please");
         JsonNode step = jobStep(stepId);
         String shell = step.has("shell") ? step.path("shell").asText()
@@ -546,6 +582,9 @@ class ReleaseWorkflowDraftsStepTest {
         Files.writeString(fixtures.resolve("pr-list.json"), array(openPrs, OpenPr::listed).toString());
         Files.writeString(fixtures.resolve("label-search.json"), array(labelSearch, OpenPr::listed).toString());
         Files.writeString(fixtures.resolve("pulls.json"), array(openPrs, OpenPr::pull).toString());
+        List<OpenPr> lookup = new ArrayList<>(openPrs);
+        lookup.addAll(missed);
+        Files.writeString(fixtures.resolve("lookup.json"), array(lookup, OpenPr::pull).toString());
         Path script = dir.resolve("step.sh");
         Files.writeString(script, step.get("run").asText());
         Path output = Files.createFile(dir.resolve("output"));

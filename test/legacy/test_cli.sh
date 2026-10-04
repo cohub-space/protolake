@@ -373,6 +373,7 @@ check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any(.label
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'REPORTED_NUMBERS: .*fromJSON(steps.release.outputs.prs' "release.yml regenerates each release PR release-please reports, from its number and branch only"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh pr ready --undo "$pr"' "release.yml puts a reported release PR that is ready back to draft"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any($open\[\]; .number == $n) | not)' "release.yml drops a reported PR that is not open on this repository"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh api "repos/$GITHUB_REPOSITORY/pulls/$pr"' "release.yml looks up a reported PR the list missed"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'or (.release and .draft))' "release.yml regenerates every other draft release PR"
 
 # ============================================================================
