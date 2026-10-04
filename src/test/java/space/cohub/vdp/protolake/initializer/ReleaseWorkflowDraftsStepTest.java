@@ -36,7 +36,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * regenerate-release-branch matrix from each release PR release-please opened
  * or moved in the run (the action's {@code prs} output, of which only numbers
  * and head branches reach the environment) and every other open draft release
- * PR, once each, and puts a reported PR that is ready back to draft.
+ * PR, once each, and puts a reported PR that is ready back to draft. A
+ * reported PR counts only if it is open on a branch of the repository itself:
+ * release-please matches its PR by branch name alone.
  *
  * <p>Both page through every open PR with the REST API and keep the release
  * PRs in jq. Given {@code --label}, gh answers from the search index, which
@@ -142,13 +144,29 @@ class ReleaseWorkflowDraftsStepTest {
         assumeTrue(available("jq", "--version"), "jq not available on PATH");
     }
 
-    /** The #271 race: no list shows the PR release-please just opened. */
+    /** The #271 race: the label search does not show the PR yet; the open PRs do. */
     @Test
-    void aPrOnlyReleasePleaseReported_isRegenerated() throws Exception {
-        StepRun run = runStep(tempDir, "drafts", List.of(), reported(releasePleasePr(271, BRANCH, 0)));
+    void aPrReleasePleaseJustOpened_isRegenerated() throws Exception {
+        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(271, true, BRANCH)),
+                reported(releasePleasePr(271, BRANCH, 0)), List.of(), false);
 
         assertThat(run.matrix()).isEqualTo(entries(271, BRANCH));
         assertThat(tempDir.resolve("pwned")).as("the PR body reaches the script as data").doesNotExist();
+    }
+
+    /** release-please matched #75, a ready fork PR, by its branch name; #76 is not open. */
+    @Test
+    void aReportedPrNotOpenOnThisRepository_isDroppedWithAWarning() throws Exception {
+        StepRun run = runStep(tempDir, "drafts",
+                List.of(forkPr(75, false, "someone/a-lake", BRANCH), releasePr(14, true, AUTHZ)),
+                reported(releasePleasePr(75, BRANCH, 0), releasePleasePr(76, VDP, 0)));
+
+        assertThat(run.matrix()).isEqualTo(entries(14, AUTHZ));
+        assertThat(run.undone()).isEmpty();
+        assertThat(run.log().lines().filter(line -> line.startsWith("::warning::")).toList())
+                .satisfiesExactly(
+                        warning -> assertThat(warning).contains("#75"),
+                        warning -> assertThat(warning).contains("#76"));
     }
 
     /** The hold step drafted #12 before release-please moved it. */
@@ -176,9 +194,11 @@ class ReleaseWorkflowDraftsStepTest {
     void olderDraftsJoinTheReportedPrs_onceEach_otherPrsStayOut() throws Exception {
         String iam = "release-please--branches--main--components--iam";
         StepRun run = runStep(tempDir, "drafts",
-                List.of(featurePr(40, true),
+                List.of(releasePr(31, true, iam),
+                        featurePr(40, true),
                         releasePr(30, true, VDP),
-                        // left a draft by an earlier failed run
+                        // left a draft by an earlier failed run, and seen on two pages
+                        releasePr(25, true, AUTHZ),
                         releasePr(25, true, AUTHZ),
                         // readied again by the hold step: release-please left it alone
                         releasePr(26, false, BOT)),
@@ -217,6 +237,15 @@ class ReleaseWorkflowDraftsStepTest {
                 reported(nameless, releasePleasePr(41, BRANCH, 0)));
         assertThat(unnamed.exitCode()).as("step output:\n%s", unnamed.log()).isNotZero();
         assertThat(unnamed.written()).isEmpty();
+    }
+
+    @Test
+    void aReportedPrWithAnEmptyBranch_failsTheStep() throws Exception {
+        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(40, true, BRANCH)),
+                reported(releasePleasePr(40, "", 0)));
+
+        assertThat(run.exitCode()).as("step output:\n%s", run.log()).isNotZero();
+        assertThat(run.written()).isEmpty();
     }
 
     /** release-please reports number 0 for a PR it opened from an empty change set. */
@@ -310,7 +339,9 @@ class ReleaseWorkflowDraftsStepTest {
             assertThat(value).doesNotContain("a changelog line");
         });
 
-        StepRun run = runStep(tempDir, "drafts", List.of(), outputs);
+        StepRun run = runStep(tempDir, "drafts", List.of(releasePr(31, true, BRANCH + "--components--c31"),
+                releasePr(32, true, BRANCH + "--components--c32"), releasePr(33, true, BRANCH + "--components--c33")),
+                outputs);
         assertThat(run.matrix()).isEqualTo(entries(31, BRANCH + "--components--c31",
                 32, BRANCH + "--components--c32", 33, BRANCH + "--components--c33"));
     }
@@ -396,7 +427,11 @@ class ReleaseWorkflowDraftsStepTest {
 
     /** A fork PR labelled as a release PR, its branch named after the base branch. */
     private static OpenPr forkPr(int number, boolean draft, String repo) {
-        return new OpenPr(number, draft, "main", LABEL, repo);
+        return forkPr(number, draft, repo, "main");
+    }
+
+    private static OpenPr forkPr(int number, boolean draft, String repo, String branch) {
+        return new OpenPr(number, draft, branch, LABEL, repo);
     }
 
     /** The PullRequest object release-please-action reports in {@code prs}. */

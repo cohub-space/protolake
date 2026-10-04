@@ -83,8 +83,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
      * BUILD files: release-please opens it as a draft; release.yml holds a
      * ready one as a draft before release-please can move it, readies again
      * the ones it left alone, and regenerates each one release-please opened
-     * or moved (from the action's outputs, back to draft if it is ready) and
-     * every other draft, marking it ready only after pushing. Its lookups page
+     * or moved (from the action's outputs, if it is open on a branch of the
+     * repository, back to draft if it is ready) and every other draft, marking
+     * it ready only after pushing. Its lookups page
      * through every open PR and filter release PRs in jq: a {@code --label}
      * list reads the search index, which lags. ReleaseWorkflowDraftsStepTest
      * runs the hold and matrix steps.
@@ -110,10 +111,12 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int reported = releasePlease.indexOf(
                 "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}");
         int backToDraft = releasePlease.indexOf("gh pr ready --undo \"$pr\"");
-        int drafts = releasePlease.indexOf("map(select(.draft) | del(.draft))");
+        int drafts = releasePlease.indexOf("or (.release and .draft))");
         assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
         assertThat(releasePlease).as("no PR body reaches the environment")
                 .doesNotContain("steps.release.outputs.prs }}");
+        assertThat(releasePlease).as("a reported PR not open on this repository is dropped")
+                .contains("select(any($open[]; .number == $n) | not)");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
         assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);

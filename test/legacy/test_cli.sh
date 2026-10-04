@@ -358,10 +358,11 @@ grep -E "^\[protolake\]|Phase|Build succeeded|Build failed|command succeeded" "$
 # before its branch carries the regenerated BUILD files, so release-please
 # opens release PRs as drafts, the release-please job holds a ready one before
 # release-please can move it, and each release PR release-please reports opening
-# or moving (back to draft if it is ready), and every other draft one, is
-# regenerated. Both lookups page through every open PR with the REST API and
-# filter release PRs in jq: a --label list reads the search index, which lags.
-# Neither passes a fork PR on to checkout or push.
+# or moving (if it is open on a branch of the repository, back to draft if it is
+# ready), and every other draft one, is regenerated. Both lookups page through
+# every open PR with the REST API and filter release PRs in jq: a --label list
+# reads the search index, which lags. Neither passes a fork PR on to checkout or
+# push.
 echo ""
 echo "  Release-please scaffolding:"
 check_file_contains "$LAKE_DIR/release-please-config.json" '"draft-pull-request" *: *true' "release-please opens release PRs as drafts"
@@ -371,7 +372,8 @@ check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(.head.repo
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any(.labels\[\]; .name == "autorelease: pending") and (.draft | not))' "release.yml holds every ready release PR"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'REPORTED_NUMBERS: .*fromJSON(steps.release.outputs.prs' "release.yml regenerates each release PR release-please reports, from its number and branch only"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'gh pr ready --undo "$pr"' "release.yml puts a reported release PR that is ready back to draft"
-check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'map(select(.draft) | del(.draft))' "release.yml regenerates every other draft release PR"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any($open\[\]; .number == $n) | not)' "release.yml drops a reported PR that is not open on this repository"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'or (.release and .draft))' "release.yml regenerates every other draft release PR"
 
 # ============================================================================
 # Phase 6: Verify Generated BUILD Files

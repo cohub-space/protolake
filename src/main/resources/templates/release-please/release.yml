@@ -95,13 +95,12 @@ jobs:
       # The release PRs whose branch needs regenerating: each one
       # release-please opened or moved in this run, read from its own
       # outputs, and every other open release PR that is a draft (one an
-      # earlier failed run left held), from the list. The outputs name
-      # exactly the PRs whose branch release-please rewrote, whatever a
-      # list reads; a reported PR they cannot name fails the step instead
-      # of leaving the regenerate matrix empty. Only each PR's number and
-      # head branch reach the environment: the output also carries every
-      # PR's body, and Linux will not start a process with an environment
-      # variable over 128 KiB.
+      # earlier failed run left held), from the list. A reported PR the
+      # outputs cannot name fails the step instead of leaving the
+      # regenerate matrix empty. Only each PR's number and head branch
+      # reach the environment: the output also carries every PR's body, and
+      # Linux will not start a process with an environment variable over
+      # 128 KiB.
       - name: List the release PRs to regenerate
         id: drafts
         env:
@@ -121,24 +120,41 @@ jobs:
             echo "::error::release-please reported a release PR, but its prs output names none"
             exit 1
           fi
-          listed=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
+          # Every open PR on a branch of this repository, release PR or not.
+          open=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
             --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
-              | select(any(.labels[]; .name == "autorelease: pending"))
               | .headRefName = .head.ref
-              | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"))' \
+              | .release = any(.labels[]; .name == "autorelease: pending")
+              | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
+                  or .key == "release"))' \
             | jq -cs '.')
+          # A reported PR counts only if it is one of those, and its branch
+          # comes from there: release-please matches its PR by branch name
+          # alone, so it can report a fork PR whose branch has the release
+          # branch's name.
+          missing=$(printf '%s\n%s' "$reported" "$open" | jq -rs '
+            .[1] as $open | .[0][] | .number as $n
+            | select(any($open[]; .number == $n) | not) | $n')
+          for pr in $missing; do
+            echo "::warning::release-please reported #$pr, which is not open on a branch of this repository; it is not regenerated"
+          done
           # A reported PR that is ready goes back to draft until its branch is
           # regenerated: one release-please reopened from a snooze, which the
           # hold step never saw, or one the step above readied as
           # release-please moved it.
-          ready=$(printf '%s\n%s' "$reported" "$listed" | jq -rs '
+          ready=$(printf '%s\n%s' "$reported" "$open" | jq -rs '
             .[0] as $reported | .[1][] | select(.draft | not) | .number as $n
             | select(any($reported[]; .number == $n)) | $n')
           for pr in $ready; do
             gh pr ready --undo "$pr" -R "$GITHUB_REPOSITORY"
           done
-          prs=$(printf '%s\n%s' "$reported" "$listed" | jq -cs '
-            .[0] + (.[1] | map(select(.draft) | del(.draft))) | unique_by(.number)')
+          # unique_by: a PR closed while the pages are read can shift another
+          # onto two pages.
+          prs=$(printf '%s\n%s' "$reported" "$open" | jq -cs '
+            .[0] as $reported | .[1]
+            | map(select(.number as $n | any($reported[]; .number == $n) or (.release and .draft))
+              | del(.draft, .release))
+            | unique_by(.number)')
           echo "prs=$prs" >> "$GITHUB_OUTPUT"
 
   # Gazelle bakes each bundle's version into its BUILD files from bundle.yaml
