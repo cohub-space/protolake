@@ -82,13 +82,12 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
     /**
      * A release PR must not merge before its branch carries the regenerated
      * BUILD files: release-please opens it as a draft; release.yml holds a
-     * ready one as a draft before release-please can move it; once
-     * release-please succeeded with a report the job trusts, it readies again
-     * a held one release-please did not report whose branch tip is the
-     * regenerate job's commit (it carries a Regenerated-by trailer, made even
-     * when nothing changed); it puts every other release PR, and every one
-     * release-please reported, back to draft and regenerates it, and marks it
-     * ready only after pushing. Its lookups page through every open PR and
+     * ready one as a draft before release-please can move it; only after
+     * release-please succeeded, its drafts step readies one whose branch tip
+     * is the regenerate job's commit (it carries a Regenerated-by trailer,
+     * made even when nothing changed) and that release-please did not report,
+     * puts every other release PR back to draft and regenerates it, and marks
+     * it ready only after pushing. Its lookups page through every open PR and
      * filter release PRs in jq: a {@code --label} list reads the search
      * index, which lags. ReleaseWorkflowDraftsStepTest runs the steps and the
      * commit.
@@ -109,13 +108,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         String releasePlease = release.substring(releaseJob, regenerateJob);
         int hold = releasePlease.indexOf("gh pr ready --undo");
         int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
-        int skipReported = releasePlease.indexOf(
-                "if printf '%s' \"$reported\" | jq -e --argjson n \"$pr\" 'any(.[]; .number == $n)'");
-        int readyAgain = releasePlease.indexOf(
-                "if [ \"$regenerated\" = true ] && ! gh pr ready \"$pr\" -R \"$GITHUB_REPOSITORY\"; then");
         int reported = releasePlease.indexOf(
-                "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}",
-                readyAgain);
+                "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}");
+        int readied = releasePlease.indexOf("[ \"$draft\" = true ] && ! gh pr ready \"$pr\"");
         int backToDraft = releasePlease.indexOf("[ \"$draft\" = false ] && ! gh pr ready --undo \"$pr\"");
         int drafts = releasePlease.indexOf("del(.draft, .release)]");
         assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
@@ -133,21 +128,19 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
                 .contains("\"$reported\" | jq -e --argjson n \"$pr\" 'any(.[]; .number == $n)'");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
-        assertThat(skipReported).as("a PR release-please reported is never readied again")
-                .isGreaterThan(action);
-        assertThat(readyAgain).as("a regenerated head is readied again").isGreaterThan(skipReported);
-        assertThat(releasePlease).as("readied again only after release-please succeeded")
-                .contains("if: steps.release.outcome == 'success' && steps.hold.outputs.held != ''");
+        assertThat(releasePlease.split(Pattern.quote("gh pr ready \"$pr\""), -1))
+                .as("only the drafts step readies a release PR").hasSize(2);
         assertThat(releasePlease).as("one definition of a trusted report").contains("REPORTED_PRS: |-");
         assertThat(releasePlease.split(Pattern.quote(
                 "| jq -cs --arg created \"$PRS_CREATED\" \"$REPORTED_PRS\")"), -1))
-                .as("both steps judge the report by it").hasSize(3);
+                .as("the drafts step judges the report by it").hasSize(2);
         assertThat(releasePlease).as("an untrusted report regenerates every release PR")
                 .contains("if [ \"$trusted\" = false ] || printf '%s' \"$reported\"");
         assertThat(reported).as("each PR release-please reported is regenerated")
-                .isGreaterThan(readyAgain);
+                .isGreaterThan(action);
+        assertThat(readied).as("a regenerated one is readied").isGreaterThan(reported);
         assertThat(backToDraft).as("a release PR that is not regenerated goes back to draft")
-                .isGreaterThan(reported);
+                .isGreaterThan(readied);
         assertThat(drafts).as("and is regenerated").isGreaterThan(backToDraft);
         assertThat(releasePlease).contains("drafts:           ${{ steps.drafts.outputs.prs }}");
 

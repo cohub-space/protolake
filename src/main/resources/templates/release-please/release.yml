@@ -48,8 +48,7 @@ jobs:
       # created any. The .* filter skips a PR that lacks the field, and
       # transpose pads the shorter list with null. The program fails for a
       # report it cannot trust: one naming a PR without a whole number and a
-      # head branch, or naming none when it says it created one. Both steps
-      # that read the report run it, so they trust the same reports.
+      # head branch, or naming none when it says it created one.
       REPORTED_PRS: |-
         transpose | map(. as [$number, $branch] | null | .number = $number | .headRefName = $branch)
         | if ($created == "true" and length == 0)
@@ -71,24 +70,24 @@ jobs:
       # one. The tip is read from the branch itself: GitHub updates the PR's
       # recorded head a moment after a push. release-please pushes onto an
       # open release PR without drafting it, so every ready one is held
-      # first. Both lookups in this job page through every open PR with the
-      # REST API and keep the release PRs in jq, the way release-please finds
-      # them: given a label filter, gh answers from the search index, which
-      # shows a PR, its label and its draft state only a moment after they
-      # change, and gh pr list stops at a limit. Both keep only PRs whose
-      # branch lives in this repository: a fork PR labelled as a release PR
-      # would send its branch name to checkout and push.
+      # first, and in this job only the drafts step readies one again. Both
+      # lookups in this job page through every open PR with the REST API and
+      # keep the release PRs in jq, the way release-please finds them: given
+      # a label filter, gh answers from the search index, which shows a PR,
+      # its label and its draft state only a moment after they change, and
+      # gh pr list stops at a limit. Both keep only PRs whose branch lives in
+      # this repository: a fork PR labelled as a release PR would send its
+      # branch name to checkout and push.
       - name: Hold the open release PRs as drafts
         id: hold
         run: |
           held=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
             --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
               | select(any(.labels[]; .name == "autorelease: pending") and (.draft | not))
-              | .number' | paste -sd ' ' -)
+              | .number')
           for pr in $held; do
             gh pr ready --undo "$pr" -R "$GITHUB_REPOSITORY"
           done
-          echo "held=$held" >> "$GITHUB_OUTPUT"
 
       - id: release
         uses: googleapis/release-please-action@v4
@@ -96,57 +95,17 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # A held PR goes back to ready only if release-please did not report
-      # it and its branch tip is still the regenerate job's commit;
-      # release-please moved any other. A reported PR stays a draft whatever
-      # its tip reads, since that read can lag release-please's push: the
-      # next step regenerates it, and until then it cannot be merged, even
-      # if that step fails. For the same reason nothing is readied unless
-      # release-please succeeded with a report REPORTED_PRS trusts: a failed
-      # run reports nothing it moved before it failed, and an untrusted
-      # report can leave a moved PR out. The held PRs then stay drafts: the
-      # next step regenerates every one after an untrusted report, and after
-      # a failed run the next run readies the regenerated ones. A PR this
-      # step cannot read stays a draft, and the next step reads it again.
-      - name: Ready the held release PRs that are regenerated
-        if: steps.release.outcome == 'success' && steps.hold.outputs.held != ''
-        env:
-          HELD: ${{ steps.hold.outputs.held }}
-          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
-          REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}
-          REPORTED_BRANCHES: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}
-        run: |
-          if ! reported=$(printf '%s\n%s' "$REPORTED_NUMBERS" "$REPORTED_BRANCHES" | jq -cs --arg created "$PRS_CREATED" "$REPORTED_PRS"); then
-            echo "::warning::release-please's report cannot be trusted; the held release PRs stay drafts"
-            exit 0
-          fi
-          for pr in $HELD; do
-            if printf '%s' "$reported" | jq -e --argjson n "$pr" 'any(.[]; .number == $n)' > /dev/null; then
-              continue
-            fi
-            if ! branch=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq 'select(.state == "open") | .head.ref'); then
-              echo "::warning::could not read #$pr; it stays a draft"
-              continue
-            fi
-            [ -n "$branch" ] || continue
-            if ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/$branch" --jq "$REGENERATED_HEAD"); then
-              echo "::warning::could not read the branch of #$pr; it stays a draft"
-              continue
-            fi
-            if [ "$regenerated" = true ] && ! gh pr ready "$pr" -R "$GITHUB_REPOSITORY"; then
-              echo "::warning::could not mark #$pr ready; the next step tries again"
-            fi
-          done
-
       # Every open release PR: one release-please opened or moved in this run
       # needs regenerating outright, and any other is judged by its branch
       # tip. A regenerated one is ready; any other goes back to draft and
       # into the regenerate matrix. release-please's report also finds a PR
-      # the scan missed. After a report REPORTED_PRS does not trust, no tip
-      # is trusted either: every release PR, and every one the report
-      # numbers, needs regenerating, and the step fails. The step acts on
-      # every PR it could read before it fails for one it could not, and the
-      # next run reads that one again. Only each reported PR's number and
+      # the scan missed. The step runs only after release-please succeeded:
+      # a failed run reports nothing it moved before it failed, so the held
+      # PRs stay drafts until the next run. After a report REPORTED_PRS does
+      # not trust, no tip is trusted either: every release PR, and every one
+      # the report numbers, needs regenerating, and the step fails. The step
+      # acts on every PR it could read before it fails for one it could not,
+      # and the next run reads that one again. Only each reported PR's number and
       # head branch reach the environment: the output also carries every
       # PR's body, and Linux will not start a process with an environment
       # variable over 128 KiB.
