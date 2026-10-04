@@ -124,6 +124,19 @@ steps() {
     hand_over "$LAKE"
     OUT=$(protolake validate --lake-path "$LAKE" 2>&1); RC=$?
     if [ $RC -eq 0 ]; then pass "validate passes on the unchanged lake"; else fail "validate exit code $RC"; show "$OUT"; fi
+
+    # A relative HOME stops the breaking check before buf clones the lake: buf's git would
+    # resolve it against a temporary directory, and the git serving the clone inside the
+    # lake's .git. buf's own cache stays absolute, so the run gets as far as the check.
+    hand_over "$LAKE"
+    OUT=$(as_protolake HOME=protolake-home BUF_CACHE_DIR=/home/protolake/.cache/buf \
+        java -jar /deployments/app.jar validate --lake-path "$LAKE" 2>&1); RC=$?
+    if [ $RC -ne 0 ] && printf '%s' "$OUT" | grep -q "HOME is 'protolake-home'" \
+        && printf '%s' "$OUT" | grep -q "absolute path"; then
+        pass "validate refuses a relative HOME before buf clones the lake"
+    else
+        fail "validate did not refuse a relative HOME (exit $RC)"; show "$OUT"
+    fi
 }
 
 steps
