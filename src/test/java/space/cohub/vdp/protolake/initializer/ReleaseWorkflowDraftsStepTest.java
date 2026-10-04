@@ -20,6 +20,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
+import java.util.function.Consumer;
 import java.util.function.Function;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -33,13 +34,16 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * Runs the release-PR handling of the scaffolded {@code release.yml}. The
  * release-please job holds every ready release PR before release-please can
- * move it, readies again each held one release-please did not report whose
- * branch tip is the regenerate job's commit, and then judges every open
- * release PR: one release-please
- * reported in the run needs regenerating outright, any other is judged by its
- * branch tip, never by the PR's recorded head, which lags a push. A
- * regenerated one is ready; any other goes back to draft and into the
- * regenerate-release-branch matrix. The regenerate job's commit carries a
+ * move it. Once release-please succeeded with a report it can trust, it
+ * readies again each held one release-please did not report whose branch tip
+ * is the regenerate job's commit, and then judges every open release PR: one
+ * release-please reported in the run needs regenerating outright, any other
+ * is judged by its branch tip, never by the PR's recorded head, which lags a
+ * push. A regenerated one is ready; any other goes back to draft and into the
+ * regenerate-release-branch matrix. After a report it cannot trust, every
+ * release PR is regenerated and the step fails; both steps take one
+ * definition of a trusted report, {@code REPORTED_PRS}. The regenerate job's
+ * commit carries a
  * Regenerated-by trailer, made even when nothing changed. release-please's
  * {@code prs} output, of which only numbers and head branches reach the
  * environment, is only a hint for a PR the paged list missed, which is looked
@@ -52,16 +56,16 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * change: cohub-protolake#271 stayed a draft with stale BUILD files because a
  * label list ran 0.3 s after release-please opened it.
  *
- * <p>Each step's script runs under the command GitHub runs for its declared
- * shell, with the env GitHub evaluates for it and a stub gh over fixture
- * files. The stub answers {@code gh api --paginate} a page of 100 PRs at a
- * time, applying {@code --jq} to each page as gh does, or a 503 once a case
- * fails the scan; {@code gh api
- * .../pulls/N}, {@code .../commits/heads/BRANCH} (the tip) and
+ * <p>Each step runs when its {@code if:} lets GitHub run it, its script under
+ * the command GitHub runs for its declared shell, with the env GitHub
+ * evaluates for it and a stub gh over fixture files. The stub answers
+ * {@code gh api --paginate} a page of 100 PRs at a time, applying {@code --jq}
+ * to each page as gh does, or a 503 once a case fails the scan;
+ * {@code gh api .../pulls/N}, {@code .../commits/heads/BRANCH} (the tip) and
  * {@code .../commits/SHA} with one object or a 404, or a 503 where a case says
- * so; and {@code gh pr ready [--undo]} by changing the PR's
- * draft state in every view but the search index, so steps run in sequence
- * see each other's changes. For older copies of the workflow it also answers
+ * so; and {@code gh pr ready [--undo]} by changing the PR's draft state in
+ * every view but the search index, so steps run in sequence see each other's
+ * changes. For older copies of the workflow it also answers
  * {@code gh pr view} and {@code gh pr list}, from the open PRs as they are or,
  * given {@code --label}, from a search-index fixture that can lag, with gh's
  * field projection and default limit of 30. Skipped when bash or jq is not on
@@ -93,6 +97,14 @@ class ReleaseWorkflowDraftsStepTest {
             "${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}";
     private static final String BRANCHES =
             "${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}";
+    private static final Map<String, String> REPORT_ENV = Map.of(
+            "PRS_CREATED", "${{ steps.release.outputs.prs_created }}",
+            "REPORTED_NUMBERS", NUMBERS, "REPORTED_BRANCHES", BRANCHES);
+    /** How a step reads release-please's report: through REPORTED_PRS, the one definition of a trusted one. */
+    private static final String REPORT_CHECK = "reported=$(printf '%s\\n%s' \"$REPORTED_NUMBERS\" \"$REPORTED_BRANCHES\""
+            + " | jq -cs --arg created \"$PRS_CREATED\" \"$REPORTED_PRS\")";
+    private static final Pattern CONDITION =
+            Pattern.compile("steps\\.([a-z_-]+)\\.(outputs\\.[a-z_]+|outcome) (==|!=) '([^']*)'");
     /** What GitHub runs for a step's shell (docs: "Supported shells"); empty is unspecified. */
     private static final Map<String, List<String>> SHELLS = Map.of(
             "", List.of("bash", "-e"),
@@ -481,16 +493,145 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     @Test
-    void readyAgain_takesTheReportedPrsFromTheDraftsStepsExpression() throws Exception {
-        Map<String, String> readyAgain = new LinkedHashMap<>();
-        for (Map.Entry<String, JsonNode> var : jobStep("ready-again").path("env").properties()) {
-            readyAgain.put(var.getKey(), var.getValue().asText());
-        }
+    void bothSteps_trustAReportByTheOneDefinition() throws Exception {
+        Map<String, String> readyAgain = new LinkedHashMap<>(REPORT_ENV);
+        readyAgain.put("HELD", "${{ steps.hold.outputs.held }}");
 
-        assertThat(readyAgain).isEqualTo(Map.of("HELD", "${{ steps.hold.outputs.held }}",
-                "REPORTED_NUMBERS", NUMBERS));
-        assertThat(readyAgain.get("REPORTED_NUMBERS"))
-                .isEqualTo(jobStep("drafts").path("env").path("REPORTED_NUMBERS").asText());
+        assertThat(env(jobStep("ready-again"))).isEqualTo(readyAgain);
+        assertThat(env(jobStep("drafts"))).isEqualTo(REPORT_ENV);
+        for (String stepId : List.of("ready-again", "drafts")) {
+            String script = jobStep(stepId).path("run").asText();
+            assertThat(script.split(Pattern.quote(REPORT_CHECK), -1)).as(stepId).hasSize(2);
+            assertThat(script).as(stepId).doesNotContain("transpose");
+        }
+    }
+
+    @Test
+    void aReport_isTrustedOnlyIfItNamesEachPrByWholeNumberAndBranch() throws Exception {
+        assertThat(checkReport(reported(releasePleasePr(12, BRANCH, 0), releasePleasePr(30, VDP, 0))))
+                .isEqualTo(entries(12, BRANCH, 30, VDP));
+        assertThat(checkReport(Map.of("prs_created", "false"))).isEqualTo(JSON.createArrayNode());
+        assertThat(checkReport(Map.of())).isEqualTo(JSON.createArrayNode());
+        Map<String, Map<String, String>> untrusted = new LinkedHashMap<>();
+        untrusted.put("none named", Map.of("prs_created", "true"));
+        untrusted.put("no number", changed(pr -> pr.remove("number")));
+        untrusted.put("no branch", changed(pr -> pr.remove("headBranchName")));
+        untrusted.put("number as a string", changed(pr -> pr.put("number", "30")));
+        untrusted.put("number zero", changed(pr -> pr.put("number", 0)));
+        untrusted.put("fractional number", changed(pr -> pr.put("number", 30.5)));
+        untrusted.put("empty branch", changed(pr -> pr.put("headBranchName", "")));
+        untrusted.put("branch not a string", changed(pr -> pr.put("headBranchName", 30)));
+        for (Map.Entry<String, Map<String, String>> report : untrusted.entrySet()) {
+            assertThat(checkReport(report.getValue())).as(report.getKey()).isNull();
+        }
+    }
+
+    /**
+     * The hold step drafts #12 and #14; release-please pushes #12's branch and
+     * then fails before it reports anything, and #12's tip still reads as the
+     * regenerate commit.
+     */
+    @Test
+    void aFailedReleasePleaseRun_readiesNothingAgain() throws Exception {
+        Repo repo = repo(tempDir.resolve("failed"),
+                List.of(regeneratedPr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ)));
+
+        JobRun job = runJob(repo, Map.of(), "failure");
+
+        assertThat(job.readyAgain() == null ? List.<String>of() : job.readyAgain().readied()).isEmpty();
+        assertThat(job.drafts()).isNull();
+        assertThat(repo.draft(12)).isTrue();
+        assertThat(repo.draft(14)).isTrue();
+
+        // The next run: #12's branch reads as release-please's commit, #14's as
+        // the regenerate job's, and release-please reports nothing.
+        Repo next = repo(tempDir.resolve("next"), List.of(releasePr(12, true, BRANCH), regeneratedPr(14, true, AUTHZ)));
+        JobRun nextJob = runJob(next, Map.of("prs_created", "false"));
+
+        assertThat(nextJob.drafts().matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(next.draft(12)).isTrue();
+        assertThat(next.draft(14)).isFalse();
+    }
+
+    /**
+     * #30 is reported without its number or with its number as a string, or
+     * release-please says it created a PR and names none. Every branch reads
+     * as the regenerate commit; #12's and #30's lag release-please's push.
+     */
+    @Test
+    void aReportThatCannotBeTrusted_readiesNothingAndRegeneratesEveryReleasePr() throws Exception {
+        ObjectNode nameless = releasePleasePr(30, VDP, 0);
+        nameless.remove("number");
+        ObjectNode string = releasePleasePr(30, VDP, 0);
+        string.put("number", "30");
+        Map<String, Map<String, String>> reports = new LinkedHashMap<>();
+        reports.put("nameless", reported(releasePleasePr(12, BRANCH, 0), nameless));
+        reports.put("string", reported(releasePleasePr(12, BRANCH, 0), string));
+        reports.put("none-named", Map.of("prs_created", "true"));
+        for (Map.Entry<String, Map<String, String>> report : reports.entrySet()) {
+            Repo repo = repo(tempDir.resolve(report.getKey()), List.of(regeneratedPr(12, false, BRANCH),
+                    regeneratedPr(14, false, AUTHZ), regeneratedPr(30, false, VDP)));
+
+            JobRun job = runJob(repo, report.getValue());
+
+            assertThat(job.readyAgain().readied()).as(report.getKey()).isEmpty();
+            assertThat(job.drafts().readied()).as(report.getKey()).isEmpty();
+            assertThat(job.drafts().exitCode()).as(report.getKey()).isNotZero();
+            assertThat(job.drafts().writtenMatrix()).as(report.getKey())
+                    .isEqualTo(entries(12, BRANCH, 14, AUTHZ, 30, VDP));
+            assertThat(List.of(repo.draft(12), repo.draft(14), repo.draft(30))).as(report.getKey())
+                    .containsOnly(true);
+        }
+    }
+
+    /**
+     * release-please reopened #12 from a snooze, ready, and moved it; the list
+     * missed it. Its entry is whole, but the report is not. #14, ready on a
+     * regenerated branch, goes back to draft as well.
+     */
+    @Test
+    void anUntrustedReport_stillRegeneratesEachPrItNumbers() throws Exception {
+        ObjectNode nameless = releasePleasePr(30, VDP, 0);
+        nameless.remove("number");
+        List<Pr> openPrs = List.of(regeneratedPr(14, false, AUTHZ));
+        Repo repo = new Repo(tempDir, openPrs, List.of(releasePr(12, false, BRANCH)), caughtUp(openPrs), false,
+                List.of(), List.of());
+
+        StepRun run = runIn(repo, "drafts", reported(releasePleasePr(12, BRANCH, 0), nameless));
+
+        assertThat(run.exitCode()).as("step output:\n%s", run.log()).isNotZero();
+        assertThat(run.writtenMatrix()).isEqualTo(entries(12, BRANCH, 14, AUTHZ));
+        assertThat(run.undone()).containsExactlyInAnyOrder(
+                "pr ready --undo 12 -R " + REPOSITORY, "pr ready --undo 14 -R " + REPOSITORY);
+        assertThat(run.readied()).isEmpty();
+    }
+
+    /** release-please's outputs reporting #12 and #30, with #30's entry changed. */
+    private static Map<String, String> changed(Consumer<ObjectNode> change) {
+        ObjectNode pr = releasePleasePr(30, VDP, 0);
+        change.accept(pr);
+        return reported(releasePleasePr(12, BRANCH, 0), pr);
+    }
+
+    /**
+     * {@code REPORTED_PRS} on the env a step gets from release-please's
+     * outputs: the reported PRs, or null for a report it does not trust.
+     */
+    private JsonNode checkReport(Map<String, String> outputs) throws Exception {
+        Map<String, String> env = stepEnv("drafts", outputs);
+        String program = workflow().at("/jobs/release-please/env/REPORTED_PRS").asText();
+        assertThat(program).isNotEmpty();
+        Command result = run(tempDir, Map.of(), env.get("REPORTED_NUMBERS") + "\n" + env.get("REPORTED_BRANCHES"),
+                "jq", "-cs", "--arg", "created", env.get("PRS_CREATED"), program);
+        return result.exitCode() == 0 ? JSON.readTree(result.output()) : null;
+    }
+
+    private static Map<String, String> env(JsonNode step) {
+        Map<String, String> env = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonNode> var : step.path("env").properties()) {
+            env.put(var.getKey(), var.getValue().asText());
+        }
+        return env;
     }
 
     /**
@@ -585,11 +726,12 @@ class ReleaseWorkflowDraftsStepTest {
                 releasePleasePr(32, BRANCH + "--components--c32", 65_000),
                 releasePleasePr(33, BRANCH + "--components--c33", 65_000));
 
-        Map<String, String> env = stepEnv("drafts", outputs);
-        assertThat(env).allSatisfy((name, value) -> {
-            assertThat((name + "=" + value).getBytes(StandardCharsets.UTF_8)).hasSizeLessThan(MAX_ENV_ENTRY);
-            assertThat(value).doesNotContain("a changelog line");
-        });
+        for (String stepId : List.of("ready-again", "drafts")) {
+            assertThat(stepEnv(stepId, outputs)).as(stepId).allSatisfy((name, value) -> {
+                assertThat((name + "=" + value).getBytes(StandardCharsets.UTF_8)).hasSizeLessThan(MAX_ENV_ENTRY);
+                assertThat(value).doesNotContain("a changelog line");
+            });
+        }
 
         StepRun run = runIn(repo(tempDir, List.of(releasePr(31, true, BRANCH + "--components--c31"),
                 releasePr(32, true, BRANCH + "--components--c32"), releasePr(33, true, BRANCH + "--components--c33"))),
@@ -983,12 +1125,61 @@ class ReleaseWorkflowDraftsStepTest {
         return new StepRun(result.exitCode(), result.output(), written, Files.readAllLines(calls));
     }
 
-    /** Runs the job's steps around release-please: hold, ready-again when something is held, then drafts. */
     private JobRun runJob(Repo repo, Map<String, String> outputs) throws Exception {
+        return runJob(repo, outputs, "success");
+    }
+
+    /**
+     * Runs the job's steps around release-please, whose outcome and outputs
+     * are given: hold, then ready-again and drafts, each only when its
+     * {@code if:} lets GitHub run it. A step GitHub skips is null.
+     */
+    private JobRun runJob(Repo repo, Map<String, String> outputs, String release) throws Exception {
         StepRun hold = runIn(repo, "hold", Map.of());
         String held = hold.output("held");
-        StepRun readyAgain = held.isEmpty() ? null : runIn(repo, "ready-again", outputs, held);
-        return new JobRun(hold, readyAgain, runIn(repo, "drafts", outputs));
+        Map<String, String> outcomes = new LinkedHashMap<>();
+        outcomes.put("hold", "success");
+        outcomes.put("release", release);
+        Map<String, Map<String, String>> stepOutputs = Map.of("hold", Map.of("held", held), "release", outputs);
+        StepRun readyAgain = runs("ready-again", outcomes, stepOutputs)
+                ? runIn(repo, "ready-again", outputs, held) : null;
+        outcomes.put("ready-again", outcome(readyAgain));
+        StepRun drafts = runs("drafts", outcomes, stepOutputs) ? runIn(repo, "drafts", outputs) : null;
+        return new JobRun(hold, readyAgain, drafts);
+    }
+
+    /**
+     * Whether GitHub runs a step of the release-please job, given each earlier
+     * step's outcome and outputs, for the {@code if:} forms the workflow uses:
+     * an {@code &&} of {@code always()} and of a step's output or outcome
+     * compared with a literal. Without {@code always()}, {@code success()} is
+     * implied: no earlier step failed.
+     */
+    private boolean runs(String stepId, Map<String, String> outcomes, Map<String, Map<String, String>> outputs)
+            throws IOException {
+        boolean statusChecked = false;
+        for (String term : jobStep(stepId).path("if").asText().split("&&")) {
+            term = term.strip();
+            if (term.isEmpty()) {
+                continue;
+            }
+            if (term.equals("always()")) {
+                statusChecked = true;
+                continue;
+            }
+            Matcher condition = CONDITION.matcher(term);
+            assertThat(condition.matches()).as("the harness models %s", term).isTrue();
+            String value = condition.group(2).equals("outcome") ? outcomes.get(condition.group(1))
+                    : outputs.get(condition.group(1)).getOrDefault(condition.group(2).substring(8), "");
+            if (value.equals(condition.group(4)) != condition.group(3).equals("==")) {
+                return false;
+            }
+        }
+        return statusChecked || outcomes.values().stream().allMatch(o -> o.equals("success") || o.equals("skipped"));
+    }
+
+    private static String outcome(StepRun run) {
+        return run == null ? "skipped" : run.exitCode() == 0 ? "success" : "failure";
     }
 
     private JsonNode workflow() throws IOException {

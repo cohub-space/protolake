@@ -18,6 +18,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.Instant;
 import java.util.List;
+import java.util.regex.Pattern;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatCode;
@@ -81,14 +82,16 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
     /**
      * A release PR must not merge before its branch carries the regenerated
      * BUILD files: release-please opens it as a draft; release.yml holds a
-     * ready one as a draft before release-please can move it, readies again a
-     * held one release-please did not report whose branch tip is the
+     * ready one as a draft before release-please can move it; once
+     * release-please succeeded with a report the job trusts, it readies again
+     * a held one release-please did not report whose branch tip is the
      * regenerate job's commit (it carries a Regenerated-by trailer, made even
-     * when nothing changed), puts every other release PR, and every one
+     * when nothing changed); it puts every other release PR, and every one
      * release-please reported, back to draft and regenerates it, and marks it
      * ready only after pushing. Its lookups page through every open PR and
-     * filter release PRs in jq: a {@code --label} list reads the search index, which
-     * lags. ReleaseWorkflowDraftsStepTest runs the steps and the commit.
+     * filter release PRs in jq: a {@code --label} list reads the search
+     * index, which lags. ReleaseWorkflowDraftsStepTest runs the steps and the
+     * commit.
      */
     @Test
     void releasePrsStayDraftsUntilTheirBranchIsRegenerated() throws Exception {
@@ -107,7 +110,7 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int hold = releasePlease.indexOf("gh pr ready --undo");
         int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
         int skipReported = releasePlease.indexOf(
-                "if printf '%s' \"$REPORTED_NUMBERS\" | jq -e --argjson n \"$pr\" 'any(.[]; . == $n)'");
+                "if printf '%s' \"$reported\" | jq -e --argjson n \"$pr\" 'any(.[]; .number == $n)'");
         int readyAgain = releasePlease.indexOf(
                 "if [ \"$regenerated\" = true ] && ! gh pr ready \"$pr\" -R \"$GITHUB_REPOSITORY\"; then");
         int reported = releasePlease.indexOf(
@@ -133,7 +136,14 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         assertThat(skipReported).as("a PR release-please reported is never readied again")
                 .isGreaterThan(action);
         assertThat(readyAgain).as("a regenerated head is readied again").isGreaterThan(skipReported);
-        assertThat(releasePlease).contains("if: always() && steps.hold.outputs.held != ''");
+        assertThat(releasePlease).as("readied again only after release-please succeeded")
+                .contains("if: steps.release.outcome == 'success' && steps.hold.outputs.held != ''");
+        assertThat(releasePlease).as("one definition of a trusted report").contains("REPORTED_PRS: |-");
+        assertThat(releasePlease.split(Pattern.quote(
+                "| jq -cs --arg created \"$PRS_CREATED\" \"$REPORTED_PRS\")"), -1))
+                .as("both steps judge the report by it").hasSize(3);
+        assertThat(releasePlease).as("an untrusted report regenerates every release PR")
+                .contains("if [ \"$trusted\" = false ] || printf '%s' \"$reported\"");
         assertThat(reported).as("each PR release-please reported is regenerated")
                 .isGreaterThan(readyAgain);
         assertThat(backToDraft).as("a release PR that is not regenerated goes back to draft")

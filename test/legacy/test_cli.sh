@@ -361,7 +361,8 @@ grep -E "^\[protolake\]|Phase|Build succeeded|Build failed|command succeeded" "$
 # regenerate job's commit (it carries a Regenerated-by trailer, made even when
 # nothing changed), and every one release-please reports, goes back to draft
 # and is regenerated: a held PR release-please reported is never readied
-# again, however its tip reads. Both lookups page
+# again, however its tip reads, and none is readied again after release-please
+# failed or sent a report the job cannot trust. Both lookups page
 # through every open PR with the REST API and filter release PRs in jq: a
 # --label list reads the search index, which lags. Neither passes a fork PR on
 # to checkout or push.
@@ -375,7 +376,10 @@ check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any(.label
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'REPORTED_NUMBERS: .*fromJSON(steps.release.outputs.prs' "release.yml regenerates each release PR release-please reports, from its number and branch only"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'any(. == "Regenerated-by: release-workflow")' "release.yml judges each release PR by its branch tip's commit"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'commits/heads/$branch' "release.yml reads the branch tip, not the PR's recorded head"
-check_file_contains "$LAKE_DIR/.github/workflows/release.yml" '"$REPORTED_NUMBERS" | jq -e --argjson n "$pr"' "release.yml never readies again a release PR release-please reported"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" '^ *if printf .%s. "$reported" | jq -e --argjson n "$pr"' "release.yml never readies again a release PR release-please reported"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" "if: steps.release.outcome == 'success' && steps.hold.outputs.held != ''" "release.yml readies a held release PR again only after release-please succeeded"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'jq -cs --arg created "$PRS_CREATED" "$REPORTED_PRS"' "release.yml judges release-please's report by one definition"
+check_file_contains "$LAKE_DIR/.github/workflows/release.yml" '\[ "$trusted" = false \] ||' "release.yml regenerates every release PR after a report it cannot trust"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" '"$reported" | jq -e --argjson n "$pr"' "release.yml regenerates each release PR release-please reports outright"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" '\[ "$draft" = false \] && ! gh pr ready --undo "$pr"' "release.yml puts a release PR that is not regenerated back to draft"
 check_file_contains "$LAKE_DIR/.github/workflows/release.yml" 'select(any($open\[\]; .number == $n) | not)' "release.yml drops a reported PR that is not open on this repository"

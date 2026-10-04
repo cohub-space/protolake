@@ -43,6 +43,20 @@ jobs:
       # Whether a commit is the regenerate job's: its message carries the
       # Regenerated-by trailer that job adds, which release-please's never do.
       REGENERATED_HEAD: '.commit.message | split("\n") | any(. == "Regenerated-by: release-workflow")'
+      # release-please's report, from the numbers and the head branches of
+      # the PRs it opened or moved in this run, and whether it says it
+      # created any. The .* filter skips a PR that lacks the field, and
+      # transpose pads the shorter list with null. The program fails for a
+      # report it cannot trust: one naming a PR without a whole number and a
+      # head branch, or naming none when it says it created one. Both steps
+      # that read the report run it, so they trust the same reports.
+      REPORTED_PRS: |-
+        transpose | map(. as [$number, $branch] | null | .number = $number | .headRefName = $branch)
+        | if ($created == "true" and length == 0)
+            or any(.[]; (.number | type) != "number" or .number <= 0 or .number != (.number | floor)
+              or (.headRefName | type) != "string" or .headRefName == "")
+          then error("release-please's report cannot be trusted")
+          else . end
     # An unspecified shell runs bash -e without pipefail, so a command that
     # failed inside a pipeline would pass on an empty list.
     defaults:
@@ -82,23 +96,32 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # A held PR goes back to ready only if its branch tip is still the
-      # regenerate job's commit; release-please moved any other. One
-      # release-please reported in this run stays a draft whatever its tip
-      # reads, since that read can lag release-please's push: the next step
-      # regenerates it, and until then it cannot be merged, even if that
-      # step fails. REPORTED_NUMBERS is the next step's expression, so both
-      # steps take the same PRs as reported. This runs when release-please
-      # failed too. A PR this step cannot read stays a draft, and the next
-      # step reads it again.
+      # A held PR goes back to ready only if release-please did not report
+      # it and its branch tip is still the regenerate job's commit;
+      # release-please moved any other. A reported PR stays a draft whatever
+      # its tip reads, since that read can lag release-please's push: the
+      # next step regenerates it, and until then it cannot be merged, even
+      # if that step fails. For the same reason nothing is readied unless
+      # release-please succeeded with a report REPORTED_PRS trusts: a failed
+      # run reports nothing it moved before it failed, and an untrusted
+      # report can leave a moved PR out. The held PRs then stay drafts: the
+      # next step regenerates every one after an untrusted report, and after
+      # a failed run the next run readies the regenerated ones. A PR this
+      # step cannot read stays a draft, and the next step reads it again.
       - name: Ready the held release PRs that are regenerated
-        if: always() && steps.hold.outputs.held != ''
+        if: steps.release.outcome == 'success' && steps.hold.outputs.held != ''
         env:
           HELD: ${{ steps.hold.outputs.held }}
+          PRS_CREATED: ${{ steps.release.outputs.prs_created }}
           REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}
+          REPORTED_BRANCHES: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}
         run: |
+          if ! reported=$(printf '%s\n%s' "$REPORTED_NUMBERS" "$REPORTED_BRANCHES" | jq -cs --arg created "$PRS_CREATED" "$REPORTED_PRS"); then
+            echo "::warning::release-please's report cannot be trusted; the held release PRs stay drafts"
+            exit 0
+          fi
           for pr in $HELD; do
-            if printf '%s' "$REPORTED_NUMBERS" | jq -e --argjson n "$pr" 'any(.[]; . == $n)' > /dev/null; then
+            if printf '%s' "$reported" | jq -e --argjson n "$pr" 'any(.[]; .number == $n)' > /dev/null; then
               continue
             fi
             if ! branch=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq 'select(.state == "open") | .head.ref'); then
@@ -119,11 +142,14 @@ jobs:
       # needs regenerating outright, and any other is judged by its branch
       # tip. A regenerated one is ready; any other goes back to draft and
       # into the regenerate matrix. release-please's report also finds a PR
-      # the scan missed. The step acts on every PR it could
-      # read before it fails for one it could not, and the next run reads
-      # that one again. Only each reported PR's number and head branch reach
-      # the environment: the output also carries every PR's body, and Linux
-      # will not start a process with an environment variable over 128 KiB.
+      # the scan missed. After a report REPORTED_PRS does not trust, no tip
+      # is trusted either: every release PR, and every one the report
+      # numbers, needs regenerating, and the step fails. The step acts on
+      # every PR it could read before it fails for one it could not, and the
+      # next run reads that one again. Only each reported PR's number and
+      # head branch reach the environment: the output also carries every
+      # PR's body, and Linux will not start a process with an environment
+      # variable over 128 KiB.
       - name: List the release PRs to regenerate
         id: drafts
         env:
@@ -132,20 +158,14 @@ jobs:
           REPORTED_BRANCHES: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.headBranchName) }}
         run: |
           failed=false
-          # The .* filter skips a PR that lacks the field; transpose pads the
-          # shorter list with null, which the check below rejects.
-          if ! reported=$(printf '%s\n%s' "$REPORTED_NUMBERS" "$REPORTED_BRANCHES" | jq -cs '
-              transpose | map(. as [$number, $branch] | null | .number = $number | .headRefName = $branch)
-              | if any(.[]; (.number | type) != "number" or .number <= 0
-                  or (.headRefName | type) != "string" or .headRefName == "")
-                then error("release-please reported a release PR without its number or head branch")
-                else . end'); then
-            echo "::error::release-please reported a release PR without its number or head branch"
-            reported='[]'
+          trusted=true
+          if ! reported=$(printf '%s\n%s' "$REPORTED_NUMBERS" "$REPORTED_BRANCHES" | jq -cs --arg created "$PRS_CREATED" "$REPORTED_PRS"); then
+            echo "::error::release-please's report cannot be trusted; every release PR is regenerated"
+            trusted=false
             failed=true
-          elif [ "$PRS_CREATED" = true ] && [ "$reported" = '[]' ]; then
-            echo "::error::release-please reported a release PR, but its prs output names none"
-            failed=true
+            # Its whole numbers still name PRs release-please opened or moved.
+            reported=$(printf '%s' "$REPORTED_NUMBERS" | jq -c 'map((if type == "string" then (tonumber? // null) else . end)
+              | select(type == "number" and . > 0 and . == floor) | . as $n | null | .number = $n)')
           fi
           # Every open PR on a branch of this repository.
           open=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
@@ -192,7 +212,7 @@ jobs:
             pull=$(printf '%s' "$release" | jq -c --argjson n "$pr" 'map(select(.number == $n)) | first')
             branch=$(printf '%s' "$pull" | jq -r '.headRefName')
             draft=$(printf '%s' "$pull" | jq -r '.draft')
-            if printf '%s' "$reported" | jq -e --argjson n "$pr" 'any(.[]; .number == $n)' > /dev/null; then
+            if [ "$trusted" = false ] || printf '%s' "$reported" | jq -e --argjson n "$pr" 'any(.[]; .number == $n)' > /dev/null; then
               regenerated=false
             elif ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/$branch" --jq "$REGENERATED_HEAD"); then
               echo "::error::could not read the branch of #$pr; it is regenerated"
