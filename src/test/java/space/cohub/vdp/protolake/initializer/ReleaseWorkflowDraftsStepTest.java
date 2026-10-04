@@ -33,9 +33,11 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * Runs the release-PR handling of the scaffolded {@code release.yml}. The
  * release-please job holds every ready release PR before release-please can
- * move it, readies again each held one whose head is the regenerate job's
- * commit, and then judges every open release PR by its head commit: a
- * regenerated one is ready, any other goes back to draft and into the
+ * move it, readies again each held one whose branch tip is the regenerate
+ * job's commit, and then judges every open release PR: one release-please
+ * reported in the run needs regenerating outright, any other is judged by its
+ * branch tip, never by the PR's recorded head, which lags a push. A
+ * regenerated one is ready; any other goes back to draft and into the
  * regenerate-release-branch matrix. The regenerate job's commit carries a
  * Regenerated-by trailer, made even when nothing changed. release-please's
  * {@code prs} output, of which only numbers and head branches reach the
@@ -53,8 +55,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * shell, with the env GitHub evaluates for it and a stub gh over fixture
  * files. The stub answers {@code gh api --paginate} a page of 100 PRs at a
  * time, applying {@code --jq} to each page as gh does; {@code gh api
- * .../pulls/N} and {@code .../commits/SHA} with one object or a 404, or a 503
- * where a case says so; and {@code gh pr ready [--undo]} by changing the PR's
+ * .../pulls/N}, {@code .../commits/heads/BRANCH} (the tip) and
+ * {@code .../commits/SHA} with one object or a 404, or a 503 where a case says
+ * so; and {@code gh pr ready [--undo]} by changing the PR's
  * draft state in every view but the search index, so steps run in sequence
  * see each other's changes. For older copies of the workflow it also answers
  * {@code gh pr view} and {@code gh pr list}, from the open PRs as they are or,
@@ -185,6 +188,12 @@ class ReleaseWorkflowDraftsStepTest {
                     pr=$(jq -c --argjson n "$n" 'map(select(.number == $n)) | first // empty' "$F/lookup.json")
                     [ -n "$pr" ] || { echo "gh: Not Found (HTTP 404)" >&2; exit 1; }
                     printf '%s' "$pr" | emit ;;
+                  "repos/$GITHUB_REPOSITORY/commits/heads/"?*)
+                    branch=${path#"repos/$GITHUB_REPOSITORY/commits/heads/"}
+                    if jq -e --arg b "$branch" 'index($b)' "$F/failing-branches.json" > /dev/null; then unavailable; fi
+                    commit=$(jq -c --arg b "$branch" '.[$b] // empty' "$F/branches.json")
+                    [ -n "$commit" ] || { echo "gh: No commit found for SHA: heads/$branch (HTTP 422)" >&2; exit 1; }
+                    printf '%s' "$commit" | emit ;;
                   "repos/$GITHUB_REPOSITORY/commits/"?*)
                     sha=${path##*/}
                     if jq -e --arg s "$sha" 'index($s)' "$F/failing-commits.json" > /dev/null; then unavailable; fi
@@ -219,7 +228,7 @@ class ReleaseWorkflowDraftsStepTest {
 
     @Test
     void aReportedPrWhoseLabelIsNotVisibleYet_isRegenerated() throws Exception {
-        StepRun run = runIn(repo(tempDir, List.of(new Pr(271, true, BRANCH, "", REPOSITORY, "open", false))),
+        StepRun run = runIn(repo(tempDir, List.of(new Pr(271, true, BRANCH, "", REPOSITORY, "open", false, false))),
                 "drafts", reported(releasePleasePr(271, BRANCH, 0)));
 
         assertThat(run.matrix()).isEqualTo(entries(271, BRANCH));
@@ -371,7 +380,7 @@ class ReleaseWorkflowDraftsStepTest {
     }
 
     @Test
-    void anUnreadableHeadCommit_countsAsNotRegenerated() throws Exception {
+    void anUnreadableBranchTip_countsAsNotRegenerated() throws Exception {
         List<Pr> openPrs = List.of(regeneratedPr(20, false, VDP), releasePr(14, true, AUTHZ));
         StepRun run = runIn(new Repo(tempDir, openPrs, List.of(), caughtUp(openPrs), false, List.of(),
                 List.of(20)), "drafts", Map.of("prs_created", "false"));
@@ -415,6 +424,36 @@ class ReleaseWorkflowDraftsStepTest {
 
         assertThat(job.drafts().matrix()).isEqualTo(entries(12, BRANCH));
         assertThat(next.draft(12)).isTrue();
+    }
+
+    /** release-please moved #12 a moment ago; neither its recorded head nor its branch reads its push yet. */
+    @Test
+    void aReportedPrWhoseHeadStillReadsAsTheRegenerateCommit_isRegenerated() throws Exception {
+        Repo repo = repo(tempDir, List.of(regeneratedPr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ)));
+
+        StepRun run = runIn(repo, "drafts", reported(releasePleasePr(12, BRANCH, 0)));
+
+        assertThat(run.matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
+        assertThat(repo.draft(12)).isTrue();
+        assertThat(repo.draft(14)).isFalse();
+    }
+
+    /**
+     * #12's branch has release-please's commit and #14's the regenerate job's,
+     * but each PR still records the head before.
+     */
+    @Test
+    void aPrWhoseRecordedHeadLagsItsBranch_isJudgedByTheBranch() throws Exception {
+        Repo repo = repo(tempDir, List.of(releasePr(12, false, BRANCH).recording(true),
+                regeneratedPr(14, true, AUTHZ).recording(false)));
+
+        JobRun job = runJob(repo, Map.of("prs_created", "false"));
+
+        assertThat(job.readyAgain().readied()).isEmpty();
+        assertThat(job.drafts().matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(repo.draft(12)).isTrue();
+        assertThat(repo.draft(14)).isFalse();
     }
 
     @Test
@@ -590,12 +629,27 @@ class ReleaseWorkflowDraftsStepTest {
         }
     }
 
-    /** A PR: its number, draft state, head branch, label, head repository, state and head commit. */
+    /**
+     * A PR: its number, draft state, head branch, label, head repository and
+     * state; whether its branch tip is the regenerate job's commit or
+     * release-please's; and the same of the head the PR records, which lags a
+     * push.
+     */
     private record Pr(int number, boolean draft, String branch, String label, String repo, String state,
-            boolean regenerated) {
+            boolean regenerated, boolean recorded) {
 
+        /** The branch tip. */
         String sha() {
             return "%040x".formatted(number);
+        }
+
+        String recordedSha() {
+            return recorded == regenerated ? sha() : "f" + "%039x".formatted(number);
+        }
+
+        /** The same PR, recording a head the branch has moved on from. */
+        Pr recording(boolean recordedHead) {
+            return new Pr(number, draft, branch, label, repo, state, regenerated, recordedHead);
         }
 
         /** The PR as {@code gh pr list --json} reports it. */
@@ -604,7 +658,7 @@ class ReleaseWorkflowDraftsStepTest {
             pr.put("number", number);
             pr.put("isDraft", draft);
             pr.put("headRefName", branch);
-            pr.put("headRefOid", sha());
+            pr.put("headRefOid", recordedSha());
             labels(pr);
             return pr;
         }
@@ -617,7 +671,7 @@ class ReleaseWorkflowDraftsStepTest {
             pr.put("draft", draft);
             pr.put("title", "change " + number);
             pr.put("body", "a change");
-            ObjectNode head = pr.putObject("head").put("ref", branch).put("sha", sha())
+            ObjectNode head = pr.putObject("head").put("ref", branch).put("sha", recordedSha())
                     .put("label", "cohub-space:" + branch);
             if (repo.equals(DELETED_FORK)) {
                 head.putNull("repo");
@@ -637,35 +691,36 @@ class ReleaseWorkflowDraftsStepTest {
             }
         }
 
-        /** The PR's head commit as the REST commits API reports it, abridged. */
-        ObjectNode commit() {
-            ObjectNode commit = JSON.createObjectNode().put("sha", sha());
-            commit.putObject("commit").put("message", regenerated
-                    ? "chore: regenerate the lake's generated files for the release versions\n\n" + TRAILER
-                    : "chore(main): release main");
-            return commit;
-        }
+    }
+
+    /** A commit as the REST commits API reports it, abridged: the regenerate job's, or release-please's. */
+    private static ObjectNode commit(String sha, boolean regenerated) {
+        ObjectNode commit = JSON.createObjectNode().put("sha", sha);
+        commit.putObject("commit").put("message", regenerated
+                ? "chore: regenerate the lake's generated files for the release versions\n\n" + TRAILER
+                : "chore(main): release main");
+        return commit;
     }
 
     private static Pr releasePr(int number, boolean draft, String branch) {
-        return new Pr(number, draft, branch, LABEL, REPOSITORY, "open", false);
+        return new Pr(number, draft, branch, LABEL, REPOSITORY, "open", false, false);
     }
 
     private static Pr regeneratedPr(int number, boolean draft, String branch) {
-        return new Pr(number, draft, branch, LABEL, REPOSITORY, "open", true);
+        return new Pr(number, draft, branch, LABEL, REPOSITORY, "open", true, true);
     }
 
     private static Pr closedPr(int number, String branch) {
-        return new Pr(number, false, branch, LABEL, REPOSITORY, "closed", false);
+        return new Pr(number, false, branch, LABEL, REPOSITORY, "closed", false, false);
     }
 
     private static Pr featurePr(int number, boolean draft) {
-        return new Pr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY, "open", false);
+        return new Pr(number, draft, "feat/change-" + number, "enhancement", REPOSITORY, "open", false, false);
     }
 
     /** A fork PR labelled as a release PR. */
     private static Pr forkPr(int number, boolean draft, String repo, String branch) {
-        return new Pr(number, draft, branch, LABEL, repo, "open", false);
+        return new Pr(number, draft, branch, LABEL, repo, "open", false, false);
     }
 
     /** What a {@code --label} list returns from a search index that has caught up. */
@@ -761,7 +816,9 @@ class ReleaseWorkflowDraftsStepTest {
     /**
      * What the stub gh answers: the open PRs as they are, newest first; PRs only
      * a lookup by number finds (missed, open or closed); the search index's
-     * answer to a {@code --label} list; and the lookups that fail.
+     * answer to a {@code --label} list; and the lookups that fail. {@code
+     * failingCommits} names PRs whose branch tip and recorded head cannot be
+     * read.
      */
     private static final class Repo {
         final Path dir;
@@ -783,14 +840,27 @@ class ReleaseWorkflowDraftsStepTest {
             List<Pr> everyone = new ArrayList<>(openPrs);
             everyone.addAll(missed);
             ObjectNode commits = JSON.createObjectNode();
-            everyone.forEach(pr -> commits.set(pr.sha(), pr.commit()));
+            ObjectNode branches = JSON.createObjectNode();
             ArrayNode failingShas = JSON.createArrayNode();
-            everyone.stream().filter(pr -> failingCommits.contains(pr.number())).forEach(pr -> failingShas.add(pr.sha()));
+            ArrayNode failingBranches = JSON.createArrayNode();
+            for (Pr pr : everyone) {
+                commits.set(pr.sha(), commit(pr.sha(), pr.regenerated()));
+                commits.set(pr.recordedSha(), commit(pr.recordedSha(), pr.recorded()));
+                if (pr.repo().equals(REPOSITORY)) {
+                    branches.set(pr.branch(), commit(pr.sha(), pr.regenerated()));
+                }
+                if (failingCommits.contains(pr.number())) {
+                    failingShas.add(pr.sha()).add(pr.recordedSha());
+                    failingBranches.add(pr.branch());
+                }
+            }
             write("pr-list.json", array(openPrs, Pr::listed));
             write("label-search.json", array(labelSearch, Pr::listed));
             write("pulls.json", array(openPrs, Pr::pull));
             write("lookup.json", array(everyone, Pr::pull));
             write("commits.json", commits);
+            write("branches.json", branches);
+            write("failing-branches.json", failingBranches);
             write("failing-lookups.json", JSON.valueToTree(failingLookups));
             write("failing-commits.json", failingShas);
         }

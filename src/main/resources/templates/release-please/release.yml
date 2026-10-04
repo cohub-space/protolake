@@ -51,18 +51,19 @@ jobs:
     steps:
       # A release PR may merge only once its branch carries the regenerated
       # files (regenerate-release-branch below), and GitHub refuses to merge
-      # a draft. Whether a branch carries them is read from its head commit
-      # on every run, never remembered: the regenerate job's commit is the
-      # head of a regenerated branch, and release-please rewrites the branch
-      # without one. release-please pushes onto an open release PR without
-      # drafting it, so every ready one is held first. Both lookups in this
-      # job page through every open PR with the REST API and keep the
-      # release PRs in jq, the way release-please finds them: given a label
-      # filter, gh answers from the search index, which shows a PR, its label
-      # and its draft state only a moment after they change, and gh pr list
-      # stops at a limit. Both keep only PRs whose branch lives in this
-      # repository: a fork PR labelled as a release PR would send its branch
-      # name to checkout and push.
+      # a draft. Whether a branch carries them is read from its tip on every
+      # run, never remembered: the regenerate job's commit is the tip of a
+      # regenerated branch, and release-please rewrites the branch without
+      # one. The tip is read from the branch itself: GitHub updates the PR's
+      # recorded head a moment after a push. release-please pushes onto an
+      # open release PR without drafting it, so every ready one is held
+      # first. Both lookups in this job page through every open PR with the
+      # REST API and keep the release PRs in jq, the way release-please finds
+      # them: given a label filter, gh answers from the search index, which
+      # shows a PR, its label and its draft state only a moment after they
+      # change, and gh pr list stops at a limit. Both keep only PRs whose
+      # branch lives in this repository: a fork PR labelled as a release PR
+      # would send its branch name to checkout and push.
       - name: Hold the open release PRs as drafts
         id: hold
         run: |
@@ -81,23 +82,23 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-      # A held PR goes back to ready only if its head is still the regenerate
-      # job's commit; release-please moved any other. This runs when
-      # release-please failed too. A PR this step cannot read stays a draft,
-      # and the next step reads it again.
+      # A held PR goes back to ready only if its branch tip is still the
+      # regenerate job's commit; release-please moved any other. This runs
+      # when release-please failed too. A PR this step cannot read stays a
+      # draft, and the next step reads it again.
       - name: Ready the held release PRs that are regenerated
         if: always() && steps.hold.outputs.held != ''
         env:
           HELD: ${{ steps.hold.outputs.held }}
         run: |
           for pr in $HELD; do
-            if ! head=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq 'select(.state == "open") | .head.sha'); then
+            if ! branch=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq 'select(.state == "open") | .head.ref'); then
               echo "::warning::could not read #$pr; it stays a draft"
               continue
             fi
-            [ -n "$head" ] || continue
-            if ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/$head" --jq "$REGENERATED_HEAD"); then
-              echo "::warning::could not read the head commit of #$pr; it stays a draft"
+            [ -n "$branch" ] || continue
+            if ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/$branch" --jq "$REGENERATED_HEAD"); then
+              echo "::warning::could not read the branch of #$pr; it stays a draft"
               continue
             fi
             if [ "$regenerated" = true ] && ! gh pr ready "$pr" -R "$GITHUB_REPOSITORY"; then
@@ -105,10 +106,11 @@ jobs:
             fi
           done
 
-      # Every open release PR, each judged by its head commit: a regenerated
-      # one is ready, any other goes back to draft and into the regenerate
-      # matrix. release-please's report of the PRs it opened or moved is only
-      # a hint, for one the scan missed. The step acts on every PR it could
+      # Every open release PR: one release-please opened or moved in this run
+      # needs regenerating outright, and any other is judged by its branch
+      # tip. A regenerated one is ready; any other goes back to draft and
+      # into the regenerate matrix. release-please's report also finds a PR
+      # the scan missed. The step acts on every PR it could
       # read before it fails for one it could not, and the next run reads
       # that one again. Only each reported PR's number and head branch reach
       # the environment: the output also carries every PR's body, and Linux
@@ -136,13 +138,13 @@ jobs:
             echo "::error::release-please reported a release PR, but its prs output names none"
             failed=true
           fi
-          # Every open PR on a branch of this repository, with its head commit.
+          # Every open PR on a branch of this repository.
           open=$(gh api --paginate "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100" \
             --jq '.[] | select(.head.repo.full_name == env.GITHUB_REPOSITORY)
-              | .headRefName = .head.ref | .sha = .head.sha
+              | .headRefName = .head.ref
               | .release = any(.labels[]; .name == "autorelease: pending")
               | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
-                  or .key == "sha" or .key == "release"))' \
+                  or .key == "release"))' \
             | jq -cs '.')
           # A reported PR the scan missed is looked up directly: the scan
           # pages by page number, so a PR closed while it is read moves
@@ -156,10 +158,10 @@ jobs:
           for pr in $missing; do
             if ! found=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" \
               --jq 'select(.state == "open" and .head.repo.full_name == env.GITHUB_REPOSITORY)
-                | .headRefName = .head.ref | .sha = .head.sha
+                | .headRefName = .head.ref
                 | .release = any(.labels[]; .name == "autorelease: pending")
                 | with_entries(select(.key == "number" or .key == "headRefName" or .key == "draft"
-                    or .key == "sha" or .key == "release"))'); then
+                    or .key == "release"))'); then
               echo "::error::could not look up #$pr, which release-please reported"
               failed=true
             elif [ -n "$found" ]; then
@@ -179,10 +181,12 @@ jobs:
           prs='[]'
           for pr in $numbers; do
             pull=$(printf '%s' "$release" | jq -c --argjson n "$pr" 'map(select(.number == $n)) | first')
-            sha=$(printf '%s' "$pull" | jq -r '.sha')
+            branch=$(printf '%s' "$pull" | jq -r '.headRefName')
             draft=$(printf '%s' "$pull" | jq -r '.draft')
-            if ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/$sha" --jq "$REGENERATED_HEAD"); then
-              echo "::error::could not read the head commit of #$pr; it is regenerated"
+            if printf '%s' "$reported" | jq -e --argjson n "$pr" 'any(.[]; .number == $n)' > /dev/null; then
+              regenerated=false
+            elif ! regenerated=$(gh api "repos/$GITHUB_REPOSITORY/commits/heads/$branch" --jq "$REGENERATED_HEAD"); then
+              echo "::error::could not read the branch of #$pr; it is regenerated"
               failed=true
               regenerated=false
             fi
@@ -196,7 +200,7 @@ jobs:
                 echo "::error::could not put #$pr back to draft"
                 failed=true
               fi
-              prs=$(printf '%s\n%s' "$prs" "$pull" | jq -cs '.[0] + [.[1] | del(.draft, .release, .sha)]')
+              prs=$(printf '%s\n%s' "$prs" "$pull" | jq -cs '.[0] + [.[1] | del(.draft, .release)]')
             fi
           done
           echo "prs=$prs" >> "$GITHUB_OUTPUT"

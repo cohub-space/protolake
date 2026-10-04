@@ -82,10 +82,10 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
      * A release PR must not merge before its branch carries the regenerated
      * BUILD files: release-please opens it as a draft; release.yml holds a
      * ready one as a draft before release-please can move it, readies again a
-     * held one whose head is the regenerate job's commit (it carries a
+     * held one whose branch tip is the regenerate job's commit (it carries a
      * Regenerated-by trailer, made even when nothing changed), puts every
-     * other release PR back to draft and regenerates it, and marks it ready
-     * only after pushing. Its lookups page through every open PR and filter
+     * other release PR, and every one release-please reported, back to draft
+     * and regenerates it, and marks it ready only after pushing. Its lookups page through every open PR and filter
      * release PRs in jq: a {@code --label} list reads the search index, which
      * lags. ReleaseWorkflowDraftsStepTest runs the steps and the commit.
      */
@@ -110,7 +110,7 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int reported = releasePlease.indexOf(
                 "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}");
         int backToDraft = releasePlease.indexOf("[ \"$draft\" = false ] && ! gh pr ready --undo \"$pr\"");
-        int drafts = releasePlease.indexOf("del(.draft, .release, .sha)");
+        int drafts = releasePlease.indexOf("del(.draft, .release)]");
         assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
         assertThat(releasePlease).as("no PR body reaches the environment")
                 .doesNotContain("steps.release.outputs.prs }}");
@@ -120,6 +120,10 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
                 .contains("gh api \"repos/$GITHUB_REPOSITORY/pulls/$pr\"");
         assertThat(releasePlease).as("a head is regenerated when its commit carries the trailer")
                 .contains("any(. == \"Regenerated-by: release-workflow\")");
+        assertThat(releasePlease).as("judged by the branch tip").contains("commits/heads/$branch")
+                .as("never by the PR's recorded head, which lags a push").doesNotContain(".head.sha");
+        assertThat(releasePlease).as("a PR release-please reported is regenerated outright")
+                .contains("\"$reported\" | jq -e --argjson n \"$pr\" 'any(.[]; .number == $n)'");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
         assertThat(readyAgain).as("a regenerated head is readied again").isGreaterThan(action);
