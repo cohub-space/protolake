@@ -3,6 +3,7 @@ package space.cohub.vdp.protolake.util.buf;
 import jakarta.enterprise.context.ApplicationScoped;
 import org.eclipse.microprofile.config.inject.ConfigProperty;
 import org.jboss.logging.Logger;
+import space.cohub.vdp.protolake.util.git.SafeDirectory;
 
 import java.io.BufferedReader;
 import java.io.IOException;
@@ -10,6 +11,7 @@ import java.io.InputStreamReader;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 /**
@@ -28,6 +30,10 @@ public class BufCommand {
 
     @ConfigProperty(name = "protolake.buf.timeout-seconds", defaultValue = "60")
     int timeoutSeconds;
+
+    // The environment buf inherits, read for the git config buf's git loads. Tests put
+    // another here, since a JVM cannot change its own environment.
+    Map<String, String> inheritedEnvironment = System.getenv();
 
     /**
      * Runs buf build to check if protos compile successfully.
@@ -99,7 +105,12 @@ public class BufCommand {
         // buf v2: 100 = findings, 0 = none, 1 = the command itself failed
         // (an unresolvable --against input, a clone error). A failed
         // baseline must never read as "no breaking changes".
-        BufResult result = run(directory, "breaking", "--against", against);
+        // A .git input makes buf clone the lake's own repository, which
+        // another user may own (a bind-mounted lake).
+        BufResult result;
+        try (SafeDirectory.CloneTrust trust = SafeDirectory.trustForLocalClone(directory, inheritedEnvironment)) {
+            result = run(directory, trust.environment(), "breaking", "--against", against);
+        }
         if (result.exitCode() == 1 && result.stdout().isEmpty()) {
             throw new IOException("buf breaking could not compare against " + against + ": "
                 + String.join("\n", result.stderr()));
@@ -164,10 +175,10 @@ public class BufCommand {
      * @return list of output lines from stdout
      */
     private List<String> runWithOutput(Path directory, String... args) throws IOException {
-        return run(directory, args).stdout();
+        return run(directory, Map.of(), args).stdout();
     }
 
-    private BufResult run(Path directory, String... args) throws IOException {
+    private BufResult run(Path directory, Map<String, String> environment, String... args) throws IOException {
         List<String> command = new ArrayList<>();
         command.add(bufCommand);
         for (String arg : args) {
@@ -178,6 +189,7 @@ public class BufCommand {
         
         ProcessBuilder pb = new ProcessBuilder(command);
         pb.directory(directory.toFile());
+        pb.environment().putAll(environment);
         
         Process process = pb.start();
         
