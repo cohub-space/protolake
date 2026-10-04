@@ -84,8 +84,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
      * ready one as a draft before release-please can move it, readies again
      * the ones it left alone, and regenerates each one release-please opened
      * or moved (from the action's outputs) and every other draft, marking it
-     * ready only after pushing. ReleaseWorkflowDraftsStepTest runs that
-     * matrix step.
+     * ready only after pushing. Its lists filter release PRs in jq: a
+     * {@code --label} list reads the search index, which lags.
+     * ReleaseWorkflowDraftsStepTest runs the hold and matrix steps.
      */
     @Test
     void releasePrsStayDraftsUntilTheirBranchIsRegenerated() throws Exception {
@@ -106,7 +107,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         int readyAgain = releasePlease.indexOf(
                 "if [ \"$head\" = \"$(echo \"$entry\" | cut -d: -f2)\" ]; then");
         int reported = releasePlease.indexOf("REPORTED: ${{ steps.release.outputs.prs }}");
-        int drafts = releasePlease.indexOf("select(.isDraft) | del(.isDraft)] | tojson");
+        int drafts = releasePlease.indexOf(
+                "select(.isDraft and any(.labels[]; .name == \"autorelease: pending\"))");
+        assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
         assertThat(readyAgain).as("an unmoved head is readied again").isGreaterThan(action);
