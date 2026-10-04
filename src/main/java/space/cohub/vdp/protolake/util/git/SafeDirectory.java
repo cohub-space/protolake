@@ -45,17 +45,39 @@ public final class SafeDirectory {
      * inputs). The image's git, Ubuntu's 2.43 with the CVE-2024-32004 patch (upstream
      * reverted it in 2.45.2), refuses to serve a local clone of a git directory another
      * user owns, and git strips command-line configuration from the serving process, so
-     * the trust must come from a global config. The file includes the user's own global
-     * config first, so their other settings still apply.
+     * the trust must come from a global config. The file first includes the global config
+     * files git would read for the cloning process, so the user's other settings still apply.
+     *
+     * @throws IOException if GIT_CONFIG_GLOBAL, HOME or XDG_CONFIG_HOME is a relative path
+     *     (see {@link #userGlobalConfigs}), or the file cannot be written
      */
     public static CloneTrust trustForLocalClone(Path repository) throws IOException {
-        return trustForLocalClone(repository, userGlobalConfigs());
+        return trustForLocalClone(repository, System.getenv());
+    }
+
+    /**
+     * {@link #trustForLocalClone(Path)} for a cloning process that inherits {@code environment}
+     * rather than this JVM's environment.
+     */
+    public static CloneTrust trustForLocalClone(Path repository, Map<String, String> environment)
+            throws IOException {
+        return trustForLocalClone(repository, userGlobalConfigs(environment));
     }
 
     static CloneTrust trustForLocalClone(Path repository, List<String> userConfigs) throws IOException {
+        return trustForLocalClone(repository, userConfigs,
+            (file, content) -> Files.writeString(file, content, StandardCharsets.UTF_8));
+    }
+
+    static CloneTrust trustForLocalClone(Path repository, List<String> userConfigs, ConfigWriter writer)
+            throws IOException {
         StringBuilder config = new StringBuilder("[include]\n");
         for (String userConfig : userConfigs) {
-            config.append("\tpath = ").append(quote(userConfig)).append('\n');
+            // Git skips a global config it may not read, but an include it may not read is
+            // fatal to every git command, so only a readable file becomes an include.
+            if (Files.isReadable(Path.of(userConfig))) {
+                config.append("\tpath = ").append(quote(userConfig)).append('\n');
+            }
         }
         // After the include: an empty safe.directory in the user's config clears the
         // entries before it, and must not clear this one.
@@ -64,8 +86,24 @@ public final class SafeDirectory {
             config.append("\tdirectory = ").append(quote(name + "/.git")).append('\n');
         }
         Path file = Files.createTempFile("protolake-git-", ".gitconfig");
-        Files.writeString(file, config, StandardCharsets.UTF_8);
+        try {
+            writer.write(file, config.toString());
+        } catch (IOException | RuntimeException e) {
+            // No CloneTrust exists yet to delete the file on close.
+            try {
+                Files.deleteIfExists(file);
+            } catch (IOException deleteFailure) {
+                e.addSuppressed(deleteFailure);
+            }
+            throw e;
+        }
         return new CloneTrust(file);
+    }
+
+    /** Writes the config file's content; tests substitute a writer that fails. */
+    @FunctionalInterface
+    interface ConfigWriter {
+        void write(Path file, String content) throws IOException;
     }
 
     /**
@@ -86,44 +124,67 @@ public final class SafeDirectory {
     }
 
     /**
-     * The paths git may report for {@code directory}: the absolute path, and the real path
-     * when it differs. Git derives a worktree from getcwd, which resolves symlinks (macOS
-     * reports /var/folders/... as /private/var/folders/...), and git 2.43, the image's
-     * version, compares safe.directory values without normalizing them.
+     * The paths git may report for {@code directory}: the path as given, made absolute, and
+     * the real path when it differs. Git derives a worktree from getcwd, which resolves
+     * symlinks (macOS reports /var/folders/... as /private/var/folders/...), and git 2.43,
+     * the image's version, compares safe.directory values without normalizing them. Neither
+     * path is normalized lexically: {@code link/../lake} opens the lake beside the link's
+     * target, and dropping {@code link/..} would name a directory git never opens.
      */
     static List<String> names(Path directory) {
         Set<String> names = new LinkedHashSet<>();
-        Path absolute = directory.toAbsolutePath().normalize();
+        Path absolute = directory.toAbsolutePath();
         names.add(absolute.toString());
         try {
             names.add(absolute.toRealPath().toString());
         } catch (IOException e) {
-            // Not created yet: git cannot run in it either, so the absolute path is enough.
+            // Not created yet: git cannot run in it either, so the given path is enough.
         }
         return List.copyOf(names);
     }
 
     /**
-     * The files git reads as the global config when GIT_CONFIG_GLOBAL is unset, in git's
-     * order, or the file GIT_CONFIG_GLOBAL already names. Git skips missing include files.
-     * The paths are absolute: git dies on a {@code ~} include when HOME is unset, and
-     * resolves a relative include against the including file's directory.
+     * The files git reads as the global config for buf's git processes, in git's order: the
+     * file GIT_CONFIG_GLOBAL names, or else the XDG config and ~/.gitconfig. An empty value
+     * counts as unset, as buf drops empty variables before it starts git.
+     *
+     * <p>A relative GIT_CONFIG_GLOBAL, HOME or XDG_CONFIG_HOME is refused. buf's client git
+     * resolves it against a temporary directory buf picks for each run, which {@code ..} can
+     * climb out of to a real config. The git serving the clone resolves it inside the lake's
+     * .git, so it would read a file from a lake another user may own as global config. The
+     * user's policy can be neither dropped nor reproduced here, so the check stops instead.
+     *
+     * @throws IOException naming each relative variable
      */
-    private static List<String> userGlobalConfigs() {
-        String explicit = System.getenv("GIT_CONFIG_GLOBAL");
-        if (explicit != null && !explicit.isEmpty()) {
-            return List.of(Path.of(explicit).toAbsolutePath().toString());
+    static List<String> userGlobalConfigs(Map<String, String> env) throws IOException {
+        List<String> relative = new ArrayList<>();
+        for (String variable : List.of("GIT_CONFIG_GLOBAL", "XDG_CONFIG_HOME", "HOME")) {
+            String value = env.get(variable);
+            if (value != null && !value.isEmpty() && !Path.of(value).isAbsolute()) {
+                relative.add(variable + " is '" + value + "'");
+            }
+        }
+        if (!relative.isEmpty()) {
+            throw new IOException("buf's breaking check needs absolute paths, but "
+                + String.join(", ", relative) + ". buf's git would resolve a relative one against a"
+                + " temporary directory, and the git serving the clone inside the lake's .git."
+                + " Set each to an absolute path.");
         }
         List<String> configs = new ArrayList<>();
-        String home = System.getenv("HOME");
-        String xdg = System.getenv("XDG_CONFIG_HOME");
-        if (xdg != null && !xdg.isEmpty()) {
-            configs.add(Path.of(xdg, "git", "config").toString());
-        } else if (home != null && !home.isEmpty()) {
-            configs.add(Path.of(home, ".config", "git", "config").toString());
-        }
-        if (home != null && !home.isEmpty()) {
-            configs.add(Path.of(home, ".gitconfig").toString());
+        String explicit = env.get("GIT_CONFIG_GLOBAL");
+        if (explicit != null && !explicit.isEmpty()) {
+            configs.add(explicit);
+        } else {
+            String home = env.get("HOME");
+            String xdg = env.get("XDG_CONFIG_HOME");
+            if (xdg != null && !xdg.isEmpty()) {
+                configs.add(Path.of(xdg, "git", "config").toString());
+            } else if (home != null && !home.isEmpty()) {
+                configs.add(Path.of(home, ".config", "git", "config").toString());
+            }
+            if (home != null && !home.isEmpty()) {
+                configs.add(Path.of(home, ".gitconfig").toString());
+            }
         }
         return configs;
     }

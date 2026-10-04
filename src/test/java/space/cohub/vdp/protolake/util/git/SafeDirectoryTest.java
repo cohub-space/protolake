@@ -3,10 +3,14 @@ package space.cohub.vdp.protolake.util.git;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
+import org.junit.jupiter.params.ParameterizedTest;
+import org.junit.jupiter.params.provider.ValueSource;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -14,6 +18,8 @@ import java.util.Map;
 import java.util.concurrent.TimeUnit;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.assertj.core.api.Assertions.assertThatThrownBy;
+import static org.junit.jupiter.api.Assumptions.assumeFalse;
 
 /**
  * The trust protolake grants a lake: the worktree on each git command line, and
@@ -49,10 +55,29 @@ class SafeDirectoryTest {
     }
 
     @Test
-    void configArgs_trustTheRealPathGitReports() throws Exception {
-        // macOS temp dirs sit under /var, a symlink to /private/var; git reports the latter.
-        assertThat(SafeDirectory.configArgs(lake))
-            .contains("safe.directory=" + lake.toRealPath());
+    void configArgs_trustTheRealPathBehindALink() throws Exception {
+        // Git reports the real path of the directory it runs in. Going through a link makes
+        // it differ from the given path on every host, not only where the temp dir sits
+        // under a symlink (macOS: /var -> /private/var).
+        Path link = Files.createSymbolicLink(tmp.resolve("link"), lake);
+
+        assertThat(SafeDirectory.configArgs(link)).contains("safe.directory=" + lake.toRealPath());
+        Result trusted = run(link, FOREIGN_OWNER, trustedGit(link, "rev-parse", "HEAD"));
+        assertThat(trusted.exitCode()).as(trusted.output()).isZero();
+    }
+
+    @Test
+    void configArgs_resolveALinkBeforeItsDotDot() throws Exception {
+        // work/link points at sub, so work/link/../<lake> opens the lake beside sub. Dropping
+        // "link/.." lexically would trust work/<lake>, a directory git never opens.
+        Files.createDirectories(tmp.resolve("sub"));
+        Files.createDirectories(tmp.resolve("work"));
+        Files.createSymbolicLink(tmp.resolve("work").resolve("link"), tmp.resolve("sub"));
+        Path viaLink = tmp.resolve("work").resolve("link").resolve("..").resolve(lake.getFileName());
+
+        assertThat(SafeDirectory.configArgs(viaLink)).doesNotContain("safe.directory=" + viaLink.normalize());
+        Result trusted = run(viaLink, FOREIGN_OWNER, trustedGit(viaLink, "rev-parse", "HEAD"));
+        assertThat(trusted.exitCode()).as(trusted.output()).isZero();
     }
 
     @Test
@@ -60,7 +85,7 @@ class SafeDirectoryTest {
         List<String> args = SafeDirectory.configArgs(lake);
         assertThat(args).doesNotContain("safe.directory=*");
         assertThat(args).allSatisfy(arg -> assertThat(arg).isIn("-c",
-            "safe.directory=" + lake.toAbsolutePath().normalize(),
+            "safe.directory=" + lake.toAbsolutePath(),
             "safe.directory=" + lake.toRealPath()));
     }
 
@@ -109,17 +134,102 @@ class SafeDirectoryTest {
         }
     }
 
+    @Test
+    void trustForLocalClone_skipsAUserConfigGitCannotRead() throws Exception {
+        // Git skips a global config it may not read but dies on such an include: neither an
+        // unreadable file nor one behind a directory git may not search may be included.
+        Path unreadable = tmp.resolve("unreadable.gitconfig");
+        Files.writeString(unreadable, "[user]\n\tname = Hidden\n");
+        Path closed = tmp.resolve("closed");
+        Files.createDirectories(closed);
+        Path behindClosed = closed.resolve("config");
+        Files.writeString(behindClosed, "[user]\n\tname = Hidden\n");
+        Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("---------"));
+        Files.setPosixFilePermissions(closed, PosixFilePermissions.fromString("---------"));
+        try {
+            // Root reads both anyway, and so would git running as root.
+            assumeFalse(Files.isReadable(unreadable) || Files.isReadable(behindClosed));
+            try (SafeDirectory.CloneTrust trust = SafeDirectory.trustForLocalClone(lake,
+                    List.of(unreadable.toString(), behindClosed.toString()))) {
+                Result trusted = run(lake.resolve(".git"), foreignOwner(trust), "git", "rev-parse", "HEAD");
+                assertThat(trusted.exitCode()).as(trusted.output()).isZero();
+            }
+        } finally {
+            Files.setPosixFilePermissions(closed, PosixFilePermissions.fromString("rwx------"));
+            Files.setPosixFilePermissions(unreadable, PosixFilePermissions.fromString("rw-------"));
+        }
+    }
+
+    @Test
+    void trustForLocalClone_deletesItsFileWhenTheWriteFails() {
+        List<Path> files = new ArrayList<>();
+        assertThatThrownBy(() -> SafeDirectory.trustForLocalClone(lake, List.of(), (file, content) -> {
+            files.add(file);
+            throw new IOException("No space left on device");
+        })).isInstanceOf(IOException.class).hasMessage("No space left on device");
+
+        assertThat(files).hasSize(1);
+        assertThat(files.get(0)).doesNotExist();
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"GIT_CONFIG_GLOBAL", "HOME", "XDG_CONFIG_HOME"})
+    void userGlobalConfigs_refuseARelativePath(String variable) {
+        // buf's client git would resolve it against a temporary directory, which ".." can
+        // leave for a real config, and the serving git inside the lake's .git: dropping it
+        // loses the user's policy, and resolving it may read the lake's.
+        Map<String, String> env = new HashMap<>(Map.of("HOME", tmp.resolve("home").toString()));
+        env.put(variable, "../gitconfig");
+
+        assertThatThrownBy(() -> SafeDirectory.userGlobalConfigs(env))
+            .isInstanceOf(IOException.class)
+            .hasMessageContaining(variable + " is '../gitconfig'")
+            .hasMessageContaining("absolute path");
+    }
+
+    @Test
+    void userGlobalConfigs_emptyValuesCountAsUnset() throws Exception {
+        // buf drops empty variables before it starts git.
+        Path home = tmp.resolve("home");
+        assertThat(SafeDirectory.userGlobalConfigs(Map.of(
+                "HOME", home.toString(), "GIT_CONFIG_GLOBAL", "", "XDG_CONFIG_HOME", "")))
+            .containsExactly(home.resolve(".config/git/config").toString(), home.resolve(".gitconfig").toString());
+    }
+
+    @Test
+    void userGlobalConfigs_followGitsOrder() throws Exception {
+        Path home = tmp.resolve("home");
+        Path xdg = tmp.resolve("xdg");
+        Path explicit = tmp.resolve("explicit.gitconfig");
+
+        assertThat(SafeDirectory.userGlobalConfigs(Map.of("HOME", home.toString()))).containsExactly(
+            home.resolve(".config/git/config").toString(), home.resolve(".gitconfig").toString());
+        assertThat(SafeDirectory.userGlobalConfigs(Map.of("HOME", home.toString(), "XDG_CONFIG_HOME", xdg.toString())))
+            .containsExactly(xdg.resolve("git/config").toString(), home.resolve(".gitconfig").toString());
+        assertThat(SafeDirectory.userGlobalConfigs(Map.of("HOME", home.toString(), "GIT_CONFIG_GLOBAL", explicit.toString())))
+            .containsExactly(explicit.toString());
+    }
+
     private static Map<String, String> foreignOwner(SafeDirectory.CloneTrust trust) {
         Map<String, String> env = new HashMap<>(FOREIGN_OWNER);
         env.putAll(trust.environment());
         return env;
     }
 
+    private static String[] trustedGit(Path repository, String... args) {
+        List<String> command = new ArrayList<>(List.of("git"));
+        command.addAll(SafeDirectory.configArgs(repository));
+        command.addAll(List.of(args));
+        return command.toArray(String[]::new);
+    }
+
     @Test
     void trustForLocalClone_fromThisProcessEnvironment_writesAConfigGitReads() throws Exception {
         // The includes come from this JVM's HOME, XDG_CONFIG_HOME or GIT_CONFIG_GLOBAL; an
-        // include git cannot expand fails every git command that reads the file.
-        try (SafeDirectory.CloneTrust trust = SafeDirectory.trustForLocalClone(lake)) {
+        // include git cannot expand fails every git command that reads the file. The lake is
+        // named through a link, so its real path differs from the given one on every host.
+        Path link = Files.createSymbolicLink(tmp.resolve("link"), lake);
+        try (SafeDirectory.CloneTrust trust = SafeDirectory.trustForLocalClone(link)) {
             Result read = run(tmp, trust.environment(), "git", "config", "--global", "--includes", "--list");
             assertThat(read.exitCode()).as(read.output()).isZero();
             assertThat(read.output()).contains("safe.directory=" + lake.toRealPath().resolve(".git"));

@@ -31,6 +31,10 @@ public class BufCommand {
     @ConfigProperty(name = "protolake.buf.timeout-seconds", defaultValue = "60")
     int timeoutSeconds;
 
+    // The environment buf inherits, read for the git config buf's git loads. Tests put
+    // another here, since a JVM cannot change its own environment.
+    Map<String, String> inheritedEnvironment = System.getenv();
+
     /**
      * Runs buf build to check if protos compile successfully.
      * 
@@ -104,7 +108,7 @@ public class BufCommand {
         // A .git input makes buf clone the lake's own repository, which
         // another user may own (a bind-mounted lake).
         BufResult result;
-        try (SafeDirectory.CloneTrust trust = SafeDirectory.trustForLocalClone(directory)) {
+        try (SafeDirectory.CloneTrust trust = SafeDirectory.trustForLocalClone(directory, inheritedEnvironment)) {
             result = run(directory, trust.environment(), "breaking", "--against", against);
         }
         if (result.exitCode() == 1 && result.stdout().isEmpty()) {
