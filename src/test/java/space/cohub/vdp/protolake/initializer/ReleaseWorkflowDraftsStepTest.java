@@ -33,8 +33,9 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
 /**
  * Runs the release-PR handling of the scaffolded {@code release.yml}. The
  * release-please job holds every ready release PR before release-please can
- * move it, readies again each held one whose branch tip is the regenerate
- * job's commit, and then judges every open release PR: one release-please
+ * move it, readies again each held one release-please did not report whose
+ * branch tip is the regenerate job's commit, and then judges every open
+ * release PR: one release-please
  * reported in the run needs regenerating outright, any other is judged by its
  * branch tip, never by the PR's recorded head, which lags a push. A
  * regenerated one is ready; any other goes back to draft and into the
@@ -54,7 +55,8 @@ import static org.junit.jupiter.api.Assumptions.assumeTrue;
  * <p>Each step's script runs under the command GitHub runs for its declared
  * shell, with the env GitHub evaluates for it and a stub gh over fixture
  * files. The stub answers {@code gh api --paginate} a page of 100 PRs at a
- * time, applying {@code --jq} to each page as gh does; {@code gh api
+ * time, applying {@code --jq} to each page as gh does, or a 503 once a case
+ * fails the scan; {@code gh api
  * .../pulls/N}, {@code .../commits/heads/BRANCH} (the tip) and
  * {@code .../commits/SHA} with one object or a 404, or a 503 where a case says
  * so; and {@code gh pr ready [--undo]} by changing the PR's
@@ -178,6 +180,7 @@ class ReleaseWorkflowDraftsStepTest {
                 done
                 case "$path" in
                   "repos/$GITHUB_REPOSITORY/pulls?state=open&per_page=100")
+                    [ ! -e "$F/failing-scan" ] || unavailable
                     # A page per 100 PRs, the first one only without --paginate.
                     jq -c 'if length == 0 then [] else range(0; length; 100) as $i | .[$i:$i + 100] end' \\
                         "$F/pulls.json" | { if $paginate; then cat; else head -1; fi; } |
@@ -437,6 +440,57 @@ class ReleaseWorkflowDraftsStepTest {
         assertThat(run.undone()).containsExactly("pr ready --undo 12 -R " + REPOSITORY);
         assertThat(repo.draft(12)).isTrue();
         assertThat(repo.draft(14)).isFalse();
+    }
+
+    /**
+     * release-please moved #12 a moment ago and its branch does not read the
+     * push yet; #14, regenerated and not reported, is readied again.
+     */
+    @Test
+    void aReportedPr_isNeverReadiedAgain_evenIfItsTipReadsAsTheRegenerateCommit() throws Exception {
+        Repo repo = repo(tempDir, List.of(regeneratedPr(12, false, BRANCH), regeneratedPr(14, false, AUTHZ)));
+
+        JobRun job = runJob(repo, reported(releasePleasePr(12, BRANCH, 0)));
+
+        assertThat(job.readyAgain().readied()).containsExactly("pr ready 14 -R " + REPOSITORY);
+        assertThat(job.drafts().readied()).noneMatch(call -> call.startsWith("pr ready 12 "));
+        assertThat(job.drafts().matrix()).isEqualTo(entries(12, BRANCH));
+        assertThat(repo.draft(12)).isTrue();
+        assertThat(repo.draft(14)).isFalse();
+    }
+
+    /**
+     * The hold step drafts #12; release-please moves and reports it, but its
+     * branch still reads as the regenerate commit; then the drafts step's scan
+     * fails, so no later step would put #12 back to draft.
+     */
+    @Test
+    void aReportedPr_staysADraftWhenItsTipReadLagsAndTheDraftsScanFails() throws Exception {
+        Repo repo = repo(tempDir, List.of(regeneratedPr(12, false, BRANCH)));
+        Map<String, String> outputs = reported(releasePleasePr(12, BRANCH, 0));
+
+        String held = runIn(repo, "hold", Map.of()).output("held");
+        repo.failScan();
+        StepRun readyAgain = runIn(repo, "ready-again", outputs, held);
+        StepRun drafts = runIn(repo, "drafts", outputs);
+
+        assertThat(drafts.exitCode()).as("step output:\n%s", drafts.log()).isNotZero();
+        assertThat(drafts.written()).isEmpty();
+        assertThat(readyAgain.readied()).isEmpty();
+        assertThat(repo.draft(12)).isTrue();
+    }
+
+    @Test
+    void readyAgain_takesTheReportedPrsFromTheDraftsStepsExpression() throws Exception {
+        Map<String, String> readyAgain = new LinkedHashMap<>();
+        for (Map.Entry<String, JsonNode> var : jobStep("ready-again").path("env").properties()) {
+            readyAgain.put(var.getKey(), var.getValue().asText());
+        }
+
+        assertThat(readyAgain).isEqualTo(Map.of("HELD", "${{ steps.hold.outputs.held }}",
+                "REPORTED_NUMBERS", NUMBERS));
+        assertThat(readyAgain.get("REPORTED_NUMBERS"))
+                .isEqualTo(jobStep("drafts").path("env").path("REPORTED_NUMBERS").asText());
     }
 
     /**
@@ -867,6 +921,11 @@ class ReleaseWorkflowDraftsStepTest {
 
         private void write(String name, JsonNode value) throws IOException {
             Files.writeString(fixtures.resolve(name), value.toString());
+        }
+
+        /** Every later page through the open PRs fails. */
+        void failScan() throws IOException {
+            Files.createFile(fixtures.resolve("failing-scan"));
         }
 
         boolean draft(int number) throws IOException {

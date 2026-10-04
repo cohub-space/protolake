@@ -83,15 +83,24 @@ jobs:
           manifest-file: .release-please-manifest.json
 
       # A held PR goes back to ready only if its branch tip is still the
-      # regenerate job's commit; release-please moved any other. This runs
-      # when release-please failed too. A PR this step cannot read stays a
-      # draft, and the next step reads it again.
+      # regenerate job's commit; release-please moved any other. One
+      # release-please reported in this run stays a draft whatever its tip
+      # reads, since that read can lag release-please's push: the next step
+      # regenerates it, and until then it cannot be merged, even if that
+      # step fails. REPORTED_NUMBERS is the next step's expression, so both
+      # steps take the same PRs as reported. This runs when release-please
+      # failed too. A PR this step cannot read stays a draft, and the next
+      # step reads it again.
       - name: Ready the held release PRs that are regenerated
         if: always() && steps.hold.outputs.held != ''
         env:
           HELD: ${{ steps.hold.outputs.held }}
+          REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}
         run: |
           for pr in $HELD; do
+            if printf '%s' "$REPORTED_NUMBERS" | jq -e --argjson n "$pr" 'any(.[]; . == $n)' > /dev/null; then
+              continue
+            fi
             if ! branch=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" --jq 'select(.state == "open") | .head.ref'); then
               echo "::warning::could not read #$pr; it stays a draft"
               continue

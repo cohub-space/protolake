@@ -82,11 +82,12 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
      * A release PR must not merge before its branch carries the regenerated
      * BUILD files: release-please opens it as a draft; release.yml holds a
      * ready one as a draft before release-please can move it, readies again a
-     * held one whose branch tip is the regenerate job's commit (it carries a
-     * Regenerated-by trailer, made even when nothing changed), puts every
-     * other release PR, and every one release-please reported, back to draft
-     * and regenerates it, and marks it ready only after pushing. Its lookups page through every open PR and filter
-     * release PRs in jq: a {@code --label} list reads the search index, which
+     * held one release-please did not report whose branch tip is the
+     * regenerate job's commit (it carries a Regenerated-by trailer, made even
+     * when nothing changed), puts every other release PR, and every one
+     * release-please reported, back to draft and regenerates it, and marks it
+     * ready only after pushing. Its lookups page through every open PR and
+     * filter release PRs in jq: a {@code --label} list reads the search index, which
      * lags. ReleaseWorkflowDraftsStepTest runs the steps and the commit.
      */
     @Test
@@ -105,10 +106,13 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
         String releasePlease = release.substring(releaseJob, regenerateJob);
         int hold = releasePlease.indexOf("gh pr ready --undo");
         int action = releasePlease.indexOf("uses: googleapis/release-please-action@v4");
+        int skipReported = releasePlease.indexOf(
+                "if printf '%s' \"$REPORTED_NUMBERS\" | jq -e --argjson n \"$pr\" 'any(.[]; . == $n)'");
         int readyAgain = releasePlease.indexOf(
                 "if [ \"$regenerated\" = true ] && ! gh pr ready \"$pr\" -R \"$GITHUB_REPOSITORY\"; then");
         int reported = releasePlease.indexOf(
-                "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}");
+                "REPORTED_NUMBERS: ${{ toJSON(fromJSON(steps.release.outputs.prs || '[]').*.number) }}",
+                readyAgain);
         int backToDraft = releasePlease.indexOf("[ \"$draft\" = false ] && ! gh pr ready --undo \"$pr\"");
         int drafts = releasePlease.indexOf("del(.draft, .release)]");
         assertThat(releasePlease).as("no list reads the search index").doesNotContain("--label");
@@ -126,7 +130,9 @@ class ReleasePleaseScaffoldingTest extends InitializerTestBase {
                 .contains("\"$reported\" | jq -e --argjson n \"$pr\" 'any(.[]; .number == $n)'");
         assertThat(hold).as("held before release-please can move it").isPositive();
         assertThat(action).isGreaterThan(hold);
-        assertThat(readyAgain).as("a regenerated head is readied again").isGreaterThan(action);
+        assertThat(skipReported).as("a PR release-please reported is never readied again")
+                .isGreaterThan(action);
+        assertThat(readyAgain).as("a regenerated head is readied again").isGreaterThan(skipReported);
         assertThat(releasePlease).contains("if: always() && steps.hold.outputs.held != ''");
         assertThat(reported).as("each PR release-please reported is regenerated")
                 .isGreaterThan(readyAgain);
