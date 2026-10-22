@@ -125,7 +125,7 @@ public class ReleasePleaseScaffolding {
     /**
      * Builds the release-please-config.json content. Shape matches the
      * cross-cutting internal-lib-versioning design (`docs/designs/cross-cutting/
-     * internal-lib-versioning.md`):
+     * internal-lib-versioning/index.md`):
      * <ul>
      *   <li>{@code include-component-in-tag: true} + {@code tag-separator: "-"}
      *       → tags of form {@code <package-name>-v<version>}</li>
