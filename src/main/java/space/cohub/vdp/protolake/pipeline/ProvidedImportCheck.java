@@ -8,6 +8,7 @@ import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.FileVisitResult;
 import java.nio.file.Files;
+import java.nio.file.InvalidPathException;
 import java.nio.file.Path;
 import java.nio.file.SimpleFileVisitor;
 import java.nio.file.attribute.BasicFileAttributes;
@@ -217,7 +218,14 @@ public class ProvidedImportCheck {
 
         /** The lake proto an import path names, by its path from the lake root, if the lake holds it. */
         private Optional<String> lakeFile(String importPath) {
-            Path target = lakeRoot.resolve(importPath).normalize();
+            Path target;
+            try {
+                target = lakeRoot.resolve(importPath).normalize();
+            } catch (InvalidPathException e) {
+                // A path no file system holds (a NUL in it) names no lake file; protoc and buf
+                // cannot open it either.
+                return Optional.empty();
+            }
             if (!target.startsWith(lakeRoot) || !Files.isRegularFile(target)) {
                 return Optional.empty();
             }

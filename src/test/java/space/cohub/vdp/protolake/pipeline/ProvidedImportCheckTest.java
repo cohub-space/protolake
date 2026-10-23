@@ -120,6 +120,15 @@ class ProvidedImportCheckTest {
     }
 
     @Test
+    void check_importOfAPathNoFileSystemHolds_reachesNoFile() throws IOException {
+        // \0 decodes to valid UTF-8, but no file name holds a NUL: protoc and buf cannot open
+        // that import, and resolving it must not fail the check either.
+        bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/\\0.proto\";\n", "java_grpc_library(\n)\n");
+
+        assertThat(check.check(lake, "app")).isEmpty();
+    }
+
+    @Test
     void check_bundleWhoseImportsNeverReachIt_isUntouched() throws IOException {
         bundle("lib", "syntax = \"proto3\";\nimport \"google/api/annotations.proto\";\n", "proto_library(\n)\n");
         bundle("app", "syntax = \"proto3\";\nimport \"lib/v1/lib.proto\";\nimport \"missing/v1/x.proto\";\n",
