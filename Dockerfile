@@ -32,6 +32,9 @@ RUN mvn clean package -DskipTests \
 FROM --platform=$BUILDPLATFORM golang:1.27.3-bookworm AS plugins
 
 ARG TARGETARCH
+# Re-pin on any host with the FROM line's Go: `CGO_ENABLED=0 GOTOOLCHAIN=local GOFLAGS=-trimpath GOOS=linux
+# GOARCH=<amd64|arm64> go install -ldflags="-s -w" <module>@v<version>` writes the bytes each SHA-256
+# below pins, here and in api_specs.bzl.
 ARG PROTOC_GEN_OPENAPIV2_VERSION=2.31.0
 ARG PROTOC_GEN_OPENAPIV2_SHA256_AMD64=67d380171115cc58912d568763bc0007494397cd1a6db99aff757298e9812ac4
 ARG PROTOC_GEN_OPENAPIV2_SHA256_ARM64=2179d8822db05bbe435eb7f1a1eed56926039cdada65745357476aac32fff5b4

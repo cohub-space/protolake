@@ -100,11 +100,22 @@ class ApiSpecPinsTest {
         // build exists to avoid; the version is in the stage's base image.
         assertThat(dockerfile).containsPattern(
                 "(?m)^FROM --platform=\\$BUILDPLATFORM golang:\\d+\\.\\d+\\.\\d+-\\S+ AS plugins$");
-        assertThat(pluginInstall(dockerfile)).contains("GOTOOLCHAIN=local");
-        // The image takes the plugins only from that stage, after their checks.
-        assertThat(dockerfile).contains(
-                "COPY --from=plugins /out/protoc-gen-openapiv2 /out/protoc-gen-connect-openapi /usr/local/bin/");
-        assertThat(dockerfile).doesNotContain("releases/download/v${PROTOC_GEN");
+        String stage = pluginInstall(dockerfile);
+        assertThat(stage).containsPattern("(?m)^ENV .*\\bGOTOOLCHAIN=local\\b");
+        // The image takes the plugins only from that stage, after their checks: outside
+        // it, no instruction names a plugin but the copies and the start-up check, so a
+        // release download or any other source of the binaries fails here.
+        String outside = dockerfile.replace(stage, "\n");
+        assertThat(outside.lines()
+                .filter(line -> !line.strip().startsWith("#"))
+                .filter(line -> line.contains("protoc-gen-openapiv2") || line.contains("protoc-gen-connect-openapi")))
+                .containsExactly(
+                        "COPY --from=plugins /out/protoc-gen-openapiv2 /out/protoc-gen-connect-openapi /usr/local/bin/",
+                        "RUN /usr/local/bin/protoc-gen-openapiv2 --version \\",
+                        "    && /usr/local/bin/protoc-gen-connect-openapi --version",
+                        "COPY --from=tools /usr/local/bin/protoc-gen-openapiv2 /usr/local/bin/protoc-gen-openapiv2",
+                        "COPY --from=tools /usr/local/bin/protoc-gen-connect-openapi"
+                                + " /usr/local/bin/protoc-gen-connect-openapi");
     }
 
     /** The plugins stage, from its FROM to the next stage. */
