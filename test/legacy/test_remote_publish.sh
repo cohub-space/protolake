@@ -24,7 +24,9 @@ unset MAVEN_REPO PYPI_REPO REGISTRY_TOKEN MAVEN_USER MAVEN_PASSWORD \
 
 LAKE_NAME="test_remote_lake"
 OUTPUT_DIR="./test-remote-output"
-DOCKER_IMAGE="protolake-proto-lake:latest"
+# docker-compose.yml builds PROTOLAKE_E2E_IMAGE, a branch-scoped tag, when set;
+# the suite then runs the same tag.
+DOCKER_IMAGE="${PROTOLAKE_E2E_IMAGE:-protolake-proto-lake:latest}"
 GAZELLE_SOURCE_PATH="${PROTOLAKE_GAZELLE_SOURCE_PATH:-$(cd ../../protolake-gazelle 2>/dev/null && pwd)}"
 BUILD_TIMEOUT=1200  # 20 minutes for cold build
 MOCK_SERVER_PORT=18080

@@ -15,7 +15,8 @@ cd "$(dirname "$0")/.."
 
 LAKE_ID="test_lake"
 LAKE_OUTPUT_DIR="./test-lake-output"
-DOCKER_IMAGE="protolake-proto-lake:latest"
+# docker-compose.yml builds and runs PROTOLAKE_E2E_IMAGE, a branch-scoped tag, when set.
+DOCKER_IMAGE="${PROTOLAKE_E2E_IMAGE:-protolake-proto-lake:latest}"
 CONTAINER_NAME="proto-lake-service"
 GRPC_PORT=9050
 HTTP_PORT=8085
