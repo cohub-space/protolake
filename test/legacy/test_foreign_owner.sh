@@ -8,14 +8,15 @@
 # filesystem, so it holds on every host: before each step root hands the whole lake to
 # uid 4242, and each protolake command then runs as uid 1001.
 #
-# PROTOLAKE_TEST_IMAGE=<image> tests an existing image instead of building this tree's.
+# PROTOLAKE_TEST_IMAGE=<image> tests an existing image instead of building this tree's;
+# PROTOLAKE_E2E_IMAGE builds this tree's under a branch-scoped tag.
 
 set -uo pipefail
 
 # Run from test/, where the stack's docker-compose.yml lives (it builds the image).
 cd "$(dirname "$0")/.."
 
-IMAGE="${PROTOLAKE_TEST_IMAGE:-protolake-proto-lake:latest}"
+IMAGE="${PROTOLAKE_TEST_IMAGE:-${PROTOLAKE_E2E_IMAGE:-protolake-proto-lake:latest}}"
 PASS_COUNT=0
 FAIL_COUNT=0
 

@@ -15,7 +15,7 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 /**
  * The protoc plugins behind the API specs are pinned twice: the Dockerfile
- * installs a version, checked against a SHA-256 per platform, and
+ * builds a version from source, checked against a SHA-256 per platform, and
  * templates/tools/api_specs.bzl names the same version and binary digests,
  * which key Bazel's cache and which the tool checks against the installed
  * binary. A bump in one file without the other fails every spec build; this
@@ -39,34 +39,29 @@ class ApiSpecPinsTest {
         String dockerfile = Files.readString(Path.of("Dockerfile"));
         String template = template("templates/tools/api_specs.bzl");
 
-        // protoc-gen-openapiv2's release asset is the binary itself.
         assertThat(digests(template, "PROTOC_GEN_OPENAPIV2_SHA256")).containsExactly(
                 arg(dockerfile, "PROTOC_GEN_OPENAPIV2_SHA256_AMD64"),
                 arg(dockerfile, "PROTOC_GEN_OPENAPIV2_SHA256_ARM64"));
-        // protoc-gen-connect-openapi ships a tarball; the binary inside has its own digest.
         assertThat(digests(template, "PROTOC_GEN_CONNECT_OPENAPI_SHA256")).containsExactly(
-                arg(dockerfile, "PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_AMD64"),
-                arg(dockerfile, "PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256_ARM64"));
+                arg(dockerfile, "PROTOC_GEN_CONNECT_OPENAPI_SHA256_AMD64"),
+                arg(dockerfile, "PROTOC_GEN_CONNECT_OPENAPI_SHA256_ARM64"));
     }
 
     /**
-     * One SHA-256 check of a downloaded plugin file: the shell variable the
+     * One SHA-256 check of a built plugin binary: the shell variable the
      * platform's case branch sets from its pin, the file, and the commands
-     * the check must come between, the download and the first use.
+     * the check must come between, the build and the first use.
      */
-    private record Check(String variable, String pin, String file, String download, String use) {
+    private record Check(String variable, String pin, String file, String build, String use) {
     }
 
     private static final List<Check> CHECKS = List.of(
-            new Check("OPENAPIV2_SHA256", "PROTOC_GEN_OPENAPIV2_SHA256", "/usr/local/bin/protoc-gen-openapiv2",
-                    "curl -fsSL -o /usr/local/bin/protoc-gen-openapiv2", "chmod +x /usr/local/bin/protoc-gen-openapiv2"),
-            new Check("CONNECT_SHA256", "PROTOC_GEN_CONNECT_OPENAPI_SHA256", "/tmp/protoc-gen-connect-openapi.tar.gz",
-                    "curl -fsSL -o /tmp/protoc-gen-connect-openapi.tar.gz",
-                    "tar -xzf /tmp/protoc-gen-connect-openapi.tar.gz"),
-            new Check("CONNECT_BINARY_SHA256", "PROTOC_GEN_CONNECT_OPENAPI_BINARY_SHA256",
-                    "/usr/local/bin/protoc-gen-connect-openapi",
-                    "tar -xzf /tmp/protoc-gen-connect-openapi.tar.gz",
-                    "/usr/local/bin/protoc-gen-connect-openapi --version"));
+            new Check("OPENAPIV2_SHA256", "PROTOC_GEN_OPENAPIV2_SHA256", "${BIN}/protoc-gen-openapiv2",
+                    "\"github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv2@v${PROTOC_GEN_OPENAPIV2_VERSION}\"",
+                    "mv \"${BIN}/protoc-gen-openapiv2\""),
+            new Check("CONNECT_SHA256", "PROTOC_GEN_CONNECT_OPENAPI_SHA256", "${BIN}/protoc-gen-connect-openapi",
+                    "\"github.com/sudorandom/protoc-gen-connect-openapi@v${PROTOC_GEN_CONNECT_OPENAPI_VERSION}\"",
+                    "mv \"${BIN}/protoc-gen-connect-openapi\""));
 
     @Test
     void dockerfile_checksEveryPluginOnEveryPlatform() throws IOException {
@@ -87,7 +82,7 @@ class ApiSpecPinsTest {
             int at = install.indexOf(command);
             assertThat(at).as("the install checks %s: %s", check.file(), command).isNotNegative();
             assertThat(install.indexOf(command, at + 1)).as("one check of %s", check.file()).isNegative();
-            assertThat(install.indexOf(check.download())).as("%s is downloaded before its check", check.file())
+            assertThat(install.indexOf(check.build())).as("%s is built before its check", check.file())
                     .isNotNegative().isLessThan(at);
             assertThat(install.indexOf(check.use(), at)).as("%s is used only after its check", check.file())
                     .isGreaterThan(at);
@@ -96,12 +91,28 @@ class ApiSpecPinsTest {
         }
     }
 
-    /** The RUN instruction that installs the protoc plugins. */
+    @Test
+    void dockerfile_buildsThePluginsWithAPinnedGoAndShipsOnlyThoseBuilds() throws IOException {
+        String dockerfile = Files.readString(Path.of("Dockerfile"));
+
+        // A floating Go would move the digests, and a toolchain older than the
+        // standard library fixes would ship the vulnerabilities the source
+        // build exists to avoid; the version is in the stage's base image.
+        assertThat(dockerfile).containsPattern(
+                "(?m)^FROM --platform=\\$BUILDPLATFORM golang:\\d+\\.\\d+\\.\\d+-\\S+ AS plugins$");
+        assertThat(pluginInstall(dockerfile)).contains("GOTOOLCHAIN=local");
+        // The image takes the plugins only from that stage, after their checks.
+        assertThat(dockerfile).contains(
+                "COPY --from=plugins /out/protoc-gen-openapiv2 /out/protoc-gen-connect-openapi /usr/local/bin/");
+        assertThat(dockerfile).doesNotContain("releases/download/v${PROTOC_GEN");
+    }
+
+    /** The plugins stage, from its FROM to the next stage. */
     private static String pluginInstall(String dockerfile) {
-        int marker = dockerfile.indexOf("OPENAPIV2_ARCH=");
+        int marker = dockerfile.indexOf("OPENAPIV2_SHA256=");
         assertThat(marker).as("the plugin install in the Dockerfile").isNotNegative();
-        int start = dockerfile.lastIndexOf("\nRUN ", marker);
-        int end = dockerfile.indexOf("\n\n", marker);
+        int start = dockerfile.lastIndexOf("\nFROM ", marker);
+        int end = dockerfile.indexOf("\nFROM ", marker);
         assertThat(start).isNotNegative();
         return dockerfile.substring(start, end < 0 ? dockerfile.length() : end);
     }

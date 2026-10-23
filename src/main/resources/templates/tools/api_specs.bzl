@@ -32,14 +32,14 @@ load("@com_google_protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
 PROTOC_GEN_OPENAPIV2 = "/usr/local/bin/protoc-gen-openapiv2"
 PROTOC_GEN_OPENAPIV2_VERSION = "2.31.0"
 PROTOC_GEN_OPENAPIV2_SHA256 = [
-    "a05f17a2a934692cc9d0b46a5a597f23cf2f1e34c76e0a457943aa5afffa33ba",  # linux amd64
-    "6240a03543695ed7dfad404765cc681c7bcc7760773c479d37cdd80f7840e000",  # linux arm64
+    "67d380171115cc58912d568763bc0007494397cd1a6db99aff757298e9812ac4",  # linux amd64
+    "2179d8822db05bbe435eb7f1a1eed56926039cdada65745357476aac32fff5b4",  # linux arm64
 ]
 PROTOC_GEN_CONNECT_OPENAPI = "/usr/local/bin/protoc-gen-connect-openapi"
 PROTOC_GEN_CONNECT_OPENAPI_VERSION = "0.28.0"
 PROTOC_GEN_CONNECT_OPENAPI_SHA256 = [
-    "fdaa7b60734db2513727f56bb5415406c76d1490cb14827a1af38dd32cb5d080",  # linux amd64
-    "662c2ae8fa8c0bd0deb2f4068577b8809dc69b10645c4d12dc1d22ea4f90d3ab",  # linux arm64
+    "7c689ed7d699f1eb122555d4528b2b946822e2aef3959c6995f5999dca6716b3",  # linux amd64
+    "20b2aa3981fa6de81c40eb63d5895cea5363edb8f92e8f1358afc0620338cdee",  # linux arm64
 ]
 
 _SUFFIX = "_all_protos"

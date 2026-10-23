@@ -59,8 +59,8 @@ cache and protolake db stay untouched. A failed run keeps its output
 directory (`test-*-output/`, gitignored) for the logs; the next run clears
 it. They leave the `protolake-proto-lake:latest` image and each lake's
 `protolake-disk-cache-<lake>` volume behind as the next run's build cache;
-`PROTOLAKE_E2E_IMAGE` gives `test_cli.sh` a branch-scoped tag to build and run
-instead.
+`PROTOLAKE_E2E_IMAGE` gives every suite, and the smoke stack, a branch-scoped
+tag to build and run instead.
 They also drop every publishing setting a developer's shell may carry
 (`MAVEN_REPO`, `PYPI_REPO`, tokens, npm modes), so no run reaches a real
 registry. Native Karate equivalents, for clearer per-area assertions, would
