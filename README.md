@@ -75,7 +75,7 @@ release PR; merging it tags `<package-name>-v<version>` per bundle,
 which fires `publish.yml` and runs `protolakew publish --bundle <path>`.
 Bundle versions are bumped automatically based on
 `feat:` / `fix:` commit messages. See the cross-cutting design doc:
-[`internal-lib-versioning.md`](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/designs/cross-cutting/internal-lib-versioning.md).
+[`internal-lib-versioning/index.md`](https://github.com/cohub-space/cohub-knowledge/blob/main/docs/designs/cross-cutting/internal-lib-versioning/index.md).
 
 **Manual flag-based.** For ad-hoc publishes:
 
