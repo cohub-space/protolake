@@ -119,6 +119,7 @@ import threading
 
 log_file = sys.argv[1]
 port = int(sys.argv[2])
+log_lock = threading.Lock()
 
 class MockRegistryHandler(http.server.BaseHTTPRequestHandler):
     def do_PUT(self):
@@ -132,7 +133,7 @@ class MockRegistryHandler(http.server.BaseHTTPRequestHandler):
             'content_type': self.headers.get('Content-Type', ''),
             'auth': auth,
         })
-        with open(log_file, 'a') as f:
+        with log_lock, open(log_file, 'a') as f:
             f.write(entry + '\n')
         self.send_response(200)
         self.end_headers()
@@ -149,7 +150,7 @@ class MockRegistryHandler(http.server.BaseHTTPRequestHandler):
             'content_type': self.headers.get('Content-Type', ''),
             'auth': auth,
         })
-        with open(log_file, 'a') as f:
+        with log_lock, open(log_file, 'a') as f:
             f.write(entry + '\n')
         self.send_response(200)
         self.end_headers()
@@ -158,7 +159,11 @@ class MockRegistryHandler(http.server.BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         pass  # Suppress stderr logging
 
-server = http.server.HTTPServer(('0.0.0.0', port), MockRegistryHandler)
+# MavenPublisher uploads a jar, its pom and their checksums all at once. A
+# single-threaded server leaves the extra connections in the listen backlog,
+# and Docker Desktop's host.docker.internal forwarding refuses them instead
+# of waiting, which fails the publish with "Connection refused".
+server = http.server.ThreadingHTTPServer(('0.0.0.0', port), MockRegistryHandler)
 print(f'Mock registry server listening on port {port}', flush=True)
 server.serve_forever()
 PYEOF
