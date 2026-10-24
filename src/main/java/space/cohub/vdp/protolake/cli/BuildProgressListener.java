@@ -12,6 +12,10 @@ public interface BuildProgressListener {
 
     void onPhaseComplete(String phase, boolean success, String message);
 
+    /** A problem that does not fail the build, such as a WARNING finding. */
+    default void onWarning(String warning) {
+    }
+
     void onMetadataUpdate(BuildOperationMetadata metadata);
 
     void onBuildComplete(BuildOperationMetadata metadata);

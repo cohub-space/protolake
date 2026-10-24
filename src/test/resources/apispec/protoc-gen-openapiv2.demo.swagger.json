@@ -1,0 +1,223 @@
+{
+  "swagger": "2.0",
+  "info": {
+    "title": "demo/v1/demo.proto",
+    "version": "version not set"
+  },
+  "tags": [
+    {
+      "name": "ThingService",
+      "description": "Things, served every way cohub exposes an RPC."
+    }
+  ],
+  "consumes": [
+    "application/json"
+  ],
+  "produces": [
+    "application/json"
+  ],
+  "paths": {
+    "/v1/things:watch": {
+      "get": {
+        "summary": "Streams things as they change.",
+        "operationId": "ThingService_WatchThings",
+        "responses": {
+          "200": {
+            "description": "A successful response.(streaming responses)",
+            "schema": {
+              "type": "object",
+              "properties": {
+                "result": {
+                  "$ref": "#/definitions/v1Thing"
+                },
+                "error": {
+                  "$ref": "#/definitions/rpcStatus"
+                }
+              },
+              "title": "Stream result of v1Thing"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "filter",
+            "in": "query",
+            "required": false,
+            "type": "string"
+          }
+        ],
+        "tags": [
+          "ThingService"
+        ]
+      }
+    },
+    "/v1/{name}": {
+      "get": {
+        "summary": "Gets one thing.",
+        "operationId": "ThingService_GetThing",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1Thing"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "pattern": "things/[^/]+"
+          }
+        ],
+        "tags": [
+          "ThingService"
+        ]
+      }
+    },
+    "/v1/{name}:export": {
+      "post": {
+        "summary": "Exports a thing; the service serves this REST call itself.",
+        "operationId": "ThingService_ExportThing",
+        "responses": {
+          "200": {
+            "description": "A successful response.",
+            "schema": {
+              "$ref": "#/definitions/v1ExportThingResponse"
+            }
+          },
+          "default": {
+            "description": "An unexpected error response.",
+            "schema": {
+              "$ref": "#/definitions/rpcStatus"
+            }
+          }
+        },
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "required": true,
+            "type": "string",
+            "pattern": "things/[^/]+"
+          },
+          {
+            "name": "body",
+            "in": "body",
+            "required": true,
+            "schema": {
+              "$ref": "#/definitions/ThingServiceExportThingBody"
+            }
+          }
+        ],
+        "tags": [
+          "ThingService"
+        ]
+      }
+    }
+  },
+  "definitions": {
+    "ThingServiceExportThingBody": {
+      "type": "object",
+      "properties": {
+        "format": {
+          "type": "string"
+        }
+      }
+    },
+    "protobufAny": {
+      "type": "object",
+      "properties": {
+        "@type": {
+          "type": "string"
+        }
+      },
+      "additionalProperties": {}
+    },
+    "rpcStatus": {
+      "type": "object",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "format": "int32"
+        },
+        "message": {
+          "type": "string"
+        },
+        "details": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "$ref": "#/definitions/protobufAny"
+          }
+        }
+      }
+    },
+    "v1ExportThingResponse": {
+      "type": "object",
+      "properties": {
+        "uri": {
+          "type": "string"
+        }
+      }
+    },
+    "v1Kind": {
+      "type": "string",
+      "enum": [
+        "KIND_UNSPECIFIED",
+        "KIND_SMALL",
+        "KIND_LARGE"
+      ],
+      "default": "KIND_UNSPECIFIED",
+      "description": "The kind of a thing."
+    },
+    "v1Thing": {
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "The resource name, things/{thing}."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "A label."
+        },
+        "editCount": {
+          "type": "string",
+          "format": "int64",
+          "description": "How many edits so far."
+        },
+        "kind": {
+          "$ref": "#/definitions/v1Kind",
+          "description": "Its kind."
+        },
+        "tags": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          },
+          "description": "Tags on the thing."
+        },
+        "note": {
+          "type": "string",
+          "description": "An optional note."
+        }
+      },
+      "description": "A thing."
+    }
+  }
+}

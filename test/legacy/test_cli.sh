@@ -21,7 +21,9 @@ unset MAVEN_REPO PYPI_REPO REGISTRY_TOKEN MAVEN_USER MAVEN_PASSWORD \
 
 LAKE_NAME="test_lake"
 OUTPUT_DIR="./test-cli-output"
-DOCKER_IMAGE="protolake-proto-lake:latest"
+# PROTOLAKE_E2E_IMAGE builds and runs a branch-scoped tag instead, leaving the
+# shared tag other checkouts run against alone.
+DOCKER_IMAGE="${PROTOLAKE_E2E_IMAGE:-protolake-proto-lake:latest}"
 GAZELLE_SOURCE_PATH="${PROTOLAKE_GAZELLE_SOURCE_PATH:-$(cd ../../protolake-gazelle 2>/dev/null && pwd)}"
 BUILD_TIMEOUT=1200  # 20 minutes for cold build
 BASE_VOLUME=""  # the scratch local root's bazel output base, named by protolakew
@@ -113,7 +115,7 @@ echo ""
 echo "Phase 0: Checking prerequisites..."
 
 PREREQ_FAIL=false
-for cmd in docker jq; do
+for cmd in docker jq unzip; do
     if command -v "$cmd" &> /dev/null; then
         echo "  Found: $cmd"
     else
@@ -149,8 +151,8 @@ echo "Phase 1: Docker build..."
 rm -rf "$OUTPUT_DIR"
 mkdir -p "$OUTPUT_DIR"
 
-echo "  Building Docker image..."
-if ! docker compose build 2>&1 | tail -5; then
+echo "  Building Docker image $DOCKER_IMAGE..."
+if ! docker build -t "$DOCKER_IMAGE" .. 2>&1 | tail -5; then
     fail "Docker build"
     echo "Docker build failed. Aborting."
     exit 1
@@ -255,6 +257,38 @@ else
     echo "$SB_OUTPUT" | tail -10 | sed 's/^/    /'
 fi
 
+# Create api_demo: REST bindings, a WebSocket stream and a custom RPC, for the API specs
+echo "  Creating api_demo..."
+AD_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name api_demo \
+    --java-artifact-id api-demo-proto \
+    --python-package-name company_api_demo_proto \
+    --js-package-name @company/api-demo-proto 2>&1)
+AD_EXIT=$?
+
+if [ $AD_EXIT -eq 0 ]; then
+    pass "create-bundle api_demo exit code 0"
+else
+    fail "create-bundle api_demo exit code $AD_EXIT"
+    echo "  Output:"
+    echo "$AD_OUTPUT" | tail -10 | sed 's/^/    /'
+fi
+
+# Create rest_demo: REST bindings and no cohub options, so it builds packages that carry its specs
+echo "  Creating rest_demo..."
+RD_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name rest_demo \
+    --java-artifact-id rest-demo-proto \
+    --python-package-name company_rest_demo_proto \
+    --js-package-name @company/rest-demo-proto 2>&1)
+RD_EXIT=$?
+
+if [ $RD_EXIT -eq 0 ]; then
+    pass "create-bundle rest_demo exit code 0"
+else
+    fail "create-bundle rest_demo exit code $RD_EXIT"
+    echo "  Output:"
+    echo "$RD_OUTPUT" | tail -10 | sed 's/^/    /'
+fi
+
 # Verify bundle.yaml files
 check_file "$LAKE_DIR/company_a/platform/service_a/bundle.yaml" "service_a bundle.yaml"
 check_file "$LAKE_DIR/company_b/apps/service_b/bundle.yaml" "service_b bundle.yaml"
@@ -275,14 +309,29 @@ echo "Phase 4: Copy proto files..."
 cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a/platform/service_a/"
 cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
 cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
+cp -r fixtures/test-protos/api_demo/v1 "$LAKE_DIR/api_demo/"
+cp -r fixtures/test-protos/rest_demo/v1 "$LAKE_DIR/rest_demo/"
+# api_demo imports cohub/api/v1/exposure.proto from the cohub_api module the
+# image ships; nothing publishes that module's Java, Python or npm packages yet,
+# so a bundle that imports it builds its API specs and checks, not packages.
+sed -i.bak 's/^      enabled: true$/      enabled: false/' "$LAKE_DIR/api_demo/bundle.yaml" && rm -f "$LAKE_DIR/api_demo/bundle.yaml.bak"
 
 # Remove auto-generated example.proto files
 rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
 rm -f "$LAKE_DIR/company_b/apps/service_b/example.proto"
+rm -f "$LAKE_DIR/api_demo/example.proto"
+rm -f "$LAKE_DIR/rest_demo/example.proto"
 
 check_file "$LAKE_DIR/company_a/platform/service_a/api/v1/user.proto" "service_a user.proto"
 check_file "$LAKE_DIR/company_a/platform/service_a/types/v1/common.proto" "service_a common.proto"
 check_file "$LAKE_DIR/company_b/apps/service_b/api/v1/order.proto" "service_b order.proto"
+check_file "$LAKE_DIR/api_demo/v1/things.proto" "api_demo things.proto"
+check_file "$LAKE_DIR/rest_demo/v1/notes.proto" "rest_demo notes.proto"
+if [ ! -e "$LAKE_DIR/cohub/api/v1/exposure.proto" ] && ! grep -q "enabled: true" "$LAKE_DIR/api_demo/bundle.yaml"; then
+    pass "api_demo imports the cohub options without a vendored copy, its languages off"
+else
+    fail "the lake vendors cohub/api/v1/exposure.proto, or api_demo builds packages"
+fi
 
 echo ""
 echo "  Lake structure:"
@@ -553,6 +602,276 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
     fi
 else
     echo "  Skipping dep show tests (build did not succeed)"
+fi
+
+# ============================================================================
+# Phase 7.6: Verify API specs
+# ============================================================================
+
+echo ""
+echo "Phase 7.6: Verify API specs..."
+
+# Prints a file of the build's bazel-bin. The specs are Bazel outputs, and the
+# output base lives in a docker volume, not on this host.
+bazel_bin_file() {
+    docker run --rm --entrypoint sh -v "$BASE_VOLUME:/home/protolake/.cache/bazel" "$DOCKER_IMAGE" \
+        -c "cat /home/protolake/.cache/bazel/execroot/_main/bazel-out/*-fastbuild/bin/$1"
+}
+
+# check_json <file> <jq filter printing true> <description>
+check_json() {
+    if [ -s "$1" ] && [ "$(jq -r "$2" "$1" 2>/dev/null)" = "true" ]; then
+        pass "$3"
+    else
+        fail "$3 ($2 on $1)"
+    fi
+}
+
+SPECS_DIR="$ABS_OUTPUT_DIR/api-specs"
+if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
+    mkdir -p "$SPECS_DIR"
+    OPENAPI="$SPECS_DIR/api_demo.openapi.json"
+    ASYNCAPI="$SPECS_DIR/api_demo.asyncapi.json"
+    FINDINGS="$SPECS_DIR/api_demo_api_findings.json"
+    SA_FINDINGS="$SPECS_DIR/service_a_api_findings.json"
+    bazel_bin_file api_demo/api_demo_api_specs/api_demo.openapi.json > "$OPENAPI"
+    bazel_bin_file api_demo/api_demo_api_specs/api_demo.asyncapi.json > "$ASYNCAPI"
+    bazel_bin_file api_demo/api_demo_api_findings.json > "$FINDINGS"
+    bazel_bin_file company_a/platform/service_a/service_a_api_findings.json > "$SA_FINDINGS"
+    AD_VERSION=$(sed -n 's/^version: *"\{0,1\}\([^" ]*\)"\{0,1\}.*/\1/p' "$LAKE_DIR/api_demo/bundle.yaml" | head -1)
+
+    check_file_contains "$BUILD_LOG" "Writing API specs: OK - api_demo (api_demo.openapi.json, api_demo.asyncapi.json)" \
+        "build log names api_demo's specs"
+
+    # OpenAPI 2.0, from the google.api.http bindings
+    check_json "$OPENAPI" '.swagger == "2.0"' "OpenAPI: a Swagger 2.0 document"
+    check_json "$OPENAPI" '.info.title == "api_demo"' "OpenAPI: titled after the bundle"
+    check_json "$OPENAPI" '.paths["/v1/{name}"].get.operationId == "ThingService_GetThing"' \
+        "OpenAPI: the REST-bound unary RPC"
+    check_json "$OPENAPI" '.paths["/v1/things:watch"].get.responses["200"]
+        | .schema["$ref"] == "#/definitions/v1ThingEvent" and (.schema | has("properties") | not)
+          and ."x-stream-framing" == "newline-delimited"' \
+        "OpenAPI: the server stream is newline-delimited bare ThingEvent messages"
+    check_json "$OPENAPI" '.paths["/v1/{name}:export"].post.operationId == "ThingService_ExportThing"' \
+        "OpenAPI: the custom RPC is in the spec"
+    check_json "$OPENAPI" '.paths["/v1/{name}:tail"].get.responses["200"]
+        | ."x-stream-framing" == "author-defined" and .schema.properties.result["$ref"] == "#/definitions/v1ThingLogLine"' \
+        "OpenAPI: the custom server stream keeps the generator's framing, marked author-defined"
+    check_json "$OPENAPI" '.paths | has("/v1/{name}:upload") | not' \
+        "OpenAPI: the client stream's binding is left out"
+    check_json "$OPENAPI" '[.. | .operationId? // empty]
+        | index("ThingService_PingThings") == null and index("ThingService_CollaborateOnThing") == null' \
+        "OpenAPI: neither the unannotated nor the WebSocket RPC"
+    check_json "$OPENAPI" '.definitions | has("v1PingThingsResponse") | not' \
+        "OpenAPI: none of the unannotated RPC's messages"
+
+    # AsyncAPI 3.1, for the WebSocket-marked RPCs
+    CHANNEL=api_demo-v1-ThingService-CollaborateOnThing
+    check_json "$ASYNCAPI" '.asyncapi == "3.1.0"' "AsyncAPI: a 3.1 document"
+    check_json "$ASYNCAPI" ".channels | keys == [\"$CHANNEL\"]" "AsyncAPI: only the WebSocket RPC has a channel"
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].address == \"/ws/api_demo.v1.ThingService/CollaborateOnThing\"" \
+        "AsyncAPI: the channel sits at the bridge's address"
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].messages
+        | .request.payload.properties.data[\"\$ref\"] == \"#/components/schemas/api_demo.v1.CollaborateOnThingRequest\"
+          and .response.payload.properties.data[\"\$ref\"] == \"#/components/schemas/api_demo.v1.CollaborateOnThingResponse\"
+          and .end[\"\$ref\"] == \"#/components/messages/End\" and .status[\"\$ref\"] == \"#/components/messages/Status\"" \
+        "AsyncAPI: the channel carries the bridge's Data, End and Status frames"
+    check_json "$ASYNCAPI" ".channels[\"$CHANNEL\"].bindings.ws.headers.required == [\"Sec-WebSocket-Protocol\"]" \
+        "AsyncAPI: the WebSocket binding declares the subprotocol handshake"
+    check_json "$ASYNCAPI" '.components.schemas | has("api_demo.v1.PingThingsResponse") | not' \
+        "AsyncAPI: none of the unannotated RPC's messages"
+    check_json "$FINDINGS" '.asyncapi_generator | startswith("protoc-gen-connect-openapi")' \
+        "AsyncAPI: protoc-gen-connect-openapi's output passed protolake's check"
+    check_json "$FINDINGS" '[.findings[] | [.severity, .rpc]] == [["WARNING", "api_demo.v1.ThingService.UploadThingChunks"]]' \
+        "the client stream's binding is the one finding, a WARNING"
+    check_file_contains "$BUILD_LOG" "WARNING: api_demo/v1/things.proto:" "the build prints the WARNING with its location"
+
+    # service_a has no bindings and no WebSocket RPCs: no specs, which is fine
+    check_json "$SA_FINDINGS" '.findings == [] and .specs == []' "service_a gets no API specs"
+
+    # rest_demo's specs ship inside its packages, stamped with the version each is published under
+    RD_VERSION=$(sed -n 's/^version: *"\{0,1\}\([^" ]*\)"\{0,1\}.*/\1/p' "$LAKE_DIR/rest_demo/bundle.yaml" | head -1)
+    RD_JAR=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/rest-demo-proto" -name "*.jar" 2>/dev/null | head -1)
+    RD_WHEEL=$(find "$LOCAL_ROOT/pip/simple" -name "company_rest_demo_proto-*.whl" 2>/dev/null | head -1)
+    RD_NPM_SPEC=$(find "$LOCAL_ROOT/npm-packages" -path "*rest-demo-proto*" -name "rest_demo.openapi.json" 2>/dev/null | head -1)
+    PACKAGED="$SPECS_DIR/packaged"
+    mkdir -p "$PACKAGED"
+    [ -n "$RD_JAR" ] && unzip -p "$RD_JAR" META-INF/api-specs/rest_demo.openapi.json > "$PACKAGED/jar.openapi.json" 2>/dev/null
+    if [ -n "$RD_WHEEL" ]; then
+        unzip -p "$RD_WHEEL" "*.dist-info/api-specs/rest_demo.openapi.json" > "$PACKAGED/wheel.openapi.json" 2>/dev/null
+        unzip -p "$RD_WHEEL" "*.dist-info/RECORD" > "$PACKAGED/wheel.RECORD" 2>/dev/null
+    fi
+    [ -n "$RD_NPM_SPEC" ] && cp "$RD_NPM_SPEC" "$PACKAGED/npm.openapi.json"
+    check_json "$PACKAGED/jar.openapi.json" ".info.version == \"$RD_VERSION\" and (.paths | has(\"/v1/{name}\"))
+        and .paths[\"/v1/notes:watch\"].get.responses[\"200\"].\"x-stream-framing\" == \"newline-delimited\"" \
+        "jar: META-INF/api-specs/rest_demo.openapi.json, version $RD_VERSION"
+    check_json "$PACKAGED/wheel.openapi.json" ".info.version == \"$RD_VERSION\"" \
+        "wheel: .dist-info/api-specs/rest_demo.openapi.json, version $RD_VERSION"
+    check_file_contains "$PACKAGED/wheel.RECORD" "dist-info/api-specs/rest_demo.openapi.json,sha256=" \
+        "wheel: RECORD lists the spec with its hash"
+    check_json "$PACKAGED/npm.openapi.json" ".info.version == \"$RD_VERSION\"" \
+        "npm: api-specs/rest_demo.openapi.json, version $RD_VERSION"
+    if [ -z "$(find "$LOCAL_ROOT/maven/repository/com/example/proto" -path "*api-demo-proto*" -name "*.jar" 2>/dev/null)" ]; then
+        pass "api_demo, which imports the cohub options, publishes no packages"
+    else
+        fail "api_demo published packages"
+    fi
+    # service_a has no specs, so its jar carries none
+    SA_JAR_FILE=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/service-a-proto" -name "*.jar" 2>/dev/null | head -1)
+    if [ -n "$SA_JAR_FILE" ] && ! unzip -l "$SA_JAR_FILE" | grep -q "api-specs/"; then
+        pass "service_a's jar carries no API specs"
+    else
+        fail "service_a's jar carries API specs, or is missing ($SA_JAR_FILE)"
+    fi
+else
+    echo "  Skipping API spec checks (build did not succeed)"
+fi
+
+# ============================================================================
+# Phase 7.7: The WebSocket option on a unary RPC fails the build
+# ============================================================================
+
+echo ""
+echo "Phase 7.7: The WebSocket option on a unary RPC fails the build..."
+
+if [ "$BUILD_SUCCEEDED" = true ]; then
+    THINGS="$LAKE_DIR/api_demo/v1/things.proto"
+    # GetThing is unary; gRPC-web serves it to browsers, so the option is a mistake.
+    awk 'index($0, "{get: \"/v1/{name=things/*}\"}") { print; print "    option (cohub.api.v1.exposure) = {websocket: true};"; next } { print }' \
+        "$THINGS" > "$THINGS.tmp" && mv "$THINGS.tmp" "$THINGS"
+    if [ "$(grep -c 'websocket: true' "$THINGS")" -eq 2 ]; then
+        pass "GetThing carries the WebSocket option beside CollaborateOnThing"
+    else
+        fail "GetThing does not carry the WebSocket option"
+    fi
+    NEG_LOG="${ABS_OUTPUT_DIR}/build-websocket-on-unary.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --skip-validation) > "$NEG_LOG" 2>&1
+    NEG_EXIT=$?
+    if [ $NEG_EXIT -ne 0 ]; then
+        pass "the build fails (exit $NEG_EXIT)"
+    else
+        fail "the build succeeded with the WebSocket option on a unary RPC"
+    fi
+    check_file_contains "$NEG_LOG" "API exposure checks failed" "the failure names the exposure checks"
+    check_file_contains "$NEG_LOG" "api_demo.v1.ThingService.GetThing is a unary RPC" "the error names the RPC"
+    check_file_contains "$NEG_LOG" "api_demo/v1/things.proto:" "the error points at the proto file"
+    cp fixtures/test-protos/api_demo/v1/things.proto "$THINGS"
+else
+    echo "  Skipping the negative build (the first build did not succeed)"
+fi
+
+# ============================================================================
+# Phase 7.8: buf validation resolves the cohub options the lake imports
+# ============================================================================
+
+echo ""
+echo "Phase 7.8: buf validation resolves the cohub options the lake imports..."
+
+if [ "$BUILD_SUCCEEDED" = true ]; then
+    # The first validation resolves buf's deps in its copy of the lake and
+    # writes buf.lock back, as it does for every lake; its breaking check has no
+    # usable baseline yet, so only the lock file is checked.
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "${ABS_OUTPUT_DIR}/validate-first.log" 2>&1
+    check_file "$LAKE_DIR/buf.lock" "validation writes buf.lock back into the lake"
+    # A history the breaking check can compare: the fixtures and buf.lock, then a
+    # change that breaks nothing, so the baseline (HEAD~1, as the lake has no
+    # origin/main) also imports the cohub options.
+    lake_git() {
+        git -C "$LAKE_DIR" -c user.name=e2e -c user.email=e2e@example.com \
+            -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+    }
+    if lake_git add --all -- api_demo company_a company_b rest_demo buf.lock \
+        && lake_git commit -q -m "test: the fixture protos and buf.lock" \
+        && printf '\n// A comment, which breaks nothing.\n' >> "$LAKE_DIR/rest_demo/v1/notes.proto" \
+        && lake_git commit -q -m "test: a change that breaks nothing" -- rest_demo/v1/notes.proto; then
+        pass "the lake commits its protos, then a change that breaks nothing"
+    else
+        fail "could not commit the lake's protos"
+    fi
+    VAL_LOG="${ABS_OUTPUT_DIR}/validate.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "$VAL_LOG" 2>&1
+    VAL_EXIT=$?
+    if [ $VAL_EXIT -eq 0 ] && ! grep -q "file does not exist" "$VAL_LOG"; then
+        pass "protolakew validate passes, buf resolving cohub/api/v1/exposure.proto"
+    else
+        fail "protolakew validate (exit $VAL_EXIT) did not resolve the import; see $VAL_LOG"
+    fi
+    check_file_contains "$VAL_LOG" "breaking --against /tmp/protolake-buf-baseline-" \
+        "the breaking check compares against a baseline that also holds the options"
+    if [ ! -e "$LAKE_DIR/cohub" ]; then
+        pass "validation leaves no copy of the options in the lake"
+    else
+        fail "validation wrote $LAKE_DIR/cohub"
+    fi
+    # A change that drops the lake's last import of the options: the baseline
+    # still imports them, and the breaking check must still resolve it.
+    LAKE_THINGS="$LAKE_DIR/api_demo/v1/things.proto"
+    grep -v 'cohub' fixtures/test-protos/api_demo/v1/things.proto > "$LAKE_THINGS"
+    DROP_LOG="${ABS_OUTPUT_DIR}/validate-dropped-options.log"
+    if lake_git commit -q -m "test: drop the cohub options" -- api_demo/v1/things.proto; then
+        (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "$DROP_LOG" 2>&1
+        DROP_EXIT=$?
+    else
+        DROP_EXIT=commit-failed
+    fi
+    if [ "$DROP_EXIT" = 0 ]; then
+        pass "protolakew validate passes on a change that drops the lake's last import of the options"
+    else
+        fail "protolakew validate ($DROP_EXIT) after dropping the options; see $DROP_LOG"
+    fi
+    cp fixtures/test-protos/api_demo/v1/things.proto "$LAKE_THINGS"
+    lake_git commit -q -m "test: import the cohub options again" -- api_demo/v1/things.proto
+else
+    echo "  Skipping validation (the first build did not succeed)"
+fi
+
+# ============================================================================
+# Phase 7.9: a bundle that imports the cohub options builds no language packages
+# ============================================================================
+
+echo ""
+echo "Phase 7.9: a bundle that imports the cohub options builds no language packages..."
+
+if [ "$BUILD_SUCCEEDED" = true ]; then
+    AD_YAML="$LAKE_DIR/api_demo/bundle.yaml"
+    # Java on again: its generated code would load cohub's classes, which nothing publishes yet.
+    awk 'previous == "    java:" && $0 == "      enabled: false" { print "      enabled: true"; previous = $0; next } { print; previous = $0 }' \
+        "$AD_YAML" > "$AD_YAML.tmp" && mv "$AD_YAML.tmp" "$AD_YAML"
+    check_file_contains "$AD_YAML" "enabled: true" "api_demo enables Java"
+    REF_LOG="${ABS_OUTPUT_DIR}/build-imports-with-java.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --skip-validation) > "$REF_LOG" 2>&1
+    REF_EXIT=$?
+    if [ $REF_EXIT -ne 0 ]; then
+        pass "the build fails (exit $REF_EXIT)"
+    else
+        fail "the build succeeded with Java on a bundle that imports the cohub options"
+    fi
+    check_file_contains "$REF_LOG" "Bundle api_demo imports cohub/api/v1/exposure.proto and builds Java packages" \
+        "the refusal names the bundle and the language"
+    check_file_contains "$REF_LOG" "api_demo/v1/things.proto:5:1:" "the refusal points at the import"
+
+    # rest_demo builds packages and imports api_demo's protos, which import the
+    # options; the import is single-quoted, after another statement on its line.
+    sed -i.bak 's/^      enabled: true$/      enabled: false/' "$AD_YAML" && rm -f "$AD_YAML.bak"
+    NOTES="$LAKE_DIR/rest_demo/v1/notes.proto"
+    sed "s#^import \"google/api/annotations.proto\";\$#import \"google/api/annotations.proto\"; import 'api_demo/v1/things.proto';#" \
+        fixtures/test-protos/rest_demo/v1/notes.proto > "$NOTES"
+    check_file_contains "$NOTES" "; import 'api_demo/v1/things.proto';" "rest_demo imports api_demo's protos"
+    THROUGH_LOG="${ABS_OUTPUT_DIR}/build-imports-through-api-demo.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --skip-validation) > "$THROUGH_LOG" 2>&1
+    THROUGH_EXIT=$?
+    if [ $THROUGH_EXIT -ne 0 ]; then
+        pass "the build fails (exit $THROUGH_EXIT) for a bundle whose imports reach the options"
+    else
+        fail "the build succeeded for rest_demo, whose imports reach the cohub options"
+    fi
+    check_file_contains "$THROUGH_LOG" \
+        "rest_demo/v1/notes.proto imports api_demo/v1/things.proto, which imports cohub/api/v1/exposure.proto" \
+        "the refusal names the chain of imports"
+    check_file_contains "$THROUGH_LOG" "rest_demo/v1/notes.proto:5:40:" "the refusal points at rest_demo's import"
+    cp fixtures/test-protos/rest_demo/v1/notes.proto "$NOTES"
+else
+    echo "  Skipping the refusal build (the first build did not succeed)"
 fi
 
 # ============================================================================

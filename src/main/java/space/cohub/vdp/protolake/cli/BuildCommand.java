@@ -62,7 +62,7 @@ public class BuildCommand implements Runnable {
             if (bundleNames.isEmpty()) {
                 // Build all
                 String target = lakeRelativePath;
-                System.out.printf("[protolake] Building lake: %s%n", LakeUtil.extractLakeId(lake.getName()));
+                ConsoleLine.print(System.out, "[protolake] Building lake: %s", LakeUtil.extractLakeId(lake.getName()));
                 buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocalConfig,
                         null, listener, metadata);
             } else {
@@ -70,7 +70,7 @@ public class BuildCommand implements Runnable {
                 for (String bundleName : bundleNames) {
                     Bundle bundle = lakeResolver.findBundle(resolvedPath, lake, bundleName);
                     String target = BundleUtil.getWorkspaceRelativePath(lake, bundle);
-                    System.out.printf("[protolake] Building bundle: %s%n", bundleName);
+                    ConsoleLine.print(System.out, "[protolake] Building bundle: %s", bundleName);
                     metadata = buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocalConfig,
                             null, listener, metadata);
                 }
@@ -78,7 +78,7 @@ public class BuildCommand implements Runnable {
         } catch (BuildOrchestrator.BuildException e) {
             System.err.println("[protolake] Build failed: " + e.getMessage());
             for (var error : e.getErrors().getErrors()) {
-                System.err.printf("  %s:%d:%d: %s%n",
+                ConsoleLine.print(System.err, "  %s:%d:%d: %s",
                         error.getFile(), error.getLine(), error.getColumn(), error.getMessage());
             }
             throw new CommandLine.ExecutionException(

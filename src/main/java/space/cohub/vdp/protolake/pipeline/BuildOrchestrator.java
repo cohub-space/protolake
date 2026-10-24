@@ -1,6 +1,8 @@
 package space.cohub.vdp.protolake.pipeline;
 
+import space.cohub.vdp.protolake.cli.BuildProgressListener;
 import space.cohub.vdp.protolake.initializer.WorkspaceInitializer;
+import space.cohub.vdp.protolake.model.ValidationError;
 import space.cohub.vdp.protolake.model.ValidationResult;
 import space.cohub.vdp.protolake.model.ValidationErrors;
 import space.cohub.vdp.protolake.operation.CancellationToken;
@@ -26,12 +28,14 @@ import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
 /**
  * Orchestrates the build pipeline for lakes and bundles.
  *
- * Coordinates the execution of gazelle, validation, bazel build, and publishing
- * based on simplified boolean flags (skipValidation, installLocal).
+ * Coordinates the execution of gazelle, validation, bazel build, the API spec
+ * step, and publishing based on simplified boolean flags (skipValidation,
+ * installLocal).
  *
  * All builds are executed from the lake root directory (where MODULE.bazel exists),
  * with targets computed relative to that lake root.
@@ -39,6 +43,8 @@ import java.util.concurrent.TimeUnit;
 @ApplicationScoped
 public class BuildOrchestrator {
     private static final Logger LOG = Logger.getLogger(BuildOrchestrator.class);
+
+    static final String API_SPECS_PHASE = "Writing API specs";
 
     private final ExecutorService executorService = Executors.newFixedThreadPool(4);
 
@@ -53,6 +59,12 @@ public class BuildOrchestrator {
 
     @Inject
     BazelBuildRunner bazelBuildRunner;
+
+    @Inject
+    ApiSpecRunner apiSpecRunner;
+
+    @Inject
+    ProvidedImportCheck providedImportCheck;
 
     @Inject
     StorageService storageService;
@@ -193,9 +205,22 @@ public class BuildOrchestrator {
 
         LOG.debugf("Converting target from base-relative '%s' to lake-relative '%s'", target, lakeRelativeTarget);
 
+        // Before Bazel: such a bundle would fail to compile, or publish packages that fail to load.
+        List<ValidationError> refused = providedImportCheck.check(lakeRoot, lakeRelativeTarget);
+        if (!refused.isEmpty()) {
+            metadata = recordOnBuildPhase(metadata,
+                refused.stream().map(error -> "ERROR " + describe(error)).toList(), refused);
+            listener.onMetadataUpdate(metadata);
+            listener.onPhaseComplete("Building", false, refused.size() + " API exposure error(s)");
+            throw new BuildException("API exposure checks failed",
+                ValidationErrors.newBuilder().addAllErrors(refused).build());
+        }
+
         metadata = bazelBuildRunner.buildTarget(lakeRoot, lakeRelativeTarget, metadata);
         listener.onMetadataUpdate(metadata);
         listener.onPhaseComplete("Building", true, null);
+
+        metadata = writeApiSpecs(lakeRoot, lakeRelativeTarget, metadata, listener, cancellationToken);
 
         // Run publishing (if installLocal is requested)
         if (installLocal.getShouldInstall()) {
@@ -221,6 +246,84 @@ public class BuildOrchestrator {
 
         LOG.infof("Build completed for target %s in lake %s", target, lakeName);
         return metadata;
+    }
+
+    /**
+     * Checks the exposure annotations of the bundles in scope and writes their
+     * API specs (ApiSpecRunner). An ERROR finding fails the build here, before
+     * anything is published; WARNINGs go to the listener. Both, and the specs
+     * written, land in the build phase's log lines for gRPC callers.
+     */
+    private BuildOperationMetadata writeApiSpecs(Path lakeRoot, String lakeRelativeTarget,
+                                                 BuildOperationMetadata metadata,
+                                                 BuildProgressListener listener,
+                                                 CancellationToken cancellationToken) throws Exception {
+        listener.onPhaseStart(API_SPECS_PHASE);
+        if (cancellationToken != null) cancellationToken.throwIfCancelled();
+
+        ApiSpecRunner.Result result = apiSpecRunner.run(lakeRoot, lakeRelativeTarget, metadata);
+        List<String> logs = new ArrayList<>();
+        List<String> written = new ArrayList<>();
+        for (ApiSpecRunner.BundleSpecs bundle : result.bundles()) {
+            if (bundle.specs().isEmpty()) {
+                continue;
+            }
+            String names = bundle.specs().stream()
+                .map(spec -> spec.getFileName().toString())
+                .collect(Collectors.joining(", "));
+            written.add(bundle.bundle().name() + " (" + names + ")");
+            logs.add(String.format("API specs for %s: %s in bazel-bin/%s/%s_api_specs%s",
+                bundle.bundle().packagePath(), names, bundle.bundle().packagePath(),
+                bundle.bundle().name(),
+                bundle.asyncApiGenerator().isEmpty() ? "" : "; AsyncAPI by " + bundle.asyncApiGenerator()));
+        }
+        for (ValidationError warning : result.findings(ValidationError.Severity.WARNING)) {
+            listener.onWarning(describe(warning));
+            logs.add("WARNING " + describe(warning));
+        }
+        List<ValidationError> errors = result.findings(ValidationError.Severity.ERROR);
+        errors.forEach(error -> logs.add("ERROR " + describe(error)));
+
+        metadata = recordOnBuildPhase(metadata, logs, errors);
+        listener.onMetadataUpdate(metadata);
+
+        if (!errors.isEmpty()) {
+            listener.onPhaseComplete(API_SPECS_PHASE, false,
+                errors.size() + " API exposure error(s)");
+            throw new BuildException("API exposure checks failed",
+                ValidationErrors.newBuilder().addAllErrors(errors).build());
+        }
+        listener.onPhaseComplete(API_SPECS_PHASE, true,
+            written.isEmpty() ? "no bundle has REST bindings or WebSocket RPCs" : String.join(", ", written));
+        return metadata;
+    }
+
+    /**
+     * Adds log lines to the build phase's status and, when there are errors,
+     * marks the phase failed with each one described: gRPC callers read the
+     * phase status, while the exception that ends the build reaches them only
+     * as its message.
+     */
+    private static BuildOperationMetadata recordOnBuildPhase(BuildOperationMetadata metadata, List<String> logs,
+                                                             List<ValidationError> errors) {
+        PhaseStatus.Builder build = metadata.getPhaseStatuses().getBuild().toBuilder().addAllLogLines(logs);
+        if (!errors.isEmpty()) {
+            build.setStatus(PhaseStatus.Status.FAILED)
+                .setErrorMessage("API exposure checks failed:\n" + errors.stream()
+                    .map(BuildOrchestrator::describe)
+                    .collect(Collectors.joining("\n")));
+        }
+        return metadata.toBuilder()
+            .setPhaseStatuses(metadata.getPhaseStatuses().toBuilder().setBuild(build.build()).build())
+            .build();
+    }
+
+    /** {@code file:line:column: message}, without the position when it is unknown. */
+    static String describe(ValidationError finding) {
+        String position = finding.getLine() > 0
+            ? String.format(":%d:%d", finding.getLine(), finding.getColumn())
+            : "";
+        return finding.getFile() + position + ": " + finding.getMessage();
     }
 
     private BuildResponse createBuildResponse(BuildOperationMetadata metadata) {

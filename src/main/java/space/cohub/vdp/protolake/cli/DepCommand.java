@@ -94,25 +94,25 @@ public class DepCommand implements Runnable {
 
                 // Formatted output
                 String bundleDisplay = bundleName + " " + bundle.getVersion();
-                System.out.printf("[protolake] Dependency snippets for %s%n%n", bundleDisplay);
+                ConsoleLine.print(System.out, "[protolake] Dependency snippets for %s%n", bundleDisplay);
 
                 for (DependencySnippet snippet : response.getSnippetsList()) {
                     String langName = snippet.getLanguage().name().toLowerCase();
                     String formatName = snippet.getFormat() != SnippetFormat.FORMAT_UNSPECIFIED
                         ? " (" + snippet.getFormat().name().toLowerCase().replace("_", "-") + ")"
                         : "";
-                    System.out.printf("  %s%s:%n", langName, formatName);
+                    ConsoleLine.print(System.out, "  %s%s:", langName, formatName);
                     for (String line : snippet.getSnippet().split("\n")) {
-                        System.out.printf("    %s%n", line);
+                        ConsoleLine.print(System.out, "    %s", line);
                     }
                     if (!snippet.getInstallCommand().isEmpty()) {
-                        System.out.printf("    # %s%n", snippet.getInstallCommand());
+                        ConsoleLine.print(System.out, "    # %s", snippet.getInstallCommand());
                     }
                     System.out.println();
                 }
 
                 for (String warning : response.getWarningsList()) {
-                    System.err.printf("[protolake] \u26A0 %s%n", warning);
+                    ConsoleLine.print(System.err, "[protolake] \u26A0 %s", warning);
                 }
 
             } catch (Exception e) {

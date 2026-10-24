@@ -1,5 +1,6 @@
 package space.cohub.vdp.protolake.pipeline;
 
+import space.cohub.vdp.protolake.initializer.CohubApiModule;
 import space.cohub.vdp.protolake.model.ValidationError;
 import space.cohub.vdp.protolake.model.ValidationErrors;
 import space.cohub.vdp.protolake.model.ValidationResult;
@@ -28,7 +29,10 @@ import java.util.regex.Pattern;
  *
  * Buf provides compilation checking, linting, breaking change detection,
  * and format checking for proto files. It operates at the lake level to
- * ensure cross-bundle dependencies are properly validated.
+ * ensure cross-bundle dependencies are properly validated. A lake that
+ * imports a proto the protolake image provides (CohubApiModule) is checked
+ * on a copy that holds that proto too (ProvidedProtoOverlay), since buf
+ * resolves imports only from the lake and its buf.yaml deps.
  */
 @ApplicationScoped
 public class ValidationRunner {
@@ -44,6 +48,9 @@ public class ValidationRunner {
 
     @Inject
     GitCommand gitCommand;
+
+    @Inject
+    CohubApiModule cohubApiModule;
 
     /** The branch a lake's breaking-change check measures from. */
     static final String BREAKING_BASE_REF = "origin/main";
@@ -110,20 +117,33 @@ public class ValidationRunner {
 
         List<String> logs = new ArrayList<>();
         List<ValidationError> errors = new ArrayList<>();
+        ProvidedProtoOverlay overlay = null;
 
         try {
+            List<String> provided = ProvidedProtoOverlay.neededImports(lakePath, CohubApiModule.IMPORT_PATHS);
+            if (!provided.isEmpty()) {
+                overlay = ProvidedProtoOverlay.create(lakePath, cohubApiModule.path(), provided);
+                logs.add("buf checks a copy of the lake's protos that also holds " + String.join(", ", provided)
+                    + ", which the protolake image provides");
+            }
+            Path bufDir = overlay == null ? lakePath : overlay.root();
+            List<String> excluded = overlay == null ? List.of() : overlay.providedPaths();
+
             // Resolve buf module dependencies (googleapis, protovalidate, etc.)
             validationStatus.setSubPhase("Resolving proto dependencies");
-            bufCommand.modUpdate(lakePath);
+            bufCommand.modUpdate(bufDir);
+            if (overlay != null) {
+                overlay.copyLockBack();
+            }
 
             // Run buf build (compilation check)
             validationStatus.setSubPhase("Running proto compilation checks");
-            List<ValidationError> buildErrors = runBufBuild(lakePath, logs);
+            List<ValidationError> buildErrors = runBufBuild(bufDir, logs);
             errors.addAll(buildErrors);
 
             // Run buf lint
             validationStatus.setSubPhase("Running lint checks");
-            List<ValidationError> lintErrors = runBufLint(lakePath, logs);
+            List<ValidationError> lintErrors = runBufLint(bufDir, excluded, logs);
             errors.addAll(lintErrors);
 
             // Run buf breaking (if there's a previous version to compare against)
@@ -181,6 +201,10 @@ public class ValidationRunner {
                 .addAllLogLines(logs);
 
             throw new IOException("Validation failed", e);
+        } finally {
+            if (overlay != null) {
+                closeQuietly(overlay);
+            }
         }
     }
 
@@ -206,12 +230,14 @@ public class ValidationRunner {
     }
 
     /**
-     * Runs buf lint and returns validation errors.
+     * Runs buf lint and returns validation errors; excluded files are the
+     * provided protos, which are not the lake's to lint.
      */
-    private List<ValidationError> runBufLint(Path directory, List<String> logs) throws IOException {
+    private List<ValidationError> runBufLint(Path directory, List<String> excluded, List<String> logs)
+            throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
-        List<String> lintOutput = bufCommand.lint(directory);
+        List<String> lintOutput = bufCommand.lint(directory, excluded);
         for (String line : lintOutput) {
             ValidationError error = parseBufLintLine(line);
             if (error != null) {
@@ -227,12 +253,18 @@ public class ValidationRunner {
     }
 
     /**
-     * Runs buf breaking to detect breaking changes.
+     * Runs buf breaking to detect breaking changes. When the lake or the
+     * commit it is measured from imports a provided proto it does not hold,
+     * buf compares directories that both hold it, the baseline the image's
+     * copy (ProvidedProtoOverlay#breakingInputs): the commit's git input alone
+     * could not resolve the import. buf's {@code --exclude-path} cannot leave
+     * the provided protos out instead, since buf rejects the path for an
+     * {@code --against} directory outside the input.
      */
     private List<ValidationError> runBufBreaking(Path directory, List<String> logs) throws IOException {
         List<ValidationError> errors = new ArrayList<>();
 
-        java.util.Optional<String> baseline = breakingBaseline(directory);
+        java.util.Optional<String> baseline = breakingBaseSha(directory);
         if (baseline.isEmpty()) {
             LOG.warn(NO_BASELINE_MESSAGE);
             logs.add(NO_BASELINE_MESSAGE);
@@ -243,7 +275,21 @@ public class ValidationRunner {
                 .build());
             return errors;
         }
-        List<String> breakingOutput = bufCommand.breaking(directory, baseline.get());
+        List<String> breakingOutput;
+        java.util.Optional<ProvidedProtoOverlay.BreakingInputs> provided = ProvidedProtoOverlay.breakingInputs(
+            directory, gitCommand, baseline.get(), cohubApiModule.path(), CohubApiModule.IMPORT_PATHS);
+        if (provided.isEmpty()) {
+            breakingOutput = bufCommand.breaking(directory, gitRefInput(baseline.get()));
+        } else {
+            ProvidedProtoOverlay.BreakingInputs inputs = provided.get();
+            try {
+                logs.add("buf breaking compares against " + baseline.get() + ", both sides holding "
+                    + String.join(", ", inputs.providedPaths()) + " (the baseline the protolake image's copy)");
+                breakingOutput = bufCommand.breaking(inputs.input(), inputs.against().toString());
+            } finally {
+                closeQuietly(inputs);
+            }
+        }
         for (String line : breakingOutput) {
             if (!line.trim().isEmpty()) {
                 errors.add(ValidationError.newBuilder()
@@ -263,7 +309,7 @@ public class ValidationRunner {
     }
 
     /**
-     * The buf input a branch's protos are compared against. A branch is
+     * The commit a branch's protos are compared against. A branch is
      * measured from where it left {@code origin/main} — the merge base —
      * so a breaking change two commits back is still a breaking change;
      * comparing against {@code HEAD~1} alone saw only the last commit and
@@ -271,17 +317,32 @@ public class ValidationRunner {
      * (no remote) compares against the previous commit; one with neither
      * (a depth-1 clone) has no baseline, and the caller reports that as a
      * WARNING rather than a clean check.
-     * Both are {@code ref=} inputs: buf's {@code branch=} takes a branch
-     * name, and {@code branch=HEAD~1} — the previous form — was rejected
-     * with "invalid refspec" on every run, which the runner read as a clean
-     * result.
      */
-    java.util.Optional<String> breakingBaseline(Path directory) {
+    java.util.Optional<String> breakingBaseSha(Path directory) {
         java.util.Optional<String> base = gitCommand.mergeBase(directory, BREAKING_BASE_REF);
         if (base.isEmpty()) {
             base = gitCommand.revParse(directory, "HEAD~1");
         }
-        return base.map(sha -> ".git#ref=" + sha);
+        return base;
+    }
+
+    /** Deletes a temporary copy of the lake; a failure is logged, never fails the validation. */
+    private static void closeQuietly(AutoCloseable copy) {
+        try {
+            copy.close();
+        } catch (Exception e) {
+            LOG.warnf("Could not delete buf's temporary copy of the lake: %s", e.getMessage());
+        }
+    }
+
+    /**
+     * buf's git input at a commit. It is a {@code ref=} input: buf's
+     * {@code branch=} takes a branch name, and {@code branch=HEAD~1} — the
+     * previous form — was rejected with "invalid refspec" on every run,
+     * which the runner read as a clean result.
+     */
+    static String gitRefInput(String sha) {
+        return ".git#ref=" + sha;
     }
 
     /**

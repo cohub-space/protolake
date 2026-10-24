@@ -1,0 +1,10 @@
+load("@rules_proto//proto:defs.bzl", "proto_library")
+
+# A lake's gazelle resolves `import "cohub/api/v1/exposure.proto"` to this
+# target (a `gazelle:resolve` directive in the lake's root BUILD.bazel).
+proto_library(
+    name = "exposure_proto",
+    srcs = ["exposure.proto"],
+    visibility = ["//visibility:public"],
+    deps = ["@com_google_protobuf//:descriptor_proto"],
+)

@@ -35,19 +35,25 @@ class ValidationRunnerBreakingBaselineTest {
 
     @Test
     void measuresFromTheMergeBaseWithMain() {
-        assertThat(runnerWith(Optional.of("0123abcd"), Optional.of("ffff0000")).breakingBaseline(Path.of("/lake")))
-            .contains(".git#ref=0123abcd");
+        assertThat(runnerWith(Optional.of("0123abcd"), Optional.of("ffff0000")).breakingBaseSha(Path.of("/lake")))
+            .contains("0123abcd");
     }
 
     @Test
     void fallsBackToThePreviousCommitWithoutMain() {
-        assertThat(runnerWith(Optional.empty(), Optional.of("ffff0000")).breakingBaseline(Path.of("/lake")))
-            .contains(".git#ref=ffff0000");
+        assertThat(runnerWith(Optional.empty(), Optional.of("ffff0000")).breakingBaseSha(Path.of("/lake")))
+            .contains("ffff0000");
     }
 
     @Test
     void aShallowCheckoutHasNoBaseline() {
-        assertThat(runnerWith(Optional.empty(), Optional.empty()).breakingBaseline(Path.of("/lake")))
+        assertThat(runnerWith(Optional.empty(), Optional.empty()).breakingBaseSha(Path.of("/lake")))
             .isEmpty();
+    }
+
+    @Test
+    void comparesAgainstARefInputAtTheCommit() {
+        // branch= takes only a branch name; branch=HEAD~1 failed every run and read as clean.
+        assertThat(ValidationRunner.gitRefInput("0123abcd")).isEqualTo(".git#ref=0123abcd");
     }
 }

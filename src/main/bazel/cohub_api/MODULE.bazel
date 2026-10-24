@@ -1,0 +1,15 @@
+# The cohub_api Bazel module: cohub's API annotation protos, which every lake
+# imports the way it imports googleapis and protovalidate. The protolake image
+# ships this directory at /opt/protolake/bazel/cohub_api, with
+# cohub/api/v1/exposure.proto copied in from protolake's own src/main/proto, and
+# each lake's generated MODULE.bazel points a local_path_override at it.
+module(
+    name = "cohub_api",
+    version = "1.0.0",
+)
+
+# rules_proto 7.1.0 is in every lake's MODULE.bazel, and it requires protobuf
+# 29.1, so these floors are already in every lake's dependency graph: the module
+# never raises a lake's protobuf or rules_proto version.
+bazel_dep(name = "protobuf", version = "29.1", repo_name = "com_google_protobuf")
+bazel_dep(name = "rules_proto", version = "7.1.0")

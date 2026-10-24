@@ -52,7 +52,7 @@ with the right mounts and env. Common commands:
 
 | Command | What it does |
 |---|---|
-| `protolakew build` | Run gazelle → buf validation → bazel build. No publish. |
+| `protolakew build` | Run gazelle → buf validation → bazel build → API specs. No publish. |
 | `protolakew build --install-local` | Build + publish to local registries. |
 | `protolakew publish [--bundle PATH]` | Build + publish for one bundle (path-form, e.g. `cohub/vdp`) or the whole lake. Used by tag-driven CI. |
 | `protolakew validate` | Run buf lint / breaking checks without a build. CI gate. |
@@ -147,9 +147,20 @@ Proto Lake consists of several services packaged in a single Docker image:
 - **Lake / Bundle services** — gRPC + CLI surface for managing lakes
   and bundles
 - **Build Orchestrator** — runs the pipeline (gazelle → buf →
-  bazel build → publish)
+  bazel build → API specs → publish); the API spec step checks each
+  bundle's exposure annotations and writes its OpenAPI and AsyncAPI
+  documents, which ship inside the bundle's jar (`META-INF/api-specs/`),
+  wheel (`.dist-info/api-specs/`) and npm package (`api-specs/`)
 - **Workspace Initializer** — generates `MODULE.bazel`, `BUILD.bazel`,
-  `tools/`, `protolakew`, and the release-please scaffolding
+  `tools/`, `protolakew`, and the release-please scaffolding. `MODULE.bazel`
+  declares the image's `cohub_api` module, so a lake's protos import
+  `cohub/api/v1/exposure.proto` the way they import googleapis; validation
+  hands buf the same file, and leaves the lake's `buf.yaml` alone. Until
+  cohub_api's companion packages are published, the build refuses a bundle
+  whose imports reach that file and that builds language packages; it counts
+  each reached directory as one Bazel target, as `gazelle:proto default`
+  builds it, so a subtree under `# gazelle:proto file` may be refused more
+  broadly than it compiles
 - **Storage** — SQLite at `~/.proto-lake/protolake.db` for lake/bundle
   metadata and build history
 

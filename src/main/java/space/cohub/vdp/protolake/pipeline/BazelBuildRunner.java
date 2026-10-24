@@ -19,6 +19,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
+import java.util.Optional;
 import java.util.Set;
 
 /**
@@ -439,6 +440,57 @@ public class BazelBuildRunner {
     }
 
     /**
+     * Builds an aspect's output group over explicit targets. Every target must
+     * build ({@code --nokeep_going}), and the lake's shared options keep Bazel's
+     * analysis cache from the main build.
+     *
+     * @return Bazel's combined output and exit code; never throws on a failed build
+     */
+    public BazelCommand.CommandResult buildAspect(Path lakeRoot, String aspect, String outputGroup,
+                                                  List<String> labels, BuildOperationMetadata metadata)
+            throws IOException {
+        List<String> args = new ArrayList<>();
+        args.add("build");
+        args.addAll(sharedOptions(extractVersionActionEnvs(metadata)));
+        args.add("--nokeep_going");
+        args.add("--aspects=" + aspect);
+        args.add("--output_groups=" + outputGroup);
+        args.add("--");
+        args.addAll(labels);
+        return bazelCommand.runWithResult(lakeRoot, args.toArray(new String[0]));
+    }
+
+    /**
+     * The lake's {@code bazel-bin} for the options builds run with, the root
+     * of the paths an aspect's outputs land at.
+     */
+    public Path bazelBin(Path lakeRoot, BuildOperationMetadata metadata) throws IOException {
+        List<String> args = new ArrayList<>();
+        args.add("info");
+        args.addAll(sharedOptions(extractVersionActionEnvs(metadata)));
+        args.add("bazel-bin");
+        String output = bazelCommand.runWithOutput(lakeRoot, args.toArray(new String[0]));
+        return bazelBinFrom(output)
+            .orElseThrow(() -> new IOException("bazel info bazel-bin printed no path:\n" + output));
+    }
+
+    /**
+     * The bazel-bin path in {@code bazel info bazel-bin}'s output. stderr is
+     * merged in and its warnings can quote paths, so it is the last line that
+     * is a path ending in {@code /bin}.
+     */
+    static Optional<Path> bazelBinFrom(String output) {
+        Path bazelBin = null;
+        for (String line : output.split("\n")) {
+            String trimmed = line.trim();
+            if (trimmed.startsWith("/") && trimmed.endsWith("/bin")) {
+                bazelBin = Path.of(trimmed);
+            }
+        }
+        return Optional.ofNullable(bazelBin);
+    }
+
+    /**
      * Converts a lake-relative path to a Bazel target.
      */
     private String toBazelTarget(String targetPath) {
@@ -502,19 +554,14 @@ public class BazelBuildRunner {
     }
 
     /**
-     * Builds bazel command arguments.
-     *
-     * @param command  The bazel command (e.g., "build")
-     * @param target   The target pattern (e.g., "//...")
-     * @param lakeRoot The lake root directory
-     * @param actionEnvs Optional action_env overrides (key=value pairs forwarded to Bazel actions)
+     * The options every build of a lake passes, before its target patterns: the
+     * default options, the PROTOLAKE_BAZEL_CONFIG profile and the version
+     * action_envs. Builds that agree on them share Bazel's analysis cache;
+     * {@code --action_env} is part of the configuration, so a build without the
+     * main build's values would discard it.
      */
-    private List<String> buildBazelArgs(String command, String target, Path lakeRoot,
-                                        Map<String, String> actionEnvs) {
+    private List<String> sharedOptions(Map<String, String> actionEnvs) {
         List<String> args = new ArrayList<>();
-        args.add(command);
-
-        // Add default options first (before target patterns)
         if (defaultBazelOptions != null && !defaultBazelOptions.isEmpty()) {
             for (String option : defaultBazelOptions.split(" ")) {
                 if (!option.trim().isEmpty()) {
@@ -523,8 +570,8 @@ public class BazelBuildRunner {
             }
         }
 
-        // Add --config flag from PROTOLAKE_BAZEL_CONFIG env var (e.g., "ci")
-        // This activates named config profiles in .bazelrc / .bazelrc.remote-cache
+        // PROTOLAKE_BAZEL_CONFIG (e.g. "ci") selects a named profile in
+        // .bazelrc / .bazelrc.remote-cache.
         String bazelConfig = System.getenv("PROTOLAKE_BAZEL_CONFIG");
         if (bazelConfig != null && !bazelConfig.isEmpty()) {
             String normalized = bazelConfig.toLowerCase(Locale.ROOT);
@@ -536,13 +583,27 @@ public class BazelBuildRunner {
             }
         }
 
-        // Forward action_env overrides (e.g., PROTOBUF_JAVA_VERSION, GRPC_VERSION)
         if (actionEnvs != null) {
             for (var entry : actionEnvs.entrySet()) {
                 args.add("--action_env=" + entry.getKey() + "=" + entry.getValue());
             }
         }
+        return args;
+    }
 
+    /**
+     * Builds bazel command arguments.
+     *
+     * @param command  The bazel command (e.g., "build")
+     * @param target   The target pattern (e.g., "//...")
+     * @param lakeRoot The lake root directory
+     * @param actionEnvs Optional action_env overrides (key=value pairs forwarded to Bazel actions)
+     */
+    private List<String> buildBazelArgs(String command, String target, Path lakeRoot,
+                                        Map<String, String> actionEnvs) {
+        List<String> args = new ArrayList<>();
+        args.add(command);
+        args.addAll(sharedOptions(actionEnvs));
         args.add("--keep_going");
         args.add("--show_progress");
         args.add("--progress_report_interval=10");
