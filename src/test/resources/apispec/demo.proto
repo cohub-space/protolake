@@ -1,0 +1,105 @@
+syntax = "proto3";
+
+package demo.v1;
+
+import "cohub/api/v1/exposure.proto";
+import "google/api/annotations.proto";
+
+// Things, served every way cohub exposes an RPC.
+service ThingService {
+  // Gets one thing.
+  rpc GetThing(GetThingRequest) returns (Thing) {
+    option (google.api.http) = {get: "/v1/{name=things/*}"};
+  }
+
+  // Streams things as they change.
+  rpc WatchThings(WatchThingsRequest) returns (stream Thing) {
+    option (google.api.http) = {get: "/v1/things:watch"};
+  }
+
+  // Edits a thing together with other editors.
+  rpc Collaborate(stream CollaborateRequest) returns (stream CollaborateResponse) {
+    option (cohub.api.v1.exposure) = {websocket: true};
+  }
+
+  // Uploads chunks of a thing.
+  rpc UploadChunks(stream UploadChunksRequest) returns (UploadChunksResponse) {
+    option (cohub.api.v1.exposure) = {websocket: true};
+  }
+
+  // Exports a thing; the service serves this REST call itself.
+  rpc ExportThing(ExportThingRequest) returns (ExportThingResponse) {
+    option (google.api.http) = {post: "/v1/{name=things/*}:export" body: "*"};
+    option (cohub.api.v1.exposure) = {custom: true};
+  }
+
+  // Checks liveness; gRPC only.
+  rpc Ping(PingRequest) returns (PingResponse);
+}
+
+// A thing.
+message Thing {
+  // The resource name, things/{thing}.
+  string name = 1;
+  // A label.
+  string display_name = 2;
+  // How many edits so far.
+  int64 edit_count = 3;
+  // Its kind.
+  Kind kind = 4;
+  // Tags on the thing.
+  map<string, string> tags = 5;
+  // An optional note.
+  optional string note = 6;
+}
+
+// The kind of a thing.
+enum Kind {
+  KIND_UNSPECIFIED = 0;
+  KIND_SMALL = 1;
+  KIND_LARGE = 2;
+}
+
+message GetThingRequest {
+  string name = 1;
+}
+
+message WatchThingsRequest {
+  string filter = 1;
+}
+
+message CollaborateRequest {
+  string name = 1;
+  oneof edit {
+    string insert_text = 2;
+    int32 delete_count = 3;
+  }
+}
+
+message CollaborateResponse {
+  Thing thing = 1;
+  repeated string editors = 2;
+}
+
+message UploadChunksRequest {
+  bytes chunk = 1;
+}
+
+message UploadChunksResponse {
+  int64 size = 1;
+}
+
+message ExportThingRequest {
+  string name = 1;
+  string format = 2;
+}
+
+message ExportThingResponse {
+  string uri = 1;
+}
+
+message PingRequest {}
+
+message PingResponse {
+  string pong_only_message = 1;
+}

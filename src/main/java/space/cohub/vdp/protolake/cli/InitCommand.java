@@ -44,7 +44,7 @@ public class InitCommand implements Runnable {
     @Override
     public void run() {
         try {
-            System.out.printf("[protolake] Initializing lake: %s%n", name);
+            ConsoleLine.print(System.out, "[protolake] Initializing lake: %s", name);
 
             // Build LakeConfig from CLI options
             LakeConfig config = LakeConfig.newBuilder()
@@ -74,11 +74,11 @@ public class InitCommand implements Runnable {
 
             Lake lake = lakeInitializer.initializeLake(name, displayName, description, config, lakePrefix);
 
-            System.out.printf("[protolake] Lake initialized at: %s%n",
+            ConsoleLine.print(System.out, "[protolake] Lake initialized at: %s",
                     LakeUtil.getLocalPath(lake, lakeInitializer.getBasePath()));
             System.out.println("[protolake] Generated protolakew wrapper script.");
             System.out.println("[protolake] Next steps:");
-            System.out.printf("  ./protolakew create-bundle <name> --bundle-prefix <prefix>%n");
+            ConsoleLine.print(System.out, "  ./protolakew create-bundle <name> --bundle-prefix <prefix>");
         } catch (Exception e) {
             throw new CommandLine.ExecutionException(
                     new CommandLine(this), "Init failed: " + e.getMessage(), e);

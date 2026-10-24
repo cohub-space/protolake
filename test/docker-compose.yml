@@ -1,6 +1,8 @@
 services:
   proto-lake:
-    image: protolake-proto-lake:latest
+    # PROTOLAKE_E2E_IMAGE names a branch-scoped tag, so a run never replaces the
+    # shared tag other checkouts run against.
+    image: ${PROTOLAKE_E2E_IMAGE:-protolake-proto-lake:latest}
     container_name: proto-lake-service
     build:
       context: ..

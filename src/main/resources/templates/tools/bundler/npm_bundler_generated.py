@@ -12,6 +12,14 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Run from protolake's templates/, bytecode beside the helper would read as a template.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from api_spec_files_generated import api_spec_files  # noqa: E402
+
+# Where the package carries the bundle's API specs, beside the generated code.
+API_SPECS_DIR = "api-specs"
+
 
 def read_bundle_version(bundle_yaml_path):
     """Read the top-level `version:` from a bundle.yaml.
@@ -69,7 +77,8 @@ def create_package_json(package_name, version):
         "files": [
             "**/*.js",
             "**/*.d.ts",
-            "**/*.proto"
+            "**/*.proto",
+            API_SPECS_DIR + "/*.json"
         ]
     }
 
@@ -163,6 +172,8 @@ def main():
                         help="Path to the bundle's bundle.yaml; the version is read from it at build time")
     parser.add_argument('--es-files', nargs='*', default=[], help='Connect-ES generated files (_pb.js, _pb.d.ts)')
     parser.add_argument('--proto-sources', nargs='*', default=[], help='Proto source files')
+    parser.add_argument('--api-specs-dir', nargs='*', default=[],
+                        help="Directories holding the bundle's API specs, packed as api-specs/<file>")
     args = parser.parse_args()
 
     # bundle.yaml is the single source of truth for the bundle version.
@@ -209,6 +220,13 @@ def main():
                 print(f"  WARNING: Proto file not found: {src}")
 
         print(f"  Copied {proto_count} proto files")
+
+        # Pack the API specs under api-specs/, stamped with the bundle version
+        for name, content in api_spec_files(args.api_specs_dir, args.version):
+            dest_path = pkg_dir / API_SPECS_DIR / name
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(content)
+            print(f"  Packed API spec {API_SPECS_DIR}/{name}")
 
         # Create package.json
         print("Creating package.json...")

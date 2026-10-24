@@ -56,7 +56,7 @@ public class CreateBundleCommand implements Runnable {
             Path resolvedPath = resolveLakePath();
             Lake lake = lakeResolver.resolveLake(resolvedPath);
 
-            System.out.printf("[protolake] Creating bundle: %s%n", name);
+            ConsoleLine.print(System.out, "[protolake] Creating bundle: %s", name);
 
             // Build BundleConfig from CLI options
             BundleConfig.Builder configBuilder = BundleConfig.newBuilder();
@@ -90,7 +90,7 @@ public class CreateBundleCommand implements Runnable {
                     lake, name, displayName, description, bundlePrefix, config);
 
             Path bundlePath = BundleUtil.calculateBundlePath(lake, bundle, basePath);
-            System.out.printf("[protolake] Bundle created at: %s%n", bundlePath);
+            ConsoleLine.print(System.out, "[protolake] Bundle created at: %s", bundlePath);
             System.out.println("[protolake] Add your .proto files to this directory, then run:");
             System.out.println("  ./protolakew build --install-local");
         } catch (Exception e) {

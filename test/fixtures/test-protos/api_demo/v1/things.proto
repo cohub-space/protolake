@@ -1,0 +1,117 @@
+syntax = "proto3";
+
+package api_demo.v1;
+
+import "cohub/api/v1/exposure.proto";
+import "google/api/annotations.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.api_demo.v1";
+
+// Things, served every way an RPC can be exposed.
+service ThingService {
+  // Gets a thing.
+  rpc GetThing(GetThingRequest) returns (Thing) {
+    option (google.api.http) = {get: "/v1/{name=things/*}"};
+  }
+
+  // Streams the changes to things.
+  rpc WatchThings(WatchThingsRequest) returns (stream ThingEvent) {
+    option (google.api.http) = {get: "/v1/things:watch"};
+  }
+
+  // Edits a thing together with other editors.
+  rpc CollaborateOnThing(stream CollaborateOnThingRequest) returns (stream CollaborateOnThingResponse) {
+    option (cohub.api.v1.exposure) = {websocket: true};
+  }
+
+  // Exports a thing; the service serves this REST call itself.
+  rpc ExportThing(ExportThingRequest) returns (ExportThingResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=things/*}:export"
+      body: "*"
+    };
+    option (cohub.api.v1.exposure) = {custom: true};
+  }
+
+  // Tails a thing's log; the service serves this REST stream itself.
+  rpc TailThingLog(TailThingLogRequest) returns (stream ThingLogLine) {
+    option (google.api.http) = {get: "/v1/{name=things/*}:tail"};
+    option (cohub.api.v1.exposure) = {custom: true};
+  }
+
+  // Uploads a thing in chunks. REST cannot carry a request stream: the build
+  // warns and leaves this binding out of the OpenAPI document.
+  rpc UploadThingChunks(stream UploadThingChunksRequest) returns (UploadThingChunksResponse) {
+    option (google.api.http) = {
+      post: "/v1/{name=things/*}:upload"
+      body: "*"
+    };
+  }
+
+  // Checks the service is up, over gRPC only.
+  rpc PingThings(PingThingsRequest) returns (PingThingsResponse);
+}
+
+// A thing.
+message Thing {
+  // The resource name, things/{thing}.
+  string name = 1;
+  // How many times it was edited.
+  int64 edit_count = 2;
+}
+
+message GetThingRequest {
+  string name = 1;
+}
+
+message WatchThingsRequest {
+  string filter = 1;
+}
+
+// One change to a thing.
+message ThingEvent {
+  Thing thing = 1;
+}
+
+message CollaborateOnThingRequest {
+  string name = 1;
+  string edit = 2;
+}
+
+message CollaborateOnThingResponse {
+  Thing thing = 1;
+  repeated string editors = 2;
+}
+
+message ExportThingRequest {
+  string name = 1;
+  string format = 2;
+}
+
+message ExportThingResponse {
+  string uri = 1;
+}
+
+message TailThingLogRequest {
+  string name = 1;
+}
+
+message ThingLogLine {
+  string text = 1;
+}
+
+message UploadThingChunksRequest {
+  string name = 1;
+  bytes chunk = 2;
+}
+
+message UploadThingChunksResponse {
+  int64 size = 1;
+}
+
+message PingThingsRequest {}
+
+message PingThingsResponse {
+  string ping_only_status = 1;
+}

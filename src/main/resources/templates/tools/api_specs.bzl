@@ -1,0 +1,133 @@
+# GENERATED FILE — DO NOT EDIT. This file is overwritten on every protolake build.
+"""API specs and exposure checks for each bundle.
+
+The aspect runs on a bundle's `<bundle>_all_protos` target and writes,
+beside the bundle's other outputs:
+
+    <bundle>_api_specs/<bundle>.openapi.json    the google.api.http bindings
+    <bundle>_api_specs/<bundle>.asyncapi.json   the WebSocket-marked RPCs
+    <bundle>_api_findings.json                  the exposure checks' findings
+
+The bundle rules (proto_bundle.bzl) apply it through `proto_deps` and pack
+the specs into the jar, wheel and npm package, stamped with the bundle's
+version. protolake also applies it after the main build (ApiSpecRunner),
+so the checks run for a bundle without language packages too:
+
+    bazel build --aspects=//tools:api_specs.bzl%api_specs \\
+        --output_groups=api_specs -- //<bundle dir>:<bundle>_all_protos ...
+
+Both applications are the same aspect on the same target, so Bazel runs its
+actions once. An aspect keeps the specs out of the BUILD files gazelle
+writes, so every lake gets them with the protolake image, without a gazelle
+release.
+"""
+
+load("@com_google_protobuf//bazel/common:proto_info.bzl", "ProtoInfo")
+
+# The protoc plugins the protolake image installs (Dockerfile). Their versions
+# and binary digests (one per platform the image is built for) sit in the
+# action's command line, so any re-pin, even at the same version, re-runs the
+# action instead of serving specs the old binary wrote from Bazel's caches;
+# the tool checks that the installed binaries are these builds.
+PROTOC_GEN_OPENAPIV2 = "/usr/local/bin/protoc-gen-openapiv2"
+PROTOC_GEN_OPENAPIV2_VERSION = "2.31.0"
+PROTOC_GEN_OPENAPIV2_SHA256 = [
+    "67d380171115cc58912d568763bc0007494397cd1a6db99aff757298e9812ac4",  # linux amd64
+    "2179d8822db05bbe435eb7f1a1eed56926039cdada65745357476aac32fff5b4",  # linux arm64
+]
+PROTOC_GEN_CONNECT_OPENAPI = "/usr/local/bin/protoc-gen-connect-openapi"
+PROTOC_GEN_CONNECT_OPENAPI_VERSION = "0.28.0"
+PROTOC_GEN_CONNECT_OPENAPI_SHA256 = [
+    "7c689ed7d699f1eb122555d4528b2b946822e2aef3959c6995f5999dca6716b3",  # linux amd64
+    "20b2aa3981fa6de81c40eb63d5895cea5363edb8f92e8f1358afc0620338cdee",  # linux arm64
+]
+
+_SUFFIX = "_all_protos"
+
+def _import_path(source, root):
+    if root and root != "." and source.path.startswith(root + "/"):
+        return source.path[len(root) + 1:]
+    return source.short_path
+
+def _api_specs_impl(target, ctx):
+    if ctx.rule.kind != "proto_library" or not ctx.label.name.endswith(_SUFFIX):
+        return []
+    bundle = ctx.label.name[:-len(_SUFFIX)]
+
+    # Bazel's own descriptor sets carry no comments, which the specs' descriptions
+    # come from, so the bundle's files are compiled again with source info; their
+    # imports come from the existing sets.
+    own = [dep[ProtoInfo] for dep in ctx.rule.attr.deps if ProtoInfo in dep]
+    own_sets = [info.direct_descriptor_set for info in own]
+    imports = [s for s in target[ProtoInfo].transitive_descriptor_sets.to_list() if s not in own_sets]
+    sources = []
+    roots = []
+    for info in own:
+        root = info.proto_source_root
+        if root not in roots:
+            roots.append(root)
+        sources.extend([(source, _import_path(source, root)) for source in info.direct_sources])
+
+    descriptor = ctx.actions.declare_file(bundle + "_api_descriptor.pb")
+    protoc_args = ctx.actions.args()
+    if imports:
+        protoc_args.add_joined(imports, join_with = ctx.configuration.host_path_separator, format_joined = "--descriptor_set_in=%s")
+    for root in roots:
+        protoc_args.add("--proto_path=" + (root if root else "."))
+    protoc_args.add("--include_imports")
+    protoc_args.add("--include_source_info")
+    protoc_args.add("--retain_options")
+    protoc_args.add("--descriptor_set_out=" + descriptor.path)
+    protoc_args.add_all([path for _, path in sources])
+    ctx.actions.run(
+        executable = ctx.executable._protoc,
+        arguments = [protoc_args],
+        inputs = depset([source for source, _ in sources] + imports),
+        outputs = [descriptor],
+        mnemonic = "ProtolakeApiDescriptor",
+        progress_message = "Compiling the API descriptor of bundle %s" % bundle,
+    )
+
+    specs = ctx.actions.declare_directory(bundle + "_api_specs")
+    findings = ctx.actions.declare_file(bundle + "_api_findings.json")
+    args = ctx.actions.args()
+    args.add("--bundle", bundle)
+    args.add("--package", ctx.label.package)
+    args.add("--descriptor-set", descriptor)
+    args.add("--out-dir", specs.path)
+    args.add("--findings", findings.path)
+    args.add("--openapiv2", PROTOC_GEN_OPENAPIV2)
+    args.add("--openapiv2-version", PROTOC_GEN_OPENAPIV2_VERSION)
+    args.add("--openapiv2-sha256", ",".join(PROTOC_GEN_OPENAPIV2_SHA256))
+    args.add("--connect-openapi", PROTOC_GEN_CONNECT_OPENAPI)
+    args.add("--connect-openapi-version", PROTOC_GEN_CONNECT_OPENAPI_VERSION)
+    args.add("--connect-openapi-sha256", ",".join(PROTOC_GEN_CONNECT_OPENAPI_SHA256))
+    ctx.actions.run(
+        executable = ctx.executable._tool,
+        arguments = [args],
+        inputs = [descriptor],
+        outputs = [specs, findings],
+        mnemonic = "ProtolakeApiSpecs",
+        progress_message = "Writing the API specs of bundle %s" % bundle,
+        # The plugins live in the image, outside the execroot; the cache key
+        # covers them through the pins above, not through their files.
+        execution_requirements = {"no-sandbox": "1", "no-remote": "1"},
+    )
+    return [OutputGroupInfo(api_specs = depset([specs, findings]))]
+
+api_specs = aspect(
+    implementation = _api_specs_impl,
+    attrs = {
+        "_protoc": attr.label(
+            default = "@com_google_protobuf//:protoc",
+            executable = True,
+            cfg = "exec",
+        ),
+        "_tool": attr.label(
+            default = "//tools:api_specs_tool",
+            executable = True,
+            cfg = "exec",
+        ),
+    },
+    doc = "Checks a bundle's exposure annotations and writes its OpenAPI and AsyncAPI specs.",
+)

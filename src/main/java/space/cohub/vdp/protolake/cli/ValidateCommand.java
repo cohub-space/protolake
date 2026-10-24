@@ -44,7 +44,7 @@ public class ValidateCommand implements Runnable {
             } else {
                 System.err.println("[protolake] Validation failed:");
                 for (var error : result.getErrors().getErrors()) {
-                    System.err.printf("  %s:%d:%d: %s%n",
+                    ConsoleLine.print(System.err, "  %s:%d:%d: %s",
                             error.getFile(), error.getLine(), error.getColumn(), error.getMessage());
                 }
                 throw new CommandLine.ExecutionException(
