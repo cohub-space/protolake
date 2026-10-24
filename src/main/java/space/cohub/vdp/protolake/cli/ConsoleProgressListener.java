@@ -10,23 +10,23 @@ public class ConsoleProgressListener implements BuildProgressListener {
 
     @Override
     public void onPhaseStart(String phase) {
-        System.out.printf("[protolake] %s...%n", phase);
+        ConsoleLine.print(System.out, "[protolake] %s...", phase);
     }
 
     @Override
     public void onPhaseComplete(String phase, boolean success, String message) {
         if (success && message != null && !message.isEmpty()) {
-            System.out.printf("[protolake] %s: OK - %s%n", phase, message);
+            ConsoleLine.print(System.out, "[protolake] %s: OK - %s", phase, message);
         } else if (success) {
-            System.out.printf("[protolake] %s: OK%n", phase);
+            ConsoleLine.print(System.out, "[protolake] %s: OK", phase);
         } else {
-            System.out.printf("[protolake] %s: FAILED - %s%n", phase, message);
+            ConsoleLine.print(System.out, "[protolake] %s: FAILED - %s", phase, message);
         }
     }
 
     @Override
     public void onWarning(String warning) {
-        System.out.printf("[protolake] WARNING: %s%n", warning);
+        ConsoleLine.print(System.out, "[protolake] WARNING: %s", warning);
     }
 
     @Override
@@ -36,9 +36,9 @@ public class ConsoleProgressListener implements BuildProgressListener {
             TargetBuildInfo info = entry.getValue();
             if (info.getStatus() == TargetBuildInfo.Status.BUILT ||
                     info.getStatus() == TargetBuildInfo.Status.PUBLISHED) {
-                System.out.printf("[protolake]   %s: %s%n", entry.getKey(), info.getStatus());
+                ConsoleLine.print(System.out, "[protolake]   %s: %s", entry.getKey(), info.getStatus());
             } else if (info.getStatus() == TargetBuildInfo.Status.FAILED) {
-                System.out.printf("[protolake]   %s: FAILED - %s%n", entry.getKey(), info.getErrorMessage());
+                ConsoleLine.print(System.out, "[protolake]   %s: FAILED - %s", entry.getKey(), info.getErrorMessage());
             }
         }
     }
@@ -50,6 +50,6 @@ public class ConsoleProgressListener implements BuildProgressListener {
 
     @Override
     public void onBuildFailed(String error) {
-        System.err.printf("[protolake] Build failed: %s%n", error);
+        ConsoleLine.print(System.err, "[protolake] Build failed: %s", error);
     }
 }

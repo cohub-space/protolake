@@ -76,7 +76,7 @@ public class PublishCommand implements Runnable {
 
             if (bundleNames.isEmpty()) {
                 String target = lakeRelativePath;
-                System.out.printf("[protolake] Publishing lake: %s%n",
+                ConsoleLine.print(System.out, "[protolake] Publishing lake: %s",
                         LakeUtil.extractLakeId(lake.getName()));
                 buildOrchestrator.buildTargetSync(lake, target, skipValidation, installLocalConfig,
                         null, listener, metadata);
@@ -85,7 +85,7 @@ public class PublishCommand implements Runnable {
                 for (String spec : bundleNames) {
                     Bundle bundle = resolveBundle(allBundles, lake, resolvedPath, spec);
                     String target = BundleUtil.getWorkspaceRelativePath(lake, bundle);
-                    System.out.printf("[protolake] Publishing bundle: %s%n", spec);
+                    ConsoleLine.print(System.out, "[protolake] Publishing bundle: %s", spec);
                     metadata = buildOrchestrator.buildTargetSync(lake, target, skipValidation,
                             installLocalConfig, null, listener, metadata);
                 }
@@ -93,7 +93,7 @@ public class PublishCommand implements Runnable {
         } catch (BuildOrchestrator.BuildException e) {
             System.err.println("[protolake] Publish failed: " + e.getMessage());
             for (var error : e.getErrors().getErrors()) {
-                System.err.printf("  %s:%d:%d: %s%n",
+                ConsoleLine.print(System.err, "  %s:%d:%d: %s",
                         error.getFile(), error.getLine(), error.getColumn(), error.getMessage());
             }
             throw new CommandLine.ExecutionException(
