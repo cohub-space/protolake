@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package rest_demo.v1;
+
+import "google/api/annotations.proto";
+
+option java_multiple_files = true;
+option java_package = "com.example.rest_demo.v1";
+
+// Notes over REST, with no cohub options: the bundle builds language packages,
+// which carry its OpenAPI document.
+service NoteService {
+  // Gets a note.
+  rpc GetNote(GetNoteRequest) returns (Note) {
+    option (google.api.http) = {get: "/v1/{name=notes/*}"};
+  }
+
+  // Streams the notes as they change.
+  rpc WatchNotes(WatchNotesRequest) returns (stream Note) {
+    option (google.api.http) = {get: "/v1/notes:watch"};
+  }
+}
+
+// A note.
+message Note {
+  // The resource name, notes/{note}.
+  string name = 1;
+  string text = 2;
+}
+
+message GetNoteRequest {
+  string name = 1;
+}
+
+message WatchNotesRequest {
+  string filter = 1;
+}

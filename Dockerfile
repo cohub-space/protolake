@@ -111,6 +111,12 @@ COPY --from=tools /usr/local/bin/buf /usr/local/bin/buf
 COPY --from=tools /usr/local/bin/protoc-gen-openapiv2 /usr/local/bin/protoc-gen-openapiv2
 COPY --from=tools /usr/local/bin/protoc-gen-connect-openapi /usr/local/bin/protoc-gen-connect-openapi
 
+# The cohub_api Bazel module lakes import cohub/api/v1/exposure.proto from: each
+# lake's MODULE.bazel points a local_path_override here (CohubApiModule). The
+# proto is the one protolake itself compiles, so the two never drift.
+COPY src/main/bazel/cohub_api/ /opt/protolake/bazel/cohub_api/
+COPY src/main/proto/cohub/api/v1/exposure.proto /opt/protolake/bazel/cohub_api/cohub/api/v1/exposure.proto
+
 # Install twine for remote PyPI publishing
 RUN pip3 install twine --break-system-packages
 

@@ -273,6 +273,22 @@ else
     echo "$AD_OUTPUT" | tail -10 | sed 's/^/    /'
 fi
 
+# Create rest_demo: REST bindings and no cohub options, so it builds packages that carry its specs
+echo "  Creating rest_demo..."
+RD_OUTPUT=$(cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" create-bundle --name rest_demo \
+    --java-artifact-id rest-demo-proto \
+    --python-package-name company_rest_demo_proto \
+    --js-package-name @company/rest-demo-proto 2>&1)
+RD_EXIT=$?
+
+if [ $RD_EXIT -eq 0 ]; then
+    pass "create-bundle rest_demo exit code 0"
+else
+    fail "create-bundle rest_demo exit code $RD_EXIT"
+    echo "  Output:"
+    echo "$RD_OUTPUT" | tail -10 | sed 's/^/    /'
+fi
+
 # Verify bundle.yaml files
 check_file "$LAKE_DIR/company_a/platform/service_a/bundle.yaml" "service_a bundle.yaml"
 check_file "$LAKE_DIR/company_b/apps/service_b/bundle.yaml" "service_b bundle.yaml"
@@ -294,20 +310,28 @@ cp -r fixtures/test-protos/company_a/platform/service_a/api "$LAKE_DIR/company_a
 cp -r fixtures/test-protos/company_a/platform/service_a/types "$LAKE_DIR/company_a/platform/service_a/"
 cp -r fixtures/test-protos/company_b/apps/service_b/api "$LAKE_DIR/company_b/apps/service_b/"
 cp -r fixtures/test-protos/api_demo/v1 "$LAKE_DIR/api_demo/"
-# api_demo's options: protolake's own cohub/api/v1/exposure.proto, held by the
-# lake as a lake that vendors the file would hold it.
-mkdir -p "$LAKE_DIR/cohub/api/v1"
-cp ../src/main/proto/cohub/api/v1/exposure.proto "$LAKE_DIR/cohub/api/v1/"
+cp -r fixtures/test-protos/rest_demo/v1 "$LAKE_DIR/rest_demo/"
+# api_demo imports cohub/api/v1/exposure.proto from the cohub_api module the
+# image ships; nothing publishes that module's Java, Python or npm packages yet,
+# so a bundle that imports it builds its API specs and checks, not packages.
+sed -i.bak 's/^      enabled: true$/      enabled: false/' "$LAKE_DIR/api_demo/bundle.yaml" && rm -f "$LAKE_DIR/api_demo/bundle.yaml.bak"
 
 # Remove auto-generated example.proto files
 rm -f "$LAKE_DIR/company_a/platform/service_a/example.proto"
 rm -f "$LAKE_DIR/company_b/apps/service_b/example.proto"
 rm -f "$LAKE_DIR/api_demo/example.proto"
+rm -f "$LAKE_DIR/rest_demo/example.proto"
 
 check_file "$LAKE_DIR/company_a/platform/service_a/api/v1/user.proto" "service_a user.proto"
 check_file "$LAKE_DIR/company_a/platform/service_a/types/v1/common.proto" "service_a common.proto"
 check_file "$LAKE_DIR/company_b/apps/service_b/api/v1/order.proto" "service_b order.proto"
 check_file "$LAKE_DIR/api_demo/v1/things.proto" "api_demo things.proto"
+check_file "$LAKE_DIR/rest_demo/v1/notes.proto" "rest_demo notes.proto"
+if [ ! -e "$LAKE_DIR/cohub/api/v1/exposure.proto" ] && ! grep -q "enabled: true" "$LAKE_DIR/api_demo/bundle.yaml"; then
+    pass "api_demo imports the cohub options without a vendored copy, its languages off"
+else
+    fail "the lake vendors cohub/api/v1/exposure.proto, or api_demo builds packages"
+fi
 
 echo ""
 echo "  Lake structure:"
@@ -665,31 +689,33 @@ if [ "$BUILD_SUCCEEDED" = true ] && [ -n "$BASE_VOLUME" ]; then
     # service_a has no bindings and no WebSocket RPCs: no specs, which is fine
     check_json "$SA_FINDINGS" '.findings == [] and .specs == []' "service_a gets no API specs"
 
-    # The specs ship inside api_demo's packages, stamped with the version each is published under
-    AD_JAR=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/api-demo-proto" -name "*.jar" 2>/dev/null | head -1)
-    AD_WHEEL=$(find "$LOCAL_ROOT/pip/simple" -name "company_api_demo_proto-*.whl" 2>/dev/null | head -1)
-    AD_NPM_SPEC=$(find "$LOCAL_ROOT/npm-packages" -path "*api-demo-proto*" -name "api_demo.openapi.json" 2>/dev/null | head -1)
+    # rest_demo's specs ship inside its packages, stamped with the version each is published under
+    RD_VERSION=$(sed -n 's/^version: *"\{0,1\}\([^" ]*\)"\{0,1\}.*/\1/p' "$LAKE_DIR/rest_demo/bundle.yaml" | head -1)
+    RD_JAR=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/rest-demo-proto" -name "*.jar" 2>/dev/null | head -1)
+    RD_WHEEL=$(find "$LOCAL_ROOT/pip/simple" -name "company_rest_demo_proto-*.whl" 2>/dev/null | head -1)
+    RD_NPM_SPEC=$(find "$LOCAL_ROOT/npm-packages" -path "*rest-demo-proto*" -name "rest_demo.openapi.json" 2>/dev/null | head -1)
     PACKAGED="$SPECS_DIR/packaged"
     mkdir -p "$PACKAGED"
-    if [ -n "$AD_JAR" ]; then
-        unzip -p "$AD_JAR" META-INF/api-specs/api_demo.openapi.json > "$PACKAGED/jar.openapi.json" 2>/dev/null
-        unzip -p "$AD_JAR" META-INF/api-specs/api_demo.asyncapi.json > "$PACKAGED/jar.asyncapi.json" 2>/dev/null
+    [ -n "$RD_JAR" ] && unzip -p "$RD_JAR" META-INF/api-specs/rest_demo.openapi.json > "$PACKAGED/jar.openapi.json" 2>/dev/null
+    if [ -n "$RD_WHEEL" ]; then
+        unzip -p "$RD_WHEEL" "*.dist-info/api-specs/rest_demo.openapi.json" > "$PACKAGED/wheel.openapi.json" 2>/dev/null
+        unzip -p "$RD_WHEEL" "*.dist-info/RECORD" > "$PACKAGED/wheel.RECORD" 2>/dev/null
     fi
-    if [ -n "$AD_WHEEL" ]; then
-        unzip -p "$AD_WHEEL" "*.dist-info/api-specs/api_demo.openapi.json" > "$PACKAGED/wheel.openapi.json" 2>/dev/null
-        unzip -p "$AD_WHEEL" "*.dist-info/RECORD" > "$PACKAGED/wheel.RECORD" 2>/dev/null
-    fi
-    [ -n "$AD_NPM_SPEC" ] && cp "$AD_NPM_SPEC" "$PACKAGED/npm.openapi.json"
-    check_json "$PACKAGED/jar.openapi.json" ".info.version == \"$AD_VERSION\" and (.paths | has(\"/v1/{name}\"))" \
-        "jar: META-INF/api-specs/api_demo.openapi.json, version $AD_VERSION"
-    check_json "$PACKAGED/jar.asyncapi.json" ".info.version == \"$AD_VERSION\" and .asyncapi == \"3.1.0\"" \
-        "jar: META-INF/api-specs/api_demo.asyncapi.json, version $AD_VERSION"
-    check_json "$PACKAGED/wheel.openapi.json" ".info.version == \"$AD_VERSION\"" \
-        "wheel: .dist-info/api-specs/api_demo.openapi.json, version $AD_VERSION"
-    check_file_contains "$PACKAGED/wheel.RECORD" "dist-info/api-specs/api_demo.openapi.json,sha256=" \
+    [ -n "$RD_NPM_SPEC" ] && cp "$RD_NPM_SPEC" "$PACKAGED/npm.openapi.json"
+    check_json "$PACKAGED/jar.openapi.json" ".info.version == \"$RD_VERSION\" and (.paths | has(\"/v1/{name}\"))
+        and .paths[\"/v1/notes:watch\"].get.responses[\"200\"].\"x-stream-framing\" == \"newline-delimited\"" \
+        "jar: META-INF/api-specs/rest_demo.openapi.json, version $RD_VERSION"
+    check_json "$PACKAGED/wheel.openapi.json" ".info.version == \"$RD_VERSION\"" \
+        "wheel: .dist-info/api-specs/rest_demo.openapi.json, version $RD_VERSION"
+    check_file_contains "$PACKAGED/wheel.RECORD" "dist-info/api-specs/rest_demo.openapi.json,sha256=" \
         "wheel: RECORD lists the spec with its hash"
-    check_json "$PACKAGED/npm.openapi.json" ".info.version == \"$AD_VERSION\"" \
-        "npm: api-specs/api_demo.openapi.json, version $AD_VERSION"
+    check_json "$PACKAGED/npm.openapi.json" ".info.version == \"$RD_VERSION\"" \
+        "npm: api-specs/rest_demo.openapi.json, version $RD_VERSION"
+    if [ -z "$(find "$LOCAL_ROOT/maven/repository/com/example/proto" -path "*api-demo-proto*" -name "*.jar" 2>/dev/null)" ]; then
+        pass "api_demo, which imports the cohub options, publishes no packages"
+    else
+        fail "api_demo published packages"
+    fi
     # service_a has no specs, so its jar carries none
     SA_JAR_FILE=$(find "$LOCAL_ROOT/maven/repository/com/example/proto/service-a-proto" -name "*.jar" 2>/dev/null | head -1)
     if [ -n "$SA_JAR_FILE" ] && ! unzip -l "$SA_JAR_FILE" | grep -q "api-specs/"; then
@@ -729,8 +755,123 @@ if [ "$BUILD_SUCCEEDED" = true ]; then
     check_file_contains "$NEG_LOG" "API exposure checks failed" "the failure names the exposure checks"
     check_file_contains "$NEG_LOG" "api_demo.v1.ThingService.GetThing is a unary RPC" "the error names the RPC"
     check_file_contains "$NEG_LOG" "api_demo/v1/things.proto:" "the error points at the proto file"
+    cp fixtures/test-protos/api_demo/v1/things.proto "$THINGS"
 else
     echo "  Skipping the negative build (the first build did not succeed)"
+fi
+
+# ============================================================================
+# Phase 7.8: buf validation resolves the cohub options the lake imports
+# ============================================================================
+
+echo ""
+echo "Phase 7.8: buf validation resolves the cohub options the lake imports..."
+
+if [ "$BUILD_SUCCEEDED" = true ]; then
+    # The first validation resolves buf's deps in its copy of the lake and
+    # writes buf.lock back, as it does for every lake; its breaking check has no
+    # usable baseline yet, so only the lock file is checked.
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "${ABS_OUTPUT_DIR}/validate-first.log" 2>&1
+    check_file "$LAKE_DIR/buf.lock" "validation writes buf.lock back into the lake"
+    # A history the breaking check can compare: the fixtures and buf.lock, then a
+    # change that breaks nothing, so the baseline (HEAD~1, as the lake has no
+    # origin/main) also imports the cohub options.
+    lake_git() {
+        git -C "$LAKE_DIR" -c user.name=e2e -c user.email=e2e@example.com \
+            -c commit.gpgsign=false -c core.hooksPath=/dev/null "$@"
+    }
+    if lake_git add --all -- api_demo company_a company_b rest_demo buf.lock \
+        && lake_git commit -q -m "test: the fixture protos and buf.lock" \
+        && printf '\n// A comment, which breaks nothing.\n' >> "$LAKE_DIR/rest_demo/v1/notes.proto" \
+        && lake_git commit -q -m "test: a change that breaks nothing" -- rest_demo/v1/notes.proto; then
+        pass "the lake commits its protos, then a change that breaks nothing"
+    else
+        fail "could not commit the lake's protos"
+    fi
+    VAL_LOG="${ABS_OUTPUT_DIR}/validate.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "$VAL_LOG" 2>&1
+    VAL_EXIT=$?
+    if [ $VAL_EXIT -eq 0 ] && ! grep -q "file does not exist" "$VAL_LOG"; then
+        pass "protolakew validate passes, buf resolving cohub/api/v1/exposure.proto"
+    else
+        fail "protolakew validate (exit $VAL_EXIT) did not resolve the import; see $VAL_LOG"
+    fi
+    check_file_contains "$VAL_LOG" "breaking --against /tmp/protolake-buf-baseline-" \
+        "the breaking check compares against a baseline that also holds the options"
+    if [ ! -e "$LAKE_DIR/cohub" ]; then
+        pass "validation leaves no copy of the options in the lake"
+    else
+        fail "validation wrote $LAKE_DIR/cohub"
+    fi
+    # A change that drops the lake's last import of the options: the baseline
+    # still imports them, and the breaking check must still resolve it.
+    LAKE_THINGS="$LAKE_DIR/api_demo/v1/things.proto"
+    grep -v 'cohub' fixtures/test-protos/api_demo/v1/things.proto > "$LAKE_THINGS"
+    DROP_LOG="${ABS_OUTPUT_DIR}/validate-dropped-options.log"
+    if lake_git commit -q -m "test: drop the cohub options" -- api_demo/v1/things.proto; then
+        (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" validate) > "$DROP_LOG" 2>&1
+        DROP_EXIT=$?
+    else
+        DROP_EXIT=commit-failed
+    fi
+    if [ "$DROP_EXIT" = 0 ]; then
+        pass "protolakew validate passes on a change that drops the lake's last import of the options"
+    else
+        fail "protolakew validate ($DROP_EXIT) after dropping the options; see $DROP_LOG"
+    fi
+    cp fixtures/test-protos/api_demo/v1/things.proto "$LAKE_THINGS"
+    lake_git commit -q -m "test: import the cohub options again" -- api_demo/v1/things.proto
+else
+    echo "  Skipping validation (the first build did not succeed)"
+fi
+
+# ============================================================================
+# Phase 7.9: a bundle that imports the cohub options builds no language packages
+# ============================================================================
+
+echo ""
+echo "Phase 7.9: a bundle that imports the cohub options builds no language packages..."
+
+if [ "$BUILD_SUCCEEDED" = true ]; then
+    AD_YAML="$LAKE_DIR/api_demo/bundle.yaml"
+    # Java on again: its generated code would load cohub's classes, which nothing publishes yet.
+    awk 'previous == "    java:" && $0 == "      enabled: false" { print "      enabled: true"; previous = $0; next } { print; previous = $0 }' \
+        "$AD_YAML" > "$AD_YAML.tmp" && mv "$AD_YAML.tmp" "$AD_YAML"
+    check_file_contains "$AD_YAML" "enabled: true" "api_demo enables Java"
+    REF_LOG="${ABS_OUTPUT_DIR}/build-imports-with-java.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --skip-validation) > "$REF_LOG" 2>&1
+    REF_EXIT=$?
+    if [ $REF_EXIT -ne 0 ]; then
+        pass "the build fails (exit $REF_EXIT)"
+    else
+        fail "the build succeeded with Java on a bundle that imports the cohub options"
+    fi
+    check_file_contains "$REF_LOG" "Bundle api_demo imports cohub/api/v1/exposure.proto and builds Java packages" \
+        "the refusal names the bundle and the language"
+    check_file_contains "$REF_LOG" "api_demo/v1/things.proto:5:1:" "the refusal points at the import"
+
+    # rest_demo builds packages and imports api_demo's protos, which import the
+    # options; the import is single-quoted, after another statement on its line.
+    sed -i.bak 's/^      enabled: true$/      enabled: false/' "$AD_YAML" && rm -f "$AD_YAML.bak"
+    NOTES="$LAKE_DIR/rest_demo/v1/notes.proto"
+    sed "s#^import \"google/api/annotations.proto\";\$#import \"google/api/annotations.proto\"; import 'api_demo/v1/things.proto';#" \
+        fixtures/test-protos/rest_demo/v1/notes.proto > "$NOTES"
+    check_file_contains "$NOTES" "; import 'api_demo/v1/things.proto';" "rest_demo imports api_demo's protos"
+    THROUGH_LOG="${ABS_OUTPUT_DIR}/build-imports-through-api-demo.log"
+    (cd "$LAKE_DIR" && ./protolakew --local-root "$LOCAL_ROOT" build --skip-validation) > "$THROUGH_LOG" 2>&1
+    THROUGH_EXIT=$?
+    if [ $THROUGH_EXIT -ne 0 ]; then
+        pass "the build fails (exit $THROUGH_EXIT) for a bundle whose imports reach the options"
+    else
+        fail "the build succeeded for rest_demo, whose imports reach the cohub options"
+    fi
+    check_file_contains "$THROUGH_LOG" \
+        "rest_demo/v1/notes.proto imports api_demo/v1/things.proto, which imports cohub/api/v1/exposure.proto" \
+        "the refusal names the chain of imports"
+    check_file_contains "$THROUGH_LOG" "rest_demo/v1/notes.proto:5:40:" "the refusal points at rest_demo's import"
+    cp fixtures/test-protos/rest_demo/v1/notes.proto "$NOTES"
+else
+    echo "  Skipping the refusal build (the first build did not succeed)"
 fi
 
 # ============================================================================

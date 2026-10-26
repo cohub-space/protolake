@@ -86,6 +86,30 @@ class GitCommandForeignOwnerTest {
         assertThat(git.getModifiedFiles(lake)).isEmpty();
     }
 
+    @Test
+    void archive_writesACommitsTreeFromAForeignOwnedLake(@TempDir Path out) throws Exception {
+        // The breaking check's baseline for a lake that imports a proto the image
+        // provides: the commit's tree from git archive, where buf would clone the lake.
+        initLake();
+        Path proto = lake.resolve("acme/svc/svc.proto");
+        Files.createDirectories(proto.getParent());
+        Files.writeString(proto, "syntax = \"proto3\";\n");
+        git.addAll(lake);
+        git.commit(lake, "one");
+        String baseline = git.getCurrentCommit(lake);
+        Files.writeString(proto, "syntax = \"proto3\";\npackage acme.svc;\n");
+        git.addAll(lake);
+        git.commit(lake, "two");
+        Path tar = out.resolve("baseline.tar");
+
+        git.archive(lake, baseline, tar);
+
+        // A tar header holds the entry's name as plain bytes, and the entry's content
+        // follows it: the baseline's, without the second commit's package line.
+        String archive = new String(Files.readAllBytes(tar), StandardCharsets.ISO_8859_1);
+        assertThat(archive).contains("acme/svc/svc.proto").doesNotContain("package acme.svc;");
+    }
+
     private void initLake() throws Exception {
         git.init(lake);
         git.config(lake, "user.name", "ProtoLake");

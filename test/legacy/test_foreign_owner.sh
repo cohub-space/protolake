@@ -138,6 +138,37 @@ steps() {
     else
         fail "validate did not refuse a relative HOME (exit $RC)"; show "$OUT"
     fi
+
+    # A lake that imports the exposure options the image provides: buf's git input could
+    # not resolve that import, so the breaking check compares against the baseline
+    # commit's tree from git archive, which reads the lake another user owns. Without
+    # trust the archive fails and so does validate, with no breaking change named.
+    sed -i '/^package /a import "cohub/api/v1/exposure.proto";' "$BUNDLE_PROTO"
+    sed -i '/^service .* {$/a option (cohub.api.v1.service_exposure) = {custom: true};' "$BUNDLE_PROTO"
+    if lake_git add -- "$BUNDLE_PROTO" \
+        && lake_git -c user.name=suite -c user.email=suite@localhost commit -q -m "suite: import the exposure options" \
+        && lake_git -c user.name=suite -c user.email=suite@localhost commit -q --allow-empty -m "suite: options baseline"; then
+        pass "the lake commits an import of cohub/api/v1/exposure.proto"
+    else
+        fail "could not commit the import of the exposure options"; return
+    fi
+    sed -i 's/string id = 1;/int64 id = 1;/' "$BUNDLE_PROTO"
+    hand_over "$LAKE"
+    OUT=$(protolake validate --lake-path "$LAKE" 2>&1); RC=$?
+    if [ $RC -ne 0 ] && printf '%s' "$OUT" | grep -q 'changed type from "string" to "int64"'; then
+        pass "validate reports a breaking change against a baseline git archive read from the lake"
+    else
+        fail "validate did not report the breaking change in a lake importing the options (exit $RC)"; show "$OUT"
+    fi
+
+    lake_git checkout -q -- "$BUNDLE_PROTO"
+    hand_over "$LAKE"
+    OUT=$(protolake validate --lake-path "$LAKE" 2>&1); RC=$?
+    if [ $RC -eq 0 ]; then
+        pass "validate passes on the unchanged lake importing the options"
+    else
+        fail "validate exit code $RC on the unchanged lake importing the options"; show "$OUT"
+    fi
 }
 
 steps

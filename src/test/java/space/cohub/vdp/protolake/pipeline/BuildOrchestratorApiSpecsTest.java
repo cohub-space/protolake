@@ -8,6 +8,7 @@ import org.junit.jupiter.api.Test;
 import protolake.v1.BuildOperationMetadata;
 import protolake.v1.InstallLocalConfig;
 import protolake.v1.Lake;
+import protolake.v1.PhaseStatus;
 import space.cohub.vdp.protolake.cli.BuildProgressListener;
 import space.cohub.vdp.protolake.initializer.WorkspaceInitializer;
 import space.cohub.vdp.protolake.model.ValidationError;
@@ -55,6 +56,9 @@ class BuildOrchestratorApiSpecsTest {
     @InjectMock
     ApiSpecRunner apiSpecRunner;
 
+    @InjectMock
+    ProvidedImportCheck providedImportCheck;
+
     private final RecordingListener listener = new RecordingListener();
 
     @BeforeEach
@@ -91,6 +95,26 @@ class BuildOrchestratorApiSpecsTest {
     }
 
     @Test
+    void buildTargetSync_bundleImportingCohubApiWithLanguagePackages_isRefusedBeforeBazel() throws Exception {
+        when(providedImportCheck.check(any(), anyString())).thenReturn(List.of(finding(
+                ValidationError.Severity.ERROR, "api/v1/api.proto", 5, "Bundle api imports cohub/api/v1/exposure.proto")));
+
+        assertThatThrownBy(() -> build(true))
+                .isInstanceOfSatisfying(BuildOrchestrator.BuildException.class, e ->
+                        assertThat(e.getErrors().getErrors()).extracting(ValidationError::getMessage)
+                                .containsExactly("Bundle api imports cohub/api/v1/exposure.proto"));
+        verify(bazelBuildRunner, never()).buildTarget(any(), anyString(), any());
+        verify(apiSpecRunner, never()).run(any(), anyString(), any());
+        // gRPC callers read the details from the build phase, not from the exception.
+        PhaseStatus buildPhase = listener.metadata.getPhaseStatuses().getBuild();
+        assertThat(buildPhase.getStatus()).isEqualTo(PhaseStatus.Status.FAILED);
+        assertThat(buildPhase.getErrorMessage())
+                .contains("api/v1/api.proto:5:3: Bundle api imports cohub/api/v1/exposure.proto");
+        assertThat(buildPhase.getLogLinesList())
+                .containsExactly("ERROR api/v1/api.proto:5:3: Bundle api imports cohub/api/v1/exposure.proto");
+    }
+
+    @Test
     void buildTargetSync_warningFinding_reachesTheListenerAndPublishes() throws Exception {
         when(apiSpecRunner.run(any(), anyString(), any())).thenReturn(result(finding(
                 ValidationError.Severity.WARNING, "api/v1/api.proto", 7, "binding on a bidi stream")));
@@ -124,6 +148,7 @@ class BuildOrchestratorApiSpecsTest {
     private static final class RecordingListener implements BuildProgressListener {
         final List<String> warnings = new ArrayList<>();
         final List<String> failed = new ArrayList<>();
+        BuildOperationMetadata metadata = BuildOperationMetadata.getDefaultInstance();
 
         @Override
         public void onPhaseStart(String phase) {
@@ -143,6 +168,7 @@ class BuildOrchestratorApiSpecsTest {
 
         @Override
         public void onMetadataUpdate(BuildOperationMetadata metadata) {
+            this.metadata = metadata;
         }
 
         @Override

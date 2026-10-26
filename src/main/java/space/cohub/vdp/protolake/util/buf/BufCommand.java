@@ -88,9 +88,18 @@ public class BufCommand {
      * @return list of lint violation lines from stdout
      */
     public List<String> lint(Path directory) throws IOException {
+        return lint(directory, List.of());
+    }
+
+    /**
+     * Runs buf lint, leaving some files out of the targets; they stay
+     * available as imports.
+     *
+     * @param excludePaths module-relative paths for {@code --exclude-path}
+     */
+    public List<String> lint(Path directory, List<String> excludePaths) throws IOException {
         LOG.debugf("Running buf lint in: %s", directory);
-        
-        return runWithOutput(directory, "lint");
+        return runWithOutput(directory, withExcludes(List.of("lint"), excludePaths));
     }
 
     /**
@@ -176,6 +185,19 @@ public class BufCommand {
      */
     private List<String> runWithOutput(Path directory, String... args) throws IOException {
         return run(directory, Map.of(), args).stdout();
+    }
+
+    private List<String> runWithOutput(Path directory, List<String> args) throws IOException {
+        return runWithOutput(directory, args.toArray(new String[0]));
+    }
+
+    private static List<String> withExcludes(List<String> args, List<String> excludePaths) {
+        List<String> all = new ArrayList<>(args);
+        for (String path : excludePaths) {
+            all.add("--exclude-path");
+            all.add(path);
+        }
+        return all;
     }
 
     private BufResult run(Path directory, Map<String, String> environment, String... args) throws IOException {
