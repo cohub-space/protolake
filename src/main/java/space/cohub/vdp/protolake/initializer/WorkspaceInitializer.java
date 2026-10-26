@@ -61,6 +61,9 @@ public class WorkspaceInitializer {
         // Create Connect-ES codegen rule
         createEsProtoRules(lake);
 
+        // Create the API spec aspect and its tool
+        createApiSpecRules(lake);
+
         // Create npm workspace (package.json + pnpm-lock.yaml for protoc-gen-es)
         createNpmWorkspace(lake);
 
@@ -269,6 +272,24 @@ public class WorkspaceInitializer {
     }
 
     /**
+     * Creates the API spec aspect (api_specs.bzl) and the stdlib-only Python
+     * tool its actions run. ApiSpecRunner applies the aspect to every bundle
+     * after the build; the files are static and regenerated with the other tools.
+     */
+    private void createApiSpecRules(Lake lake) throws IOException {
+        Path toolsPath = LakeUtil.getLocalPath(lake, basePath).resolve("tools");
+        templateEngine.copyResource("tools/api_specs.bzl", toolsPath.resolve("api_specs.bzl"));
+        Path specsPath = toolsPath.resolve("api_specs");
+        copyAndMakeExecutable("tools/api_specs/api_specs_generated.py",
+                specsPath.resolve("api_specs_generated.py"));
+        templateEngine.copyResource("tools/api_specs/asyncapi_generated.py",
+                specsPath.resolve("asyncapi_generated.py"));
+        templateEngine.copyResource("tools/api_specs/protodesc_generated.py",
+                specsPath.resolve("protodesc_generated.py"));
+        LOG.debugf("Created API spec rules for lake: %s", LakeUtil.extractLakeId(lake.getName()));
+    }
+
+    /**
      * Creates npm workspace files (package.json + pnpm-lock.yaml) for protoc-gen-es.
      * These are needed by npm_translate_lock in MODULE.bazel.
      */
@@ -360,7 +381,8 @@ public class WorkspaceInitializer {
     }
 
     /**
-     * Creates bundler tools (jar_bundler, wheel_builder, npm_bundler).
+     * Creates bundler tools (jar_bundler, wheel_builder, npm_bundler) and the
+     * module they share to pack a bundle's API specs.
      * These are static Python scripts with no template variables.
      */
     private void createBundlerTools(Path toolsPath) throws IOException {
@@ -374,6 +396,8 @@ public class WorkspaceInitializer {
                 bundlerPath.resolve("wheel_builder_generated.py"));
         copyAndMakeExecutable("tools/bundler/npm_bundler_generated.py",
                 bundlerPath.resolve("npm_bundler_generated.py"));
+        templateEngine.copyResource("tools/bundler/api_spec_files_generated.py",
+                bundlerPath.resolve("api_spec_files_generated.py"));
     }
 
     /**

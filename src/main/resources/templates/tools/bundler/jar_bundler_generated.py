@@ -12,6 +12,11 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+# Run from protolake's templates/, bytecode beside the helper would read as a template.
+sys.dont_write_bytecode = True
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from api_spec_files_generated import api_spec_files  # noqa: E402
+
 
 def read_bundle_version(bundle_yaml_path):
     """Read the top-level `version:` from a bundle.yaml.
@@ -68,6 +73,8 @@ def main():
                         help='Optional proto descriptor (.pb) to pack as META-INF/proto-descriptors/<bundle>.pb')
     parser.add_argument('--bundle-name', default=None,
                         help='Bundle name used as descriptor filename in META-INF (defaults to artifact_id)')
+    parser.add_argument('--api-specs-dir', nargs='*', default=[],
+                        help='Directories holding the bundle\'s API specs, packed as META-INF/api-specs/<file>')
 
     args = parser.parse_args()
 
@@ -140,6 +147,13 @@ def main():
                 print(f"  Packed descriptor {args.descriptor_pb} -> META-INF/proto-descriptors/{pb_name}")
             else:
                 print(f"Warning: --descriptor-pb '{args.descriptor_pb}' does not exist; skipping")
+
+        # Pack the API specs under META-INF/api-specs/, stamped with the bundle version
+        for name, content in api_spec_files(args.api_specs_dir, args.version):
+            dest_path = meta_inf / 'api-specs' / name
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.write_bytes(content)
+            print(f"  Packed API spec META-INF/api-specs/{name}")
 
         # Create the fat JAR
         print("Creating JAR file...")

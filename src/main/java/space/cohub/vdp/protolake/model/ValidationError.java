@@ -10,7 +10,9 @@ public class ValidationError {
         LINT,
         BREAKING_CHANGE,
         SYNTAX,
-        DEPENDENCY
+        DEPENDENCY,
+        /** An exposure annotation check, or a problem writing a bundle's API specs. */
+        API_EXPOSURE
     }
     
     public enum Severity {

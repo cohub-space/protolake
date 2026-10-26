@@ -218,6 +218,40 @@ public class WorkspaceInitializerIntegrationTest extends InitializerTestBase {
     }
     
     @Test
+    void testInitializeWorkspaceCreatesApiSpecRules() throws IOException {
+        Lake lake = createTestLake("specs-lake");
+        Path lakePath = basePath.resolve("specs-lake");
+        Files.createDirectories(lakePath);
+
+        workspaceInitializer.initializeWorkspace(lake);
+
+        // The aspect ApiSpecRunner applies to every bundle, and the tool its actions run.
+        Path toolsPath = lakePath.resolve("tools");
+        assertFileContains(toolsPath.resolve("api_specs.bzl"),
+            "api_specs = aspect(",
+            "\"_tool\": attr.label(",
+            "PROTOC_GEN_OPENAPIV2_VERSION = ",
+            "PROTOC_GEN_CONNECT_OPENAPI_VERSION = "
+        );
+        // Parameter-free, so the bundle rules and protolake apply the same aspect.
+        assertFileDoesNotContain(toolsPath.resolve("api_specs.bzl"), "bundle_versions");
+        assertExecutableFile(toolsPath.resolve("api_specs/api_specs_generated.py"));
+        assertFileExists(toolsPath, "api_specs/asyncapi_generated.py", "api_specs/protodesc_generated.py");
+        assertFileContains(toolsPath.resolve("BUILD.bazel"),
+            "name = \"api_specs_tool\"",
+            "main = \"api_specs/api_specs_generated.py\"",
+            "name = \"bundler_api_spec_files\""
+        );
+        // The bundle rules apply the aspect and pack the specs into their packages.
+        assertFileContains(toolsPath.resolve("proto_bundle.bzl"),
+            "load(\":api_specs.bzl\", \"api_specs\")",
+            "aspects = [api_specs]",
+            "--api-specs-dir"
+        );
+        assertFileExists(toolsPath, "bundler/api_spec_files_generated.py");
+    }
+
+    @Test
     void testInitializeWorkspaceCreatesBufConfiguration() throws IOException {
         // Create a lake  
         Lake lake = createTestLake("buf-lake");

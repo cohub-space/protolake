@@ -28,5 +28,9 @@ nb-configuration.xml
 *.swp
 *.swo
 
+# Python bytecode: Qute reads every file under templates/ as a template
+__pycache__/
+*.pyc
+
 # Local
 .env
