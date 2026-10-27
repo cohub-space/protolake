@@ -78,11 +78,11 @@
             <artifactId>protobuf-java</artifactId>
         </dependency>
 
-        <!-- Google Common Protos (provides google/longrunning/operations.proto) -->
+        <!-- Google Common Protos (provides google/longrunning/operations.proto;
+             version platform-managed) -->
         <dependency>
             <groupId>com.google.api.grpc</groupId>
             <artifactId>proto-google-common-protos</artifactId>
-            <version>2.58.0</version>
         </dependency>
 
         <!-- gRPC dependencies -->
@@ -95,16 +95,14 @@
             <artifactId>grpc-stub</artifactId>
         </dependency>
 
-        <!-- Maven artifact handling -->
+        <!-- Maven artifact handling (versions platform-managed) -->
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-model</artifactId>
-            <version>3.9.12</version>
         </dependency>
         <dependency>
             <groupId>org.apache.maven</groupId>
             <artifactId>maven-artifact</artifactId>
-            <version>3.9.12</version>
         </dependency>
 
         <!-- For working with JAR files -->
@@ -114,18 +112,16 @@
             <version>1.28.0</version>
         </dependency>
 
-        <!-- For file operations -->
+        <!-- For file operations (version platform-managed) -->
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
-            <version>2.21.0</version>
         </dependency>
 
-        <!-- For checksum calculations -->
+        <!-- For checksum calculations (version platform-managed) -->
         <dependency>
             <groupId>commons-codec</groupId>
             <artifactId>commons-codec</artifactId>
-            <version>1.21.0</version>
         </dependency>
 
         <!-- Health and metrics -->
